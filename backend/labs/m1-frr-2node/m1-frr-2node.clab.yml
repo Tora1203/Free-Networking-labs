@@ -1,0 +1,29 @@
+# M1: FRR 2ノードの疎通確認用トポロジ
+#   r1 --- (eth1, 10.0.0.0/30) --- r2
+#   両者 OSPF area 0。loopback を広報して相互到達を確認する。
+#
+# デプロイ:   sudo containerlab deploy   -t m1-frr-2node.clab.yml
+# 破棄:       sudo containerlab destroy  -t m1-frr-2node.clab.yml --cleanup
+name: m1-frr-2node
+
+topology:
+  kinds:
+    linux:
+      image: quay.io/frrouting/frr:10.2.1
+
+  nodes:
+    r1:
+      kind: linux
+      binds:
+        - r1/daemons:/etc/frr/daemons
+        - r1/frr.conf:/etc/frr/frr.conf
+        - r1/vtysh.conf:/etc/frr/vtysh.conf
+    r2:
+      kind: linux
+      binds:
+        - r2/daemons:/etc/frr/daemons
+        - r2/frr.conf:/etc/frr/frr.conf
+        - r2/vtysh.conf:/etc/frr/vtysh.conf
+
+  links:
+    - endpoints: ["r1:eth1", "r2:eth1"]
