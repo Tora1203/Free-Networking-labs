@@ -67,13 +67,15 @@ kawase3（バックエンド）と Bさん（フロントエンド）が別ク�
 2. 作業を feature ブランチにコミットして push する（WIP でも可）
 
 **ブランチと変更の流し方**
-- main へ直接コミットしない。`be/<topic>` / `fe/<topic>` ブランチを切る
-- main へは PR 経由。相手（またはその Claude）が diff を見てからマージ
+- main へ直接コミット/push しない。`be/<topic>` / `fe/<topic>` ブランチを切る（main は
+  ルールセット `protect-main` で保護：直 push・force push・削除を禁止、変更は PR 経由のみ）
+- 相手が未オンボードの間は担当者セルフマージ可（squash）。両者稼働後は相手の diff 確認を必須に戻す
 - 相手の担当ディレクトリ（`backend/` ⇄ `frontend/`）を触るときは、理由を STATUS.md に書いてから
 
 **どこに何を書くか（混ぜない）**
 - スコープ/技術の**決定** → `docs/direction.md` に日付つきで追記（ここだけ）
-- **進捗・TODO・ブロッカー** → `docs/STATUS.md`
+- **進捗・TODO・ブロッカー** → `docs/STATUS.md`。**衝突回避のため各自「自分の担当セクション＋
+  最終更新行」だけを編集する**。こまめにマージし、衝突したら両者の行を残す
 - **API の仕様・実レスポンス** → `docs/api-contract.md`（推測で埋めず、未確認は `TODO(担当)` と明記）
 
 ## 作業分担
