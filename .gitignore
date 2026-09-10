@@ -1,0 +1,41 @@
+# --- Containerlab 実行時生成物 ---
+clab-*/
+.clab/
+*.clab.yml.bak
+# containerlab が吐く ansible / topology-data
+ansible-inventory.yml
+topology-data.json
+*.tar
+authorized_keys
+
+# --- OS / エディタ ---
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# --- Node (frontend/) ---
+node_modules/
+dist/
+build/
+.vite/
+*.local
+.env
+.env.*
+!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Python (backend スクリプト用, 必要なら) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- 秘密情報 ---
+*.pem
+*.key
+secrets.*
