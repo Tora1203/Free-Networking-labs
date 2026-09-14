@@ -1,0 +1,35 @@
+.app-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-nav {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  background: #eceee7;
+  border-bottom: 1px solid #d9ddd0;
+}
+
+.app-nav__btn {
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #4d5a52;
+  cursor: pointer;
+}
+
+.app-nav__btn--active {
+  background: #1f9d55;
+  color: #fff;
+}
+
+.app-content {
+  flex: 1;
+  min-height: 0;
+}
