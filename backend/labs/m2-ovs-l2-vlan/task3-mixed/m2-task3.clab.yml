@@ -1,0 +1,45 @@
+# M2 task3: FRR / ovs-bridge / linux の3種混在トポロジ
+#
+#   pc1 --- sw1(ovs-bridge) --- r1(FRR) === (eth1, OSPF area0) === r2(FRR) --- sw2(ovs-bridge) --- pc2
+#
+# pc1/pc2 は各ルーターを default gateway とし、r1<->r2 は OSPF で
+# 互いのLANサブネット(10.0.10.0/24 / 10.0.20.0/24)を広報する。
+# 事前に host 側で `ovs-vsctl add-br sw1` `ovs-vsctl add-br sw2` が必要
+# （ovs-bridge kind はブリッジを自動作成しないため）。
+name: m2-task3
+
+topology:
+  kinds:
+    linux:
+      image: alpine:3.20
+
+  nodes:
+    r1:
+      kind: linux
+      image: quay.io/frrouting/frr:10.2.1
+      binds:
+        - r1/daemons:/etc/frr/daemons
+        - r1/frr.conf:/etc/frr/frr.conf
+        - r1/vtysh.conf:/etc/frr/vtysh.conf
+    r2:
+      kind: linux
+      image: quay.io/frrouting/frr:10.2.1
+      binds:
+        - r2/daemons:/etc/frr/daemons
+        - r2/frr.conf:/etc/frr/frr.conf
+        - r2/vtysh.conf:/etc/frr/vtysh.conf
+    sw1:
+      kind: ovs-bridge
+    sw2:
+      kind: ovs-bridge
+    pc1:
+      kind: linux
+    pc2:
+      kind: linux
+
+  links:
+    - endpoints: ["r1:eth1", "r2:eth1"]
+    - endpoints: ["r1:eth2", "sw1:eth1"]
+    - endpoints: ["pc1:eth1", "sw1:eth2"]
+    - endpoints: ["r2:eth2", "sw2:eth3"]
+    - endpoints: ["pc2:eth1", "sw2:eth4"]
