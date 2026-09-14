@@ -1,0 +1,22 @@
+.console-pane {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #141f19;
+}
+
+.console-pane__bar {
+  flex: none;
+  padding: 6px 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #aab6ae;
+  border-bottom: 1px solid #263129;
+}
+
+.console-pane__term {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 10px;
+}

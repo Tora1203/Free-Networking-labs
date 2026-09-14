@@ -1,0 +1,627 @@
+<title>トポロジエディタ 進捗報告</title>
+<style>
+  :root {
+    --bg: #f5f6f2;
+    --surface: #fdfdfb;
+    --surface-2: #eceee7;
+    --ink: #141f19;
+    --ink-soft: #4d5a52;
+    --ink-faint: #7c887f;
+    --border: #d9ddd0;
+    --accent: #1f9d55;
+    --accent-ink: #0f5c31;
+    --accent-soft: rgba(31, 157, 85, 0.12);
+    --warn: #b45309;
+    --warn-soft: rgba(180, 83, 9, 0.12);
+    --node-fill: #ffffff;
+    --node-border: #9aa79d;
+    --edge: #8a988e;
+    --grid-dot: #d6dace;
+    --shadow: 0 1px 2px rgba(20, 31, 25, 0.06), 0 8px 24px -12px rgba(20, 31, 25, 0.18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1310;
+      --surface: #131a16;
+      --surface-2: #1a231d;
+      --ink: #e7ede8;
+      --ink-soft: #aab6ae;
+      --ink-faint: #7e8b83;
+      --border: #263129;
+      --accent: #46d17a;
+      --accent-ink: #86e6ab;
+      --accent-soft: rgba(70, 209, 122, 0.16);
+      --warn: #f0a94e;
+      --warn-soft: rgba(240, 169, 78, 0.16);
+      --node-fill: #182019;
+      --node-border: #3a463d;
+      --edge: #5c6b60;
+      --grid-dot: #24302a;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0d1310;
+    --surface: #131a16;
+    --surface-2: #1a231d;
+    --ink: #e7ede8;
+    --ink-soft: #aab6ae;
+    --ink-faint: #7e8b83;
+    --border: #263129;
+    --accent: #46d17a;
+    --accent-ink: #86e6ab;
+    --accent-soft: rgba(70, 209, 122, 0.16);
+    --warn: #f0a94e;
+    --warn-soft: rgba(240, 169, 78, 0.16);
+    --node-fill: #182019;
+    --node-border: #3a463d;
+    --edge: #5c6b60;
+    --grid-dot: #24302a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    line-height: 1.7;
+  }
+
+  .page {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+  }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  /* header */
+  .report-head {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 32px;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  h1 {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    font-size: 14px;
+    color: var(--ink-soft);
+    margin-top: 4px;
+  }
+  .meta-row span b { color: var(--ink); font-weight: 600; }
+
+  /* status strip */
+  .status-strip {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  .status-chip {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 10px 10px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .status-chip .n {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+  .status-chip .t {
+    font-size: 12.5px;
+    color: var(--ink);
+    font-weight: 500;
+    overflow-wrap: break-word;
+  }
+  .pill {
+    align-self: flex-start;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .pill.done { background: var(--accent-soft); color: var(--accent-ink); }
+  .pill.next { background: var(--warn-soft); color: var(--warn); }
+  .pill.pending { background: var(--surface-2); color: var(--ink-faint); }
+
+  section { margin-bottom: 40px; }
+
+  h2 {
+    font-size: 13px;
+    font-family: "IBM Plex Mono", monospace;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 14px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  h2::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  h3 {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 12px; color: var(--ink-soft); max-width: 65ch; }
+  p:last-child { margin-bottom: 0; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px 24px;
+    box-shadow: var(--shadow);
+  }
+
+  .task-card + .task-card { margin-top: 16px; }
+  .task-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .task-num {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+
+  .diagram-wrap {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: auto;
+    background: var(--surface-2);
+  }
+  .diagram-wrap svg { display: block; width: 100%; height: auto; }
+  .diagram-caption {
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin-top: 8px;
+  }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 640px) {
+    .two-col { grid-template-columns: 1fr; }
+    .status-strip { grid-template-columns: repeat(2, 1fr); }
+  }
+  .two-col .diagram-wrap { margin-top: 0; }
+  .col-label {
+    font-size: 12px;
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--ink-faint);
+    margin-bottom: 6px;
+  }
+
+  ul.checklist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  ul.checklist li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 14.5px;
+    color: var(--ink-soft);
+  }
+  ul.checklist li .mark {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    margin-top: 2px;
+  }
+
+  .filetree {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    line-height: 1.85;
+    color: var(--ink-soft);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .filetree .dir { color: var(--ink); font-weight: 600; }
+  .filetree .new { color: var(--accent-ink); }
+  .filetree .tag {
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 11px;
+    color: var(--ink-faint);
+    font-weight: 400;
+  }
+
+  .next-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .next-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .next-item .badge {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--warn);
+    background: var(--warn-soft);
+    border-radius: 6px;
+    padding: 2px 6px;
+    flex: none;
+    margin-top: 2px;
+  }
+  .next-item p { margin: 0; font-size: 14.5px; }
+  .next-item .h { font-weight: 600; color: var(--ink); display: block; margin-bottom: 2px; }
+
+  .note {
+    font-size: 13.5px;
+    color: var(--ink-faint);
+    border-left: 3px solid var(--border);
+    padding: 4px 0 4px 14px;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<div class="page">
+
+  <div class="report-head">
+    <div class="eyebrow">作業報告 &middot; Free-Networking-labs / frontend</div>
+    <h1>トポロジエディタ雛形の構築とプロトタイプ動作確認</h1>
+    <div class="meta-row">
+      <span>担当: <b>Bさん（フロントエンド）</b></span>
+      <span>日付: <b>2026-09-09</b></span>
+      <span>リポジトリ: <b class="mono">Tora1203/Free-Networking-labs</b></span>
+    </div>
+  </div>
+
+  <div class="status-strip">
+    <div class="status-chip"><span class="n">TASK 1</span><span class="pill done">完了</span><span class="t">Vite雛形作成</span></div>
+    <div class="status-chip"><span class="n">TASK 2</span><span class="pill done">完了</span><span class="t">React Flowプロトタイプ</span></div>
+    <div class="status-chip"><span class="n">TASK 3</span><span class="pill done">完了</span><span class="t">API仕様確認・モックUI</span></div>
+    <div class="status-chip"><span class="n">TASK 4</span><span class="pill done">完了</span><span class="t">xterm.js導入</span></div>
+    <div class="status-chip"><span class="n">TASK 5</span><span class="pill pending">待機中</span><span class="t">実API接続</span></div>
+  </div>
+
+  <section>
+    <h2>環境構築</h2>
+    <div class="card">
+      <ul class="checklist">
+        <li><span class="mark">✓</span>Node.js LTS (v24.19.0 / npm 11.17.0) をこのマシンに新規インストール</li>
+        <li><span class="mark">✓</span>共有リポジトリ <span class="mono">Tora1203/Free-Networking-labs</span> をクローン（GitHub Credential Managerでブラウザ認証）</li>
+        <li><span class="mark">✓</span><span class="mono">frontend/</span> ディレクトリに Vite + React + TypeScript の雛形を作成</li>
+        <li><span class="mark">✓</span><span class="mono">@xyflow/react</span>（React Flow）をインストール</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>タスク1・2：トポロジエディタの雛形</h2>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="task-num">01–02</span>
+        <h3 style="margin:0;">ノードのドラッグ移動・線での接続を確認</h3>
+      </div>
+      <p>依頼書の指示どおり、まずAPI連携なしでReact Flowの基本挙動（ノード配置・ドラッグ・接続）だけを確認するプロトタイプを作成しました。FRRノードを想定し、<span class="mono">router1〜3</span> の3ノードをキャンバスに配置。開発サーバーを起動し、実際にブラウザ操作でドラッグと接続を検証しています。</p>
+
+      <div class="two-col" style="margin-top:18px;">
+        <div>
+          <div class="col-label">① 初期表示</div>
+          <div class="diagram-wrap">
+            <svg viewBox="0 0 380 240" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <pattern id="grid1" width="16" height="16" patternUnits="userSpaceOnUse">
+                  <circle cx="1" cy="1" r="1" fill="var(--grid-dot)"></circle>
+                </pattern>
+                <symbol id="rtA" viewBox="0 0 64 40">
+                  <rect x="1" y="1" width="62" height="38" rx="5" fill="#26323a" stroke="#6b7a80"/>
+                  <path d="M 16 15 a 10 8 0 0 1 18 -4" fill="none" stroke="#7fd6ff" stroke-width="2.4"/>
+                  <path d="M 34 11 l 5 -3 l 1 6 z" fill="#7fd6ff"/>
+                  <path d="M 48 25 a 10 8 0 0 1 -18 4" fill="none" stroke="#8fe7b0" stroke-width="2.4"/>
+                  <path d="M 30 29 l -5 3 l -1 -6 z" fill="#8fe7b0"/>
+                  <rect x="8" y="32" width="5" height="4" fill="#4ade80"/>
+                  <rect x="17" y="32" width="5" height="4" fill="#4ade80"/>
+                  <rect x="42" y="32" width="5" height="4" fill="#55606a"/>
+                  <rect x="51" y="32" width="5" height="4" fill="#55606a"/>
+                </symbol>
+              </defs>
+              <rect x="0" y="0" width="380" height="240" fill="url(#grid1)"></rect>
+              <path d="M 105 66 C 150 40, 165 40, 205 66" fill="none" stroke="var(--edge)" stroke-width="2"></path>
+              <text x="128" y="46" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-faint)">Gi0/0</text>
+              <text x="188" y="46" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-faint)">Gi0/0</text>
+              <use href="#rtA" x="68" y="50" width="64" height="40"></use>
+              <text x="100" y="106" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router1</text>
+              <text x="100" y="120" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+              <use href="#rtA" x="178" y="50" width="64" height="40"></use>
+              <text x="210" y="106" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router2</text>
+              <text x="210" y="120" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+              <use href="#rtA" x="123" y="160" width="64" height="40"></use>
+              <text x="155" y="216" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router3</text>
+              <text x="155" y="230" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+            </svg>
+          </div>
+          <div class="diagram-caption">r1–r2間のみリンクを接続。r3はどのポートにもケーブルが刺さっていない状態からスタート。</div>
+        </div>
+        <div>
+          <div class="col-label">② ドラッグ移動 → ケーブル接続</div>
+          <div class="diagram-wrap">
+            <svg viewBox="0 0 380 240" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <pattern id="grid2" width="16" height="16" patternUnits="userSpaceOnUse">
+                  <circle cx="1" cy="1" r="1" fill="var(--grid-dot)"></circle>
+                </pattern>
+                <marker id="arrowB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--warn)"></path>
+                </marker>
+                <symbol id="rtB" viewBox="0 0 64 40">
+                  <rect x="1" y="1" width="62" height="38" rx="5" fill="#26323a" stroke="#6b7a80"/>
+                  <path d="M 16 15 a 10 8 0 0 1 18 -4" fill="none" stroke="#7fd6ff" stroke-width="2.4"/>
+                  <path d="M 34 11 l 5 -3 l 1 6 z" fill="#7fd6ff"/>
+                  <path d="M 48 25 a 10 8 0 0 1 -18 4" fill="none" stroke="#8fe7b0" stroke-width="2.4"/>
+                  <path d="M 30 29 l -5 3 l -1 -6 z" fill="#8fe7b0"/>
+                  <rect x="8" y="32" width="5" height="4" fill="#4ade80"/>
+                  <rect x="17" y="32" width="5" height="4" fill="#4ade80"/>
+                  <rect x="42" y="32" width="5" height="4" fill="#4ade80"/>
+                  <rect x="51" y="32" width="5" height="4" fill="#55606a"/>
+                </symbol>
+              </defs>
+              <rect x="0" y="0" width="380" height="240" fill="url(#grid2)"></rect>
+              <rect x="123" y="160" width="64" height="40" rx="5" fill="none" stroke="var(--ink-faint)" stroke-width="1.3" stroke-dasharray="4 3" opacity="0.5"></rect>
+              <text x="155" y="212" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-faint)">移動前の位置</text>
+              <path d="M 190 178 C 235 185, 258 172, 272 145" fill="none" stroke="var(--warn)" stroke-width="1.8" stroke-dasharray="3 3" marker-end="url(#arrowB)"></path>
+              <rect x="215" y="176" width="62" height="16" rx="8" fill="var(--warn-soft)"></rect>
+              <text x="246" y="188" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="600" fill="var(--warn)">① ドラッグ</text>
+              <path d="M 105 66 C 150 40, 165 40, 205 66" fill="none" stroke="var(--edge)" stroke-width="2"></path>
+              <text x="128" y="46" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-faint)">Gi0/0</text>
+              <text x="188" y="46" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-faint)">Gi0/0</text>
+              <path d="M 220 90 C 250 108, 262 118, 262 148" fill="none" stroke="var(--accent)" stroke-width="2.4"></path>
+              <rect x="266" y="108" width="56" height="16" rx="8" fill="var(--accent-soft)"></rect>
+              <text x="294" y="120" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="600" fill="var(--accent-ink)">② 接続</text>
+              <text x="228" y="102" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--accent-ink)">Gi0/1</text>
+              <text x="266" y="152" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--accent-ink)">Gi0/0</text>
+              <use href="#rtB" x="68" y="50" width="64" height="40"></use>
+              <text x="100" y="106" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router1</text>
+              <text x="100" y="120" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+              <use href="#rtB" x="178" y="50" width="64" height="40"></use>
+              <text x="210" y="106" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router2</text>
+              <text x="210" y="120" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+              <use href="#rtB" x="230" y="150" width="64" height="40"></use>
+              <text x="262" y="206" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--ink)">router3</text>
+              <text x="262" y="220" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="9.5" fill="var(--ink-faint)">FRR</text>
+            </svg>
+          </div>
+          <div class="diagram-caption">router3をドラッグして移動（①）→ router2のポートからドラッグしてケーブルを接続（②）。緑のポートは接続済みを表す。</div>
+        </div>
+      </div>
+      <p class="note" style="margin-top:16px;">開発サーバー（Vite / port 5173）を起動し、上記の操作をブラウザ上で実際に実行して動作を確認済みです（API連携はまだなし、依頼書のとおりモック無しの素の動作確認段階）。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>タスク3：API仕様確認とモックUI</h2>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="task-num">03</span>
+        <h3 style="margin:0;">clab-api-serverの仕様に沿ったラボ一覧画面</h3>
+      </div>
+      <p>サーバーがまだ無いため、READMEおよびAPIドキュメントから <span class="mono">GET /api/v1/labs</span>（ラボ一覧）と <span class="mono">POST /login</span>（JWT認証）の実際のレスポンス形状を確認。それに沿った型定義とダミーデータを用意し、「ラボをカードで一覧表示」画面を先行実装しました。</p>
+      <div class="diagram-wrap" style="margin-top:16px;">
+        <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <symbol id="rtC" viewBox="0 0 64 40">
+              <rect x="1" y="1" width="62" height="38" rx="5" fill="#26323a" stroke="#6b7a80"/>
+              <path d="M 16 15 a 10 8 0 0 1 18 -4" fill="none" stroke="#7fd6ff" stroke-width="2.6"/>
+              <path d="M 34 11 l 5 -3 l 1 6 z" fill="#7fd6ff"/>
+              <path d="M 48 25 a 10 8 0 0 1 -18 4" fill="none" stroke="#8fe7b0" stroke-width="2.6"/>
+              <path d="M 30 29 l -5 3 l -1 -6 z" fill="#8fe7b0"/>
+            </symbol>
+          </defs>
+          <rect x="0" y="0" width="700" height="240" fill="var(--surface-2)"></rect>
+          <text x="16" y="26" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink-faint)">GET /api/v1/labs のレスポンス（ダミーデータ・バックエンド未接続）</text>
+
+          <g font-family="IBM Plex Sans, sans-serif">
+            <circle cx="22" cy="46" r="5" fill="var(--accent)"></circle><text x="32" y="50" font-size="10.5" fill="var(--ink-soft)">running</text>
+            <circle cx="102" cy="46" r="5" fill="var(--warn)"></circle><text x="112" y="50" font-size="10.5" fill="var(--ink-soft)">created</text>
+            <circle cx="182" cy="46" r="5" fill="var(--ink-faint)"></circle><text x="192" y="50" font-size="10.5" fill="var(--ink-soft)">stopped</text>
+          </g>
+
+          <g>
+            <rect x="16" y="66" width="210" height="150" rx="10" fill="var(--node-fill)" stroke="var(--border)"></rect>
+            <rect x="16" y="66" width="210" height="6" rx="3" fill="var(--accent)"></rect>
+            <text x="32" y="96" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="600" fill="var(--ink)">bgp-basic-3node</text>
+            <text x="210" y="96" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)">@mio197</text>
+            <use href="#rtC" x="32" y="108" width="34" height="21"></use>
+            <use href="#rtC" x="76" y="108" width="34" height="21"></use>
+            <use href="#rtC" x="120" y="108" width="34" height="21"></use>
+            <circle cx="43" cy="136" r="3.5" fill="var(--accent)"></circle><circle cx="87" cy="136" r="3.5" fill="var(--accent)"></circle><circle cx="131" cy="136" r="3.5" fill="var(--accent)"></circle>
+            <text x="32" y="162" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink-soft)">3/3 nodes running</text>
+            <text x="32" y="194" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="var(--ink-faint)">r1 · r2 · r3 (FRR)</text>
+          </g>
+
+          <g>
+            <rect x="246" y="66" width="210" height="150" rx="10" fill="var(--node-fill)" stroke="var(--border)"></rect>
+            <rect x="246" y="66" width="210" height="6" rx="3" fill="var(--ink-faint)"></rect>
+            <text x="262" y="96" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="600" fill="var(--ink)">ospf-lab-old</text>
+            <text x="440" y="96" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)">@mio197</text>
+            <use href="#rtC" x="262" y="108" width="34" height="21" opacity="0.55"></use>
+            <use href="#rtC" x="306" y="108" width="34" height="21" opacity="0.55"></use>
+            <circle cx="273" cy="136" r="3.5" fill="var(--ink-faint)"></circle><circle cx="317" cy="136" r="3.5" fill="var(--ink-faint)"></circle>
+            <text x="262" y="162" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink-soft)">0/2 nodes running</text>
+            <text x="262" y="194" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="var(--ink-faint)">r1 · r2 (FRR)</text>
+          </g>
+
+          <g>
+            <rect x="476" y="66" width="210" height="150" rx="10" fill="var(--node-fill)" stroke="var(--border)"></rect>
+            <rect x="476" y="66" width="210" height="6" rx="3" fill="var(--warn)"></rect>
+            <text x="492" y="96" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="600" fill="var(--ink)">isis-verify</text>
+            <text x="670" y="96" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)">@tora1203</text>
+            <use href="#rtC" x="492" y="108" width="34" height="21"></use>
+            <use href="#rtC" x="536" y="108" width="34" height="21" opacity="0.7"></use>
+            <circle cx="503" cy="136" r="3.5" fill="var(--accent)"></circle><circle cx="547" cy="136" r="3.5" fill="var(--warn)"></circle>
+            <text x="492" y="162" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink-soft)">1/2 nodes running</text>
+            <text x="492" y="194" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="var(--ink-faint)">core1 · core2 (FRR)</text>
+          </g>
+        </svg>
+      </div>
+      <p class="diagram-caption">カード上部の色帯はラボ全体の状態（緑=全ノードrunning、amber=createdを含む、灰=全ノードstopped）。ノード状態フィールドはcontainerlab inspect相当の慣例から推定（実サーバー起動後にSwaggerで確定予定）。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>タスク4：xterm.js統合コンソール</h2>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="task-num">04</span>
+        <h3 style="margin:0;">ローカルechoサーバーで疎通確認</h3>
+      </div>
+      <p><span class="mono">@xterm/xterm</span> を導入し、検証用にローカルWebSocketのechoサーバー（<span class="mono">dev-tools/echo-server.js</span>）を用意。入力した文字がサーバーを経由して画面に表示されることを確認しました。</p>
+      <div class="diagram-wrap" style="margin-top:16px; background:#141f19;">
+        <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ca1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8fd9ab"/></marker>
+            <marker id="ca2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7fd6ff"/></marker>
+          </defs>
+          <rect x="0" y="0" width="700" height="260" fill="#141f19"></rect>
+
+          <rect x="20" y="16" width="150" height="54" rx="8" fill="#1a231d" stroke="#2a352e"></rect>
+          <text x="95" y="38" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#e7ede8">ブラウザ</text>
+          <text x="95" y="54" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="#8fa39a">xterm.js</text>
+
+          <rect x="530" y="16" width="150" height="54" rx="8" fill="#1a231d" stroke="#2a352e"></rect>
+          <text x="605" y="38" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#e7ede8">echoサーバー</text>
+          <text x="605" y="54" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="#8fa39a">ws://localhost:8081</text>
+
+          <path d="M 170 34 L 528 34" stroke="#8fd9ab" stroke-width="1.8" marker-end="url(#ca1)"></path>
+          <text x="350" y="26" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="#8fd9ab">① 入力送信: "hello frr"</text>
+          <path d="M 528 54 L 170 54" stroke="#7fd6ff" stroke-width="1.8" marker-end="url(#ca2)"></path>
+          <text x="350" y="70" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10" fill="#7fd6ff">② そのままエコー返送</text>
+
+          <rect x="20" y="96" width="660" height="148" rx="8" fill="#0f1713" stroke="#2a352e"></rect>
+          <text x="34" y="120" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#aab6ae">integrated console — echo test</text>
+          <line x1="20" y1="130" x2="680" y2="130" stroke="#263129"></line>
+          <text x="34" y="154" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="#8fd9ab">[connected to ws://localhost:8081]</text>
+          <text x="34" y="176" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="#e7ede8">echo server ready. type something.</text>
+          <text x="34" y="198" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="#7fd6ff">hello frr</text>
+          <text x="110" y="198" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#8fa39a">← ①で送信</text>
+          <text x="34" y="220" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="#8fd9ab">hello frr</text>
+          <text x="110" y="220" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#8fa39a">← ②でエコー表示</text>
+          <rect x="34" y="228" width="8" height="14" fill="#e7ede8"></rect>
+        </svg>
+      </div>
+      <p class="note" style="margin-top:12px;">実装中、サーバー側で受信データ(Buffer)をそのまま送り返すとバイナリフレームになり、ブラウザ側で<span class="mono">Blob</span>として届いてxterm.jsに描画されない不具合を発見・修正しました（<span class="mono">data.toString()</span>で文字列化して返送）。実バックエンド接続時も同じ変換をクライアント側に入れてあります。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>リポジトリ構成</h2>
+    <div class="card">
+      <div class="filetree">Free-Networking-labs/
+├── LICENSE
+├── <span class="dir">frontend/</span>              <span class="tag">← 今回追加</span>
+│   ├── package.json         <span class="tag">react, @xyflow/react, @xterm/xterm ...</span>
+│   └── src/
+│       ├── App.tsx              <span class="tag">3画面切替（トポロジ/一覧/コンソール）</span>
+│       ├── components/
+│       │   ├── <span class="new">TopologyEditor.tsx</span>  <span class="tag">React Flowエディタ</span>
+│       │   ├── <span class="new">LabList.tsx</span>         <span class="tag">ラボ一覧カード</span>
+│       │   └── <span class="new">Console.tsx</span>         <span class="tag">xterm.js統合コンソール</span>
+│       ├── mocks/labs.ts        <span class="tag">ダミーラボデータ</span>
+│       └── types/lab.ts         <span class="tag">API型定義（推定）</span>
+└── <span class="dir">dev-tools/</span>             <span class="tag">← 今回追加</span>
+    └── echo-server.js       <span class="tag">動作確認用の疎通テストサーバー</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>次のステップ</h2>
+    <div class="next-list">
+      <div class="next-item">
+        <span class="badge">TASK 5</span>
+        <p><span class="h">実APIへの差し替え</span>バックエンド（clab-api-server）が起動したら、ラボ一覧のダミーデータと統合コンソールのechoサーバー接続を、実際のREST/JWT認証・SSH用WebSocketエンドポイントに差し替えます。</p>
+      </div>
+      <div class="next-item">
+        <span class="badge">保留</span>
+        <p><span class="h">commit / push</span>ここまでの内容はローカルのみで、まだGitHubへはpushしていません。push可否のご指示待ちです。</p>
+      </div>
+      <div class="next-item">
+        <span class="badge">未決</span>
+        <p><span class="h">状態管理ライブラリの選定</span>Zustand / Reduxなど、プロトタイプを進めながら決定予定です。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Free-Networking-labs &middot; frontend prototype</span>
+    <span>2026-09-09</span>
+  </footer>
+
+</div>
