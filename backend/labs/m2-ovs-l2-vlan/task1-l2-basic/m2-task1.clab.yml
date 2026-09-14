@@ -1,0 +1,15 @@
+name: m2-task1
+topology:
+  kinds:
+    linux:
+      image: alpine:3.20
+  nodes:
+    sw1:
+      kind: ovs-bridge
+    pc1:
+      kind: linux
+    pc2:
+      kind: linux
+  links:
+    - endpoints: ["pc1:eth1", "sw1:eth1"]
+    - endpoints: ["pc2:eth1", "sw1:eth2"]

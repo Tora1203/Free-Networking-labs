@@ -1,0 +1,21 @@
+name: m2-task2
+topology:
+  kinds:
+    linux:
+      image: alpine:3.20
+  nodes:
+    sw1:
+      kind: ovs-bridge
+    pc1:
+      kind: linux   # access port, VLAN10
+    pc2:
+      kind: linux   # access port, VLAN20
+    pc3:
+      kind: linux   # access port, VLAN10 (pc1と同一VLANで疎通することを確認)
+    trunk:
+      kind: linux   # trunk port, VLAN10+20 をタグ付きで両方受ける
+  links:
+    - endpoints: ["pc1:eth1", "sw1:eth1"]
+    - endpoints: ["pc2:eth1", "sw1:eth2"]
+    - endpoints: ["pc3:eth1", "sw1:eth3"]
+    - endpoints: ["trunk:eth1", "sw1:eth4"]
