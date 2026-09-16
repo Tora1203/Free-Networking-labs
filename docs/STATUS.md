@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-14 / kawase3（M2 完了：ovs-bridge L2/VLAN、FRR+ovs-bridge+linux 混在疎通）
+最終更新: 2026-09-16 / Bさん（M5 進行中：ノードパレット3種のドラッグ&ドロップ実装、reports/削除対応）
 
 ---
 
@@ -59,19 +59,26 @@
 ## Bさん（フロントエンド）
 
 **Done**
-- （未着手）
+- Vite + React プロジェクト雛形、React Flow (@xyflow/react) 導入
+- ノードパレット3種（ルーター/L2スイッチ/PC）のドラッグ&ドロップ実装
+  （`components/NodePalette.tsx` → `components/TopologyEditor.tsx` にドロップしてノード追加。
+  kind/image は `api-contract.md` 3章の対応表を `types/lab.ts` の `PALETTE_NODE_CONFIGS` に反映）
+- `mocks/labs.ts` の owner を実在アカウント名から架空名（demo-user1/2）に変更
+- `frontend/README.md` をVite雛形のままだったものからプロジェクト向けに更新
+- `dev-tools/`（xterm.js疎通確認用の簡易WebSocketエコーサーバー）を追加。
+  CLAUDE.mdのリポジトリ構成には未記載の新規ディレクトリ（バックエンド未接続でもコンソール表示を先行確認するため）
 
 **Doing**
 - （なし）
 
 **Next**
-- Vite + React プロジェクト雛形、React Flow 導入
-- ノードパレット3種（ルーター/L2スイッチ/PC）
-- `api-contract.md` を見ながらモックでラボ一覧・トポロジ表示
+- `api-contract.md` を見ながらモックでラボ一覧・トポロジ表示の続き（LabList実装済み、詳細は次回）
 
 **Blocked / 相手待ち**
 - 実 API 接続は M4（kawase3 が `api-contract.md` に実レスポンスを記録）待ち。
   それまではモックで先行して問題なし。
+- **kawase3さんへ**：開発サーバーの origin は `http://localhost:5173`（Vite標準、http・ポート変更なし）。
+  CORS設定をお願いします（`api-contract.md` 0章のTODO）。
 
 ---
 
