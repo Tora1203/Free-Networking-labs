@@ -15,7 +15,8 @@
 - [x] M3: clab-api-server 導入・PAM 認証・所有権分離の確認（BE） → `docs/api-contract.md` に実機確認結果を記録
 - [ ] M4: 実 API 挙動を `api-contract.md` に記録（BE → FE のブロッカー解除）
 - [ ] M5: React + React Flow 雛形、3種ノードパレット、モックでラボ一覧/トポロジ表示（FE）
-- [ ] M6: xterm.js をダミー WebSocket に接続して表示確認（FE）
+      （雛形・モックラボ一覧は完了 / ノードパレット3種は未着手 — PR #3 merged）
+- [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
 - [ ] M7: FE のモックを実 API に接続（BE/FE 合流）
 
 ---
