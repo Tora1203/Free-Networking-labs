@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-14 / kawase3（M2 完了：ovs-bridge L2/VLAN、FRR+ovs-bridge+linux 混在疎通）
+最終更新: 2026-09-14 / kawase3（M3 完了：clab-api-server 導入・PAM認証・所有権分離を実機確認）
 
 ---
 
@@ -12,10 +12,11 @@
 
 - [x] M1: FRR 2ノードを CLI で deploy し疎通（BE） → `backend/labs/m1-frr-2node/`
 - [x] M2: FRR / ovs-bridge / linux の3種を1トポロジで疎通、VLAN 確認（BE） → `backend/labs/m2-ovs-l2-vlan/`
-- [ ] M3: clab-api-server 導入・PAM 認証・所有権分離の確認（BE）
+- [x] M3: clab-api-server 導入・PAM 認証・所有権分離の確認（BE） → `docs/api-contract.md` に実機確認結果を記録
 - [ ] M4: 実 API 挙動を `api-contract.md` に記録（BE → FE のブロッカー解除）
 - [ ] M5: React + React Flow 雛形、3種ノードパレット、モックでラボ一覧/トポロジ表示（FE）
-- [ ] M6: xterm.js をダミー WebSocket に接続して表示確認（FE）
+      （雛形・モックラボ一覧は完了 / ノードパレット3種は未着手 — PR #3 merged）
+- [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
 - [ ] M7: FE のモックを実 API に接続（BE/FE 合流）
 
 ---
@@ -44,15 +45,25 @@
     グローバルな名前空間**（トポロジ内はもちろん複数ユーザー間でも衝突しうる）。
     マルチユーザー化（M3でclab-api-server導入時）で命名規則の検討が必須
 
+- **M3完了**：clab-api-server (v0.6.0、内蔵containerlab 0.78.0) を導入し、以下を実機確認
+  - PAM認証（`POST /login`）で`clab_api`グループの非管理者ユーザーがログインできる
+  - **所有権分離を確認**：他ユーザーのラボは一覧にも出ず、名指ししても`404`、ファイルシステムも`drwxr-x---`で本人以外アクセス不可
+  - `clab_admins`グループ＝管理者(superuser)。非管理者が管理者専用APIを叩くと`403`
+  - ノードの個別ライフサイクル操作API（start/stop/restart/pause）の存在を確認（想定していた「再deployで代替」は不要と判明）
+  - CORSはデフォルトで他オリジン拒否。`CORS_ALLOWED_ORIGINS`環境変数でFEのdev origin許可が必要（FEの開発サーバーが立ってから設定）
+  - 詳細・実レスポンス例は`docs/api-contract.md`に記録済み
+
 **Doing**
 - （なし）
 
 **Next**
-- M3: clab-api-server 導入、PAM認証の疎通確認
-- M3: 上記の「OVSブリッジ名のグローバル衝突」対策（ユーザー/ラボ名を含めた命名規則）を検討
+- M4: 統合コンソール（WebSocket/ターミナルセッション）のプロトコル実機確認（`docs/api-contract.md`の2.5 TODO）
+- M4: ノードのライブ状態更新（events系エンドポイント）の実機確認（2.6 TODO）
+- 「OVSブリッジ名のグローバル衝突」対策（ユーザー/ラボ名を含めた命名規則）を決めて`direction.md`に記録
+- Bさんの開発サーバーが立ったら`CORS_ALLOWED_ORIGINS`を設定
 
 **Blocked / 相手待ち**
-- （なし）
+- CORS設定はBさんの開発サーバーのorigin確定待ち
 
 ---
 
@@ -70,8 +81,10 @@
 - `api-contract.md` を見ながらモックでラボ一覧・トポロジ表示
 
 **Blocked / 相手待ち**
-- 実 API 接続は M4（kawase3 が `api-contract.md` に実レスポンスを記録）待ち。
-  それまではモックで先行して問題なし。
+- 実 API 接続そのものはまだだが、`docs/api-contract.md`にログイン/ラボ一覧/deploy/destroyの
+  実レスポンス例を記録済み（M3で確認）。モックのレスポンス形状はこれに合わせて作れる。
+- 開発サーバーを起動したら origin（例: `https://localhost:5173`）を kawase3 に伝えてください
+  → `CORS_ALLOWED_ORIGINS`をサーバー側に設定します（実APIに繋ぐ前でも早めに共有してもらえると助かります）
 
 ---
 
