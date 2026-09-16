@@ -5,6 +5,7 @@
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
 最終更新: 2026-09-17 / kawase3（M4 完了：統合コンソール・ライブ状態更新のプロトコルを実機確認）
+最終更新: 2026-09-17 / Bさん（M5 完了：ノードパレット3種のドラッグ&ドロップ実装）
 
 ---
 
@@ -14,8 +15,8 @@
 - [x] M2: FRR / ovs-bridge / linux の3種を1トポロジで疎通、VLAN 確認（BE） → `backend/labs/m2-ovs-l2-vlan/`
 - [x] M3: clab-api-server 導入・PAM 認証・所有権分離の確認（BE） → `docs/api-contract.md` に実機確認結果を記録
 - [x] M4: 実 API 挙動を `api-contract.md` に記録（BE → FE のブロッカー解除）
-- [ ] M5: React + React Flow 雛形、3種ノードパレット、モックでラボ一覧/トポロジ表示（FE）
-      （雛形・モックラボ一覧は完了 / ノードパレット3種は未着手 — PR #3 merged）
+- [x] M5: React + React Flow 雛形、3種ノードパレット、モックでラボ一覧/トポロジ表示（FE）
+      （雛形・モックラボ一覧は PR #3 merged / ノードパレット3種のドラッグ&ドロップは今回のPRで完了）
 - [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
 - [ ] M7: FE のモックを実 API に接続（BE/FE 合流）
 
@@ -76,21 +77,23 @@
 ## Bさん（フロントエンド）
 
 **Done**
-- （未着手）
+- Vite + React プロジェクト雛形、React Flow (@xyflow/react) 導入、モックでラボ一覧・トポロジ表示（PR #3）
+- ノードパレット3種（ルーター/L2スイッチ/PC）のドラッグ&ドロップ実装
+  （`components/NodePalette.tsx` → `components/TopologyEditor.tsx` にドロップしてノード追加。
+  kind/image は `api-contract.md` 3章の対応表を `types/lab.ts` の `PALETTE_NODE_CONFIGS` に反映）
+- `mocks/labs.ts` の owner を実在アカウント名から架空名に変更
 
 **Doing**
 - （なし）
 
 **Next**
-- Vite + React プロジェクト雛形、React Flow 導入
-- ノードパレット3種（ルーター/L2スイッチ/PC）
-- `api-contract.md` を見ながらモックでラボ一覧・トポロジ表示
+- M7 に向けて、モックのレスポンス形状を `api-contract.md` の実レスポンス例に合わせて調整
 
 **Blocked / 相手待ち**
 - 実 API 接続そのものはまだだが、`docs/api-contract.md`にログイン/ラボ一覧/deploy/destroyの
   実レスポンス例を記録済み（M3で確認）。モックのレスポンス形状はこれに合わせて作れる。
-- 開発サーバーを起動したら origin（例: `https://localhost:5173`）を kawase3 に伝えてください
-  → `CORS_ALLOWED_ORIGINS`をサーバー側に設定します（実APIに繋ぐ前でも早めに共有してもらえると助かります）
+- 開発サーバーの origin は `http://localhost:5173`（Vite標準、ポート変更なし）です。
+  kawase3さん、`CORS_ALLOWED_ORIGINS`の設定をお願いします（`api-contract.md` 0章のTODO）。
 
 ---
 

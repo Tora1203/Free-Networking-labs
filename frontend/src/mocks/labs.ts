@@ -5,7 +5,7 @@ import type { Lab } from '../types/lab'
 export const mockLabs: Lab[] = [
   {
     name: 'bgp-basic-3node',
-    owner: 'mio197',
+    owner: 'demo-user1',
     nodes: [
       { name: 'r1', kind: 'linux', image: 'frrouting/frr:latest', state: 'running', ipv4_address: '172.20.20.2/24' },
       { name: 'r2', kind: 'linux', image: 'frrouting/frr:latest', state: 'running', ipv4_address: '172.20.20.3/24' },
@@ -14,7 +14,7 @@ export const mockLabs: Lab[] = [
   },
   {
     name: 'ospf-lab-old',
-    owner: 'mio197',
+    owner: 'demo-user1',
     nodes: [
       { name: 'r1', kind: 'linux', image: 'frrouting/frr:latest', state: 'exited' },
       { name: 'r2', kind: 'linux', image: 'frrouting/frr:latest', state: 'exited' },
@@ -22,7 +22,7 @@ export const mockLabs: Lab[] = [
   },
   {
     name: 'isis-verify',
-    owner: 'tora1203',
+    owner: 'demo-user2',
     nodes: [
       { name: 'core1', kind: 'linux', image: 'frrouting/frr:latest', state: 'running', ipv4_address: '172.20.21.2/24' },
       { name: 'core2', kind: 'linux', image: 'frrouting/frr:latest', state: 'created' },
