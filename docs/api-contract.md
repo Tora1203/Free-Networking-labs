@@ -125,11 +125,18 @@ FE のパレット3種と containerlab kind の対応:
 | GUI 上の名前 | containerlab kind | image | 備考 |
 |---|---|---|---|
 | ルーター | `linux`（FRR イメージ、専用kindは無し・M1/M2で確認済み） | `quay.io/frrouting/frr:10.2.1` | daemons/frr.conf/vtysh.confを`binds`でマウント |
-| L2スイッチ | `ovs-bridge` | （ホストの OVS） | VLAN: `ovs-vsctl set port ... tag=/trunks=`。**ブリッジ自動生成なし、事前に`ovs-vsctl add-br <ノード名>`が必要**（M2で確認）。ブリッジ名/インターフェース名はホスト全体でグローバル → 命名規則の検討が必要（M3以降の課題、下記参照） |
+| L2スイッチ | `ovs-bridge` | （ホストの OVS） | VLAN: `ovs-vsctl set port ... tag=/trunks=`。**ブリッジ自動生成なし、事前に`ovs-vsctl add-br <ノード名>`が必要**（M2で確認）。ブリッジ名/インターフェース名はホスト全体でグローバル → 命名規則を決定済み（下記参照） |
 | PC/ホスト | `linux` | `alpine:3.20` | |
 
 - FE がトポロジを組んだ結果を、どの形式で BE に渡すか: **`POST /api/v1/labs`の`topologyContent`にJSONオブジェクトとして渡す**（2.2参照、確定）
-- **未解決の課題（M3で発見）**: `ovs-bridge` kindのブリッジ名はホスト全体でグローバルな名前空間のため、複数ユーザーが同時にL2スイッチノードを使うと衝突しうる。FE側でノード名にユーザー名を含めさせる、またはBE側（将来の自作ラッパー）でdeploy前に衝突チェック/リネームする対策が必要 → `TODO`: 対策方針を決めて`docs/direction.md`に記録
+- **ovs-bridgeのブリッジ名衝突対策（2026-09-16 決定、詳細は`docs/direction.md`）**：
+  `ovs-bridge` kindのノードだけ、UI上の表示名とは別に、`POST /api/v1/labs`へ送るJSON内の実際のノード名を
+  `<username>_<labname>_<UI上のノード名>` に変換してから送信する（例: ユーザー`alice`がラボ`lab1`で
+  `sw1`という名前のL2スイッチを置いたら、実際に送るノード名は`alice_lab1_sw1`）。
+  ユーザー名はLinuxアカウント単位で一意なので、これで複数ユーザー間のブリッジ名衝突を防げる。
+  ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
+  `clab-<labname>-<nodename>`で自動的に一意化してくれるため）。
+  → `TODO(Bさん)`: このリネーム処理をFEのdeploy送信ロジックに実装
 
 ## 4. エラー形式
 
