@@ -22,9 +22,9 @@
 - インストール方法: 公式 `install.sh`（systemdサービス化、`/etc/clab-api-server/clab-api-server.env`で設定）
 - `CLAB_LABS_ROOT=/var/lib/containerlab/labs` に設定済み。ユーザーごとに `.../labs/<username>/<labname>/` に分離される（OS権限も `drwxr-x---` でユーザー本人のみアクセス可、確認済み）
 - 公式 Swagger UI: `https://<server>:8090/swagger/index.html`（Swagger JSON: `/swagger/doc.json`）
-- CORS 設定: **デフォルトでは他オリジンからのアクセスは拒否される**（未設定状態でpreflightに`403`を確認）。
-  環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）に FE の開発サーバー origin を追加する必要あり。
-  → `TODO(kawase3)`: Bさんの開発サーバーの実際の origin が決まり次第、`/etc/clab-api-server/clab-api-server.env` に追記して再起動
+- CORS 設定: **設定済み（2026-09-17）**。`CORS_ALLOWED_ORIGINS=http://localhost:5173` を
+  `/etc/clab-api-server/clab-api-server.env` に追記し再起動。実機確認済み（該当originからのpreflightが
+  `204`、`Authorization`ヘッダーも許可）。開発サーバーのポートを変える場合はこの設定も追記が必要
 
 ## 1. 認証
 

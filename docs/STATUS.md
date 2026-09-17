@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-17 / kawase3（M4 完了：統合コンソール・ライブ状態更新のプロトコルを実機確認）
+最終更新: 2026-09-17 / kawase3（CORS設定完了、M7の準備完了）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -64,13 +64,16 @@
 **Doing**
 - （なし）
 
+- **CORS設定完了**：`CORS_ALLOWED_ORIGINS=http://localhost:5173`を設定・`clab-api-server`再起動。
+  実機確認済み（`http://localhost:5173`からのpreflightが`204`、`Authorization`ヘッダーも許可）。
+  → Bさんの開発サーバーから実APIを叩けるようになりました（M7のブロッカー解消）
+
 **Next**
-- 「OVSブリッジ名のグローバル衝突」対策の実装はBさん側でFE実装待ち（方針は決定済み、direction.md参照）
-- Bさんの開発サーバーが立ったら`CORS_ALLOWED_ORIGINS`を設定
 - `/api/v1/events`が複数ユーザー間でイベントを分離しているか未確認（2ユーザー同時接続で要検証）
+- M7でBさんが実API接続を進める中で出てくる疑問点のサポート
 
 **Blocked / 相手待ち**
-- CORS設定はBさんの開発サーバーのorigin確定待ち
+- （なし）
 
 ---
 
