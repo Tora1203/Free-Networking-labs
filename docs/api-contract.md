@@ -108,15 +108,35 @@
   - ラボ全体: `POST /api/v1/labs/{labName}/start` / `/stop` / `/restart`
   - wipe相当: 明示的な`wipe`エンドポイントは無し。`DELETE .../topology/file`や`PUT .../topology/yaml`で構成を変えてから`?reconfigure=true`でdeployし直す形になりそう → `TODO(kawase3)`: 実際に「設定初期化」に近い操作を試して確定
 
-### 2.5 統合コンソール（WebSocket / ターミナル）
-- 想定より機能が多い。関連エンドポイント（**パスは確認済み、プロトコル詳細は未検証・M6でのTODO**）:
-  - `POST /api/v1/labs/{labName}/nodes/{nodeName}/terminal-sessions` → セッション作成
-  - `GET /api/v1/terminal-sessions/{sessionId}/stream` → おそらくこれがWebSocket/SSEのストリーム本体
-  - `POST /api/v1/labs/{labName}/nodes/{nodeName}/ssh`、`POST /api/v1/labs/{labName}/sshx/{action}`、`POST /api/v1/labs/{labName}/gotty/{action}` など、SSH/gotty経由の代替手段も複数用意されている
-- プロトコル（フレーム形式、`{cols,rows}`リサイズ通知など）: `TODO(kawase3)`（M6でxterm.js接続時に実機で確認）
+### 2.5 統合コンソール（WebSocket / ターミナル）— **実機確認済み（2026-09-17）**
+- 手順:
+  1. `POST /api/v1/labs/{labName}/nodes/{nodeName}/terminal-sessions`
+     - `{nodeName}`は**短いノード名ではなくコンテナのフルネーム**（例: `clab-m4-console-test-h1`）を渡す
+     - ボディ: `{"protocol":"shell","cols":80,"rows":24}`（`protocol`は`ssh`/`shell`/`telnet`から選択。`shell`は`docker exec -it <container> <shell>`相当）
+     - レスポンス: `{"sessionId":"...","state":"ready","expiresAt":"...", ...}`
+  2. `GET /api/v1/terminal-sessions/{sessionId}/stream` にWebSocketで接続（`Authorization: Bearer <jwt>`ヘッダーをハンドシェイクに付与すればOK、実機で確認済み）
+- **フレーム形式（全てWebSocketのテキストフレーム＝JSON）**:
+  - 接続直後、サーバーから `{"type":"ready","sessionId":"...","protocol":"shell", ...}`
+  - サーバー→クライアントの出力: `{"type":"output","data":"<base64>","encoding":"base64"}`
+    **出力はbase64エンコードされている**（PTYの生バイト列のため）。xterm.js側でdecodeしてから`term.write()`する必要あり
+  - クライアント→サーバーの入力: `{"type":"input","data":"echo hello\n"}`
+    **こちらは平文（base64ではない）**。実機確認：送った文字列がそのままPTYに渡り、シェルのエコーが`output`フレームとして返ってきた
+  - リサイズ: `{"type":"resize","cols":100,"rows":30}`
+  - 明示終了: `{"type":"close"}`
+- **1セッション1回だけ接続可能**：WS接続が切れる（クライアント側切断含む）と即座にセッションが終了扱いになり、再接続すると`410 Gone {"error":"terminal session has already exited"}`になる（実機確認）。再度使うには`terminal-sessions`を作り直す必要がある
+- 代替手段（未検証・必要になったら確認）: `POST /api/v1/labs/{labName}/nodes/{nodeName}/ssh`（外部SSHクライアント用の一時アクセス情報を返すだけで、ブラウザ内ターミナルには使わない）、`sshx`/`gotty`系
 
-### 2.6 状態更新（ノード/リンクのライブ状態）
-- `GET /api/v1/events`、`GET /api/v1/labs/{labName}/topology/events`、`GET /api/v1/labs/workspace/events` という名前のエンドポイントが存在（SSE/WebSocketでのpush型と推測）→ `TODO(kawase3)`: 実際にpushされるイベント形式をM6手前で確認。無ければ`GET /labs`のポーリングにフォールバック
+### 2.6 状態更新（ノード/リンクのライブ状態）— **実機確認済み（2026-09-17）**
+- `GET /api/v1/events`（**WebSocketではなく、接続を張りっぱなしにするNDJSON応答**。`Content-Type: application/x-ndjson`、1行1JSON、クライアントが切断するまでサーバーは流し続ける）
+  - クエリ: `?initialState=true`で接続直後に現在の状態のスナップショットも流す、`?interfaceStats=true`でインターフェースの送受信バイト数も流す
+  - イベント例（ノードをstop→startした時に実際に流れたもの）:
+    ```json
+    {"timestamp":"2026-09-17T00:52:31.3133445Z","type":"container","action":"die","actor_name":"clab-m4-console-test-h1","attributes":{"clab-node-name":"h1","clab-owner":"clabtest1","containerlab":"m4-console-test","exitCode":"137", "...":"..."}}
+    {"timestamp":"2026-09-17T00:52:33.6081165Z","type":"container","action":"start","actor_name":"clab-m4-console-test-h1","attributes":{"clab-node-name":"h1","clab-owner":"clabtest1","containerlab":"m4-console-test", "...":"..."}}
+    ```
+    `action`は`start`/`stop`/`kill`/`die`/`running`(snapshot)等、Dockerのイベント名に近い。`type: interface`のイベントも流れる（linkのup/down等）
+  - FEはこれをポーリング代替として使える。`attributes.clab-owner`で自分のラボのイベントか判定できそうだが、**他ユーザーのイベントも一緒に流れてくるかは未確認**（今回はテストユーザー1人だけで検証したため）→ `TODO(kawase3)`: 2ユーザー同時接続でイベントの所有権フィルタリングを確認
+  - `GET /api/v1/labs/{labName}/topology/events`、`GET /api/v1/labs/workspace/events`という名前のエンドポイントも存在（おそらく特定ラボ/ワークスペースに絞ったイベント）→ 未検証
 
 ## 3. ノードタイプとトポロジ表現
 
