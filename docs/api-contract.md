@@ -11,6 +11,7 @@
 |---|---|---|
 | 2026-09-10 | kawase3 | 初版（骨組みのみ。実挙動は M3/M4 で追記） |
 | 2026-09-14 | kawase3 | M3: clab-api-server 導入。認証・所有権分離・エラー形式・主要エンドポイントを実機確認して記入 |
+| 2026-09-17 | Bさん | 3章: ovs-bridgeブリッジ名衝突対策の`TODO(Bさん)`を`toClabBridgeName()`実装で解消 |
 
 ---
 
@@ -156,7 +157,7 @@ FE のパレット3種と containerlab kind の対応:
   ユーザー名はLinuxアカウント単位で一意なので、これで複数ユーザー間のブリッジ名衝突を防げる。
   ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
   `clab-<labname>-<nodename>`で自動的に一意化してくれるため）。
-  → `TODO(Bさん)`: このリネーム処理をFEのdeploy送信ロジックに実装
+  → **実装済み**：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`（`TODO(Bさん)`解消。M7で実際のdeploy送信ロジックへの組み込みは今後対応）
 
 ## 4. エラー形式
 

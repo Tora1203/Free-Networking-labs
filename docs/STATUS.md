@@ -5,7 +5,7 @@
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
 最終更新: 2026-09-17 / kawase3（M4 完了：統合コンソール・ライブ状態更新のプロトコルを実機確認）
-最終更新: 2026-09-17 / Bさん（M5 完了：ノードパレット3種のドラッグ&ドロップ実装）
+最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
 
@@ -82,12 +82,15 @@
   （`components/NodePalette.tsx` → `components/TopologyEditor.tsx` にドロップしてノード追加。
   kind/image は `api-contract.md` 3章の対応表を `types/lab.ts` の `PALETTE_NODE_CONFIGS` に反映）
 - `mocks/labs.ts` の owner を実在アカウント名から架空名に変更
+- `types/lab.ts` の `PALETTE_NODE_CONFIGS` を確定値に更新（ルーター image: `quay.io/frrouting/frr:10.2.1`、PC image: `alpine:3.20`）
+- `ovs-bridge`ブリッジ名のグローバル衝突対策を実装：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`（`<username>_<labname>_<ノード名>`形式に変換。2026-09-16決定、`docs/direction.md`参照）。`docs/api-contract.md` 3章のTODOを解消
 
 **Doing**
 - （なし）
 
 **Next**
-- M7 に向けて、モックのレスポンス形状を `api-contract.md` の実レスポンス例に合わせて調整
+- M7に向けて、`toClabBridgeName()` を実際のAPI送信処理（topologyContent組み立て）に組み込む
+- M7に向けて、モックのレスポンス形状を `api-contract.md` の実レスポンス例に合わせて調整
 
 **Blocked / 相手待ち**
 - 実 API 接続そのものはまだだが、`docs/api-contract.md`にログイン/ラボ一覧/deploy/destroyの
@@ -102,5 +105,5 @@
 - （2026-09-16、下記3件はdirection.mdへ決定事項として記録済み）
   - 状態管理ライブラリ → **Zustandに決定**
   - 同時起動ノード数の上限 → **設けない**（実測データはdirection.md参照）
-  - ovs-bridgeのブリッジ名衝突対策 → **`<username>_<labname>_<ノード名>`に決定**（FE実装待ち、api-contract.md参照）
+  - ovs-bridgeのブリッジ名衝突対策 → **`<username>_<labname>_<ノード名>`に決定**（FE実装済み: `toClabBridgeName()`、api-contract.md参照）
 - 企画・設計書のチーム情報（サイクル/チーム名/メンバー欄）の記入 → コード外のタスク、要対応

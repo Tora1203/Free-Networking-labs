@@ -23,13 +23,13 @@ export type PaletteNodeKind = 'router' | 'l2-switch' | 'pc'
 export interface PaletteNodeConfig {
   kind: PaletteNodeKind
   label: string
-  // containerlab kind（api-contract.md 3章、ルーターの実kindはTODO(kawase3)未確定）
+  // containerlab kind（api-contract.md 3章参照）
   clabKind: string
   image: string
 }
 
 export const PALETTE_NODE_CONFIGS: Record<PaletteNodeKind, PaletteNodeConfig> = {
-  router: { kind: 'router', label: 'ルーター', clabKind: 'linux', image: 'quay.io/frrouting/frr:TODO' },
+  router: { kind: 'router', label: 'ルーター', clabKind: 'linux', image: 'quay.io/frrouting/frr:10.2.1' },
   'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'ovs-bridge', image: '' },
-  pc: { kind: 'pc', label: 'PC', clabKind: 'linux', image: 'alpine:TODO' },
+  pc: { kind: 'pc', label: 'PC', clabKind: 'linux', image: 'alpine:3.20' },
 }

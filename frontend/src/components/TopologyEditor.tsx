@@ -68,7 +68,12 @@ function TopologyEditorInner() {
         nds.concat({
           id,
           position,
-          data: { label: `${config.label} (${id})` },
+          data: {
+            label: `${config.label} (${id})`,
+            kind: config.kind,
+            clabKind: config.clabKind,
+            image: config.image,
+          },
         }),
       )
     },

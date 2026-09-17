@@ -65,6 +65,7 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   UI上の表示名は自由に付けられるが、FEが`POST /api/v1/labs`に送るJSON内の`ovs-bridge`kindノード名だけ、
   送信直前にこの形式へ自動変換する（同一ユーザーが同名ラボ・同名ノードを再利用する場合の衝突も回避）。
   実装はFE側の送信直前ロジックで完結する想定。詳細は`docs/api-contract.md`セクション3に追記。
+  → **実装済み（2026-09-17）**：`frontend/src/utils/clabNaming.ts`の`toClabBridgeName()`。呼び出し箇所（実際のAPI送信処理）への組み込みはM7で対応。
 
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
