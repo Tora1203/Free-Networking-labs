@@ -1,12 +1,14 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
+  useReactFlow,
   type Node,
   type Edge,
   type OnConnect,
@@ -14,6 +16,9 @@ import {
   type OnEdgesChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import NodePalette, { DND_MIME_TYPE } from './NodePalette'
+import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
+import './TopologyEditor.css'
 
 const initialNodes: Node[] = [
   { id: 'r1', position: { x: 0, y: 0 }, data: { label: 'router1 (FRR)' } },
@@ -23,9 +28,12 @@ const initialNodes: Node[] = [
 
 const initialEdges: Edge[] = [{ id: 'r1-r2', source: 'r1', target: 'r2' }]
 
-export default function TopologyEditor() {
+function TopologyEditorInner() {
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const nodeIdCounter = useRef(0)
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [edges, setEdges] = useState<Edge[]>(initialEdges)
+  const { screenToFlowPosition } = useReactFlow()
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -40,20 +48,63 @@ export default function TopologyEditor() {
     [],
   )
 
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }, [])
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault()
+      const kind = event.dataTransfer.getData(DND_MIME_TYPE) as PaletteNodeKind
+      const config = PALETTE_NODE_CONFIGS[kind]
+      if (!config) return
+
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      nodeIdCounter.current += 1
+      const id = `${kind}-${nodeIdCounter.current}`
+
+      setNodes((nds) =>
+        nds.concat({
+          id,
+          position,
+          data: {
+            label: `${config.label} (${id})`,
+            kind: config.kind,
+            clabKind: config.clabKind,
+            image: config.image,
+          },
+        }),
+      )
+    },
+    [screenToFlowPosition],
+  )
+
   return (
-    <div style={{ width: '100%', height: '100%' }}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        fitView
-      >
-        <Background />
-        <Controls />
-        <MiniMap />
-      </ReactFlow>
+    <div className="topology-editor">
+      <NodePalette />
+      <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          fitView
+        >
+          <Background />
+          <Controls />
+          <MiniMap />
+        </ReactFlow>
+      </div>
     </div>
+  )
+}
+
+export default function TopologyEditor() {
+  return (
+    <ReactFlowProvider>
+      <TopologyEditorInner />
+    </ReactFlowProvider>
   )
 }
