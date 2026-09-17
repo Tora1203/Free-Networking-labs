@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-14 / kawase3（M3 完了：clab-api-server 導入・PAM認証・所有権分離を実機確認）
+最終更新: 2026-09-17 / kawase3（M4 完了：統合コンソール・ライブ状態更新のプロトコルを実機確認）
 
 ---
 
@@ -13,7 +13,7 @@
 - [x] M1: FRR 2ノードを CLI で deploy し疎通（BE） → `backend/labs/m1-frr-2node/`
 - [x] M2: FRR / ovs-bridge / linux の3種を1トポロジで疎通、VLAN 確認（BE） → `backend/labs/m2-ovs-l2-vlan/`
 - [x] M3: clab-api-server 導入・PAM 認証・所有権分離の確認（BE） → `docs/api-contract.md` に実機確認結果を記録
-- [ ] M4: 実 API 挙動を `api-contract.md` に記録（BE → FE のブロッカー解除）
+- [x] M4: 実 API 挙動を `api-contract.md` に記録（BE → FE のブロッカー解除）
 - [ ] M5: React + React Flow 雛形、3種ノードパレット、モックでラボ一覧/トポロジ表示（FE）
       （雛形・モックラボ一覧は完了 / ノードパレット3種は未着手 — PR #3 merged）
 - [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
@@ -53,14 +53,20 @@
   - CORSはデフォルトで他オリジン拒否。`CORS_ALLOWED_ORIGINS`環境変数でFEのdev origin許可が必要（FEの開発サーバーが立ってから設定）
   - 詳細・実レスポンス例は`docs/api-contract.md`に記録済み
 
+- **M4完了**：統合コンソール・ライブ状態更新のプロトコルを実機確認（`docs/api-contract.md`の2.5/2.6に詳細記録）
+  - 統合コンソール：`terminal-sessions`でセッション作成→`stream`にWebSocket接続。
+    サーバー→クライアントの出力は`{"type":"output","data":"<base64>"}`（**base64エンコードされている点に注意**）、
+    クライアント→サーバーの入力は平文。1セッション1回のみ接続可（切断済みは`410`）
+  - ライブ状態更新：`GET /api/v1/events`はWebSocketではなく**接続しっぱなしのNDJSON**。
+    ノードのstart/stop/killやインターフェースのstate変化が逐次流れてくる、実データ取得済み
+
 **Doing**
 - （なし）
 
 **Next**
-- M4: 統合コンソール（WebSocket/ターミナルセッション）のプロトコル実機確認（`docs/api-contract.md`の2.5 TODO）
-- M4: ノードのライブ状態更新（events系エンドポイント）の実機確認（2.6 TODO）
-- 「OVSブリッジ名のグローバル衝突」対策（ユーザー/ラボ名を含めた命名規則）を決めて`direction.md`に記録
+- 「OVSブリッジ名のグローバル衝突」対策の実装はBさん側でFE実装待ち（方針は決定済み、direction.md参照）
 - Bさんの開発サーバーが立ったら`CORS_ALLOWED_ORIGINS`を設定
+- `/api/v1/events`が複数ユーザー間でイベントを分離しているか未確認（2ユーザー同時接続で要検証）
 
 **Blocked / 相手待ち**
 - CORS設定はBさんの開発サーバーのorigin確定待ち
