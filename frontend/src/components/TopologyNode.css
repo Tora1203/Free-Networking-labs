@@ -65,11 +65,14 @@
 
 /* 普段は隠しておき、ノードにカーソルを近づけた時・選択中・接続作業中だけ見せる
    （常時4つの丸が出ていると見た目がうるさいため）。
-   connectingfrom/connectionindicator は @xyflow/react が接続操作中に自動で付けるクラス
-   （node_modules/@xyflow/react/dist/base.css で確認） */
+   注意: `connectionindicator` は「接続開始点として有効」なら常時付くクラスで、
+   ドラッグ中かどうかとは無関係（@xyflow/react/dist/esm/index.mjs で確認済み）。
+   ここでは使わない。実際にドラッグ中を示すのは connectingfrom（ドラッグ元）/
+   connectingto・valid（ドラッグ中の有効な接続先）のみ。 */
 .topo-node:hover .topo-node__handle,
 .topo-node--selected .topo-node__handle,
 .topo-node__handle.connectingfrom,
-.topo-node__handle.connectionindicator {
+.topo-node__handle.connectingto,
+.topo-node__handle.valid {
   opacity: 1;
 }
