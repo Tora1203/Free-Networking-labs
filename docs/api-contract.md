@@ -40,9 +40,10 @@
     { "token": "<JWT>" }
     ```
     JWTのペイロードは `{"username": "...", "sub": "...", "exp": ..., "iat": ...}`
-  - 認証失敗時: `401 {"error":"..."}`（`TODO`: 実際の文言はPAM側のエラーに依存、要再確認）
+  - 認証失敗時（実機確認済み・2026-09-24）: `401 {"error":"Invalid username or password"}`（存在しないユーザー名でも同じ文言。ユーザー存在有無を教えないタイプ）
 - 以降のリクエストへのトークン付与方法: `Authorization: Bearer <jwt>` ヘッダー（未指定だと `401 {"error":"Authorization header required"}`）
-- トークン有効期限: ログイン時の `sessionDuration`（デフォルト `24h`）。リフレッシュ用エンドポイントは今回のパス一覧には見当たらず → `TODO`: 再ログイン以外の手段があるか要確認
+- トークン有効期限: ログイン時の `sessionDuration`（デフォルト `24h`）。**リフレッシュ/ログアウト用エンドポイントは無い**（Swagger全パスを確認済み・2026-09-24）。
+  期限が切れたら再度`POST /login`する以外の手段は無い → FE側はトークン期限切れ（`401`）を検知したらログイン画面に戻す実装が必要
 
 ## 2. このプロジェクトで使うエンドポイント
 
@@ -107,7 +108,10 @@
   - `POST /api/v1/labs/{labName}/nodes/{nodeName}/restart`
   - `POST /api/v1/labs/{labName}/nodes/{nodeName}/pause` / `/unpause`
   - ラボ全体: `POST /api/v1/labs/{labName}/start` / `/stop` / `/restart`
-  - wipe相当: 明示的な`wipe`エンドポイントは無し。`DELETE .../topology/file`や`PUT .../topology/yaml`で構成を変えてから`?reconfigure=true`でdeployし直す形になりそう → `TODO(kawase3)`: 実際に「設定初期化」に近い操作を試して確定
+  - **wipe相当（実機確認済み・2026-09-24）**: 明示的な`wipe`エンドポイントは無いが、
+    `POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>` に**同じ**`topologyContent`を渡すことで、
+    指定ノードだけコンテナを破棄→再作成できる（`container_id`が変わり、コンテナ内の状態は消える。
+    他ノードは触られない）。FEの「wipeボタン」はこの呼び出しで実現できる
 
 ### 2.5 統合コンソール（WebSocket / ターミナル）— **実機確認済み（2026-09-17）**
 - 手順:
@@ -136,7 +140,9 @@
     {"timestamp":"2026-09-17T00:52:33.6081165Z","type":"container","action":"start","actor_name":"clab-m4-console-test-h1","attributes":{"clab-node-name":"h1","clab-owner":"clabtest1","containerlab":"m4-console-test", "...":"..."}}
     ```
     `action`は`start`/`stop`/`kill`/`die`/`running`(snapshot)等、Dockerのイベント名に近い。`type: interface`のイベントも流れる（linkのup/down等）
-  - FEはこれをポーリング代替として使える。`attributes.clab-owner`で自分のラボのイベントか判定できそうだが、**他ユーザーのイベントも一緒に流れてくるかは未確認**（今回はテストユーザー1人だけで検証したため）→ `TODO(kawase3)`: 2ユーザー同時接続でイベントの所有権フィルタリングを確認
+  - **複数ユーザー間の分離を実機確認済み（2026-09-24）**：2アカウントで同時に接続し、片方のラボをstart/stopしても、
+    もう片方のストリームには一切流れてこないことを確認（サーバー側でユーザーごとにフィルタリングされている）。
+    FEはそのまま「自分がログイン中のユーザーのイベントだけ届く」前提で実装してよい
   - `GET /api/v1/labs/{labName}/topology/events`、`GET /api/v1/labs/workspace/events`という名前のエンドポイントも存在（おそらく特定ラボ/ワークスペースに絞ったイベント）→ 未検証
 
 ## 3. ノードタイプとトポロジ表現
