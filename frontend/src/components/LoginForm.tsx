@@ -19,7 +19,7 @@ export default function LoginForm() {
   return (
     <div className="login-form">
       <form className="login-form__card" onSubmit={onSubmit}>
-        <img className="login-form__logo" src="/logo.svg" alt="ロゴ" />
+        <img className="login-form__logo" src="/logo.png" alt="ロゴ" />
         <h1>ログイン</h1>
         <p className="login-form__hint">
           Linuxアカウント（clab_api / clab_admins グループ）でログインしてください

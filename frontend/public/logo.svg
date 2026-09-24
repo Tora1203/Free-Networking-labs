@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <!-- 仮のロゴです。frontend/public/logo.svg をこのファイルごと差し替えてください。 -->
-  <circle cx="16" cy="7" r="4" fill="#1f9d55"/>
-  <rect x="4" y="21" width="9" height="9" rx="2" fill="#b45309"/>
-  <rect x="19" y="21" width="9" height="9" rx="2" fill="#4d5a52"/>
-  <path d="M16 11v6M16 17 8 21M16 17l8 4" stroke="#8a988e" stroke-width="2" stroke-linecap="round"/>
-</svg>
