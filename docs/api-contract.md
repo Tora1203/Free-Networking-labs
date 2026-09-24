@@ -13,6 +13,7 @@
 | 2026-09-14 | kawase3 | M3: clab-api-server 導入。認証・所有権分離・エラー形式・主要エンドポイントを実機確認して記入 |
 | 2026-09-17 | Bさん | 3章: ovs-bridgeブリッジ名衝突対策の`TODO(Bさん)`を`toClabBridgeName()`実装で解消 |
 | 2026-09-24 | kawase3 | 1章: ログイン失敗文言・トークンリフレッシュ無しを確認。2.4: wipe相当の操作を確定。2.6: events複数ユーザー分離を確認。3章: ovs-bridge命名規則を15文字制限の判明により改訂（ハッシュ方式に変更）、M7の一部（deploy送信ロジック）を先行実装 |
+| 2026-09-24 | kawase3 | 2.5: ブラウザから統合コンソールWebSocketに直接接続できない問題を発見、`console-proxy`を追加して解消。実機で通し確認・M7の一部として先行実装 |
 
 ---
 
@@ -131,6 +132,16 @@
   - 明示終了: `{"type":"close"}`
 - **1セッション1回だけ接続可能**：WS接続が切れる（クライアント側切断含む）と即座にセッションが終了扱いになり、再接続すると`410 Gone {"error":"terminal session has already exited"}`になる（実機確認）。再度使うには`terminal-sessions`を作り直す必要がある
 - 代替手段（未検証・必要になったら確認）: `POST /api/v1/labs/{labName}/nodes/{nodeName}/ssh`（外部SSHクライアント用の一時アクセス情報を返すだけで、ブラウザ内ターミナルには使わない）、`sshx`/`gotty`系
+
+- **⚠️ ブラウザから直接は接続できない（2026-09-24発見、要`console-proxy`経由）**：
+  上記2.のWebSocket認証は`Authorization`ヘッダーのみ対応（ソースコード確認済み。クエリパラメータ/Cookie等は無い）。
+  一方ブラウザの`WebSocket` APIはハンドシェイク時にカスタムヘッダーを設定できないため、直接は接続不可能。
+  対策として`backend/console-proxy/`（Node.js中継プロキシ）を追加した。ブラウザ側のプロトコルは：
+  1. `ws://<console-proxy>/console?sessionId=<terminal session id>` に接続
+  2. 接続直後、**最初のメッセージ**として `{"token":"<jwt>"}` を送る（トークンをURLに含めない）
+  3. 以降は上記のフレーム形式がそのまま中継されてくる
+  詳細は`backend/console-proxy/README.md`・`docs/direction.md`（2026-09-24追記）参照。
+  実機で認証込みの通し（トークン検証→シェル起動→入出力）を確認済み。
 
 ### 2.6 状態更新（ノード/リンクのライブ状態）— **実機確認済み（2026-09-17）**
 - `GET /api/v1/events`（**WebSocketではなく、接続を張りっぱなしにするNDJSON応答**。`Content-Type: application/x-ndjson`、1行1JSON、クライアントが切断するまでサーバーは流し続ける）

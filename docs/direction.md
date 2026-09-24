@@ -76,6 +76,25 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   想定利用規模（数人×数ラボ）では衝突確率は無視できるレベル。実装は`toClabBridgeName()`を修正、
   実機で実際にL2疎通するところまで確認済み（`docs/api-contract.md`参照）。
 
+## 決定事項（2026-09-24追記）：アーキテクチャに`console-proxy`を追加
+
+当初のアーキテクチャ（overview.md参照）は「BE = clab-api-serverのみ」を想定していたが、
+統合コンソール機能の実装にあたり、**軽量なWebSocket中継プロキシをもう1つ追加する**ことにした。
+
+- **理由**：`clab-api-server`の統合コンソール用WebSocket
+  （`GET /api/v1/terminal-sessions/{id}/stream`）は`Authorization`ヘッダーでしか認証できない
+  （ソースコード・実機確認済み。クエリパラメータ/Cookie等の代替は無い）。一方、ブラウザの
+  `WebSocket` APIはハンドシェイク時にカスタムヘッダーを一切設定できない（回避不可能な仕様上の制約）。
+  → ブラウザから直接`clab-api-server`のこのエンドポイントには接続できない
+- **対応**：ブラウザ⇄`console-proxy`⇄`clab-api-server`という構成にする。`console-proxy`は
+  ブラウザからは（URLではなく最初のWSメッセージとして）トークンを受け取り、代わりに
+  `Authorization`ヘッダー付きで`clab-api-server`に接続し、以降はメッセージをそのまま中継するだけの
+  薄いレイヤー。実装は`backend/console-proxy/`（Node.js + `ws`ライブラリ、`dev-tools/echo-server.js`と
+  同系統の小さなサービス）
+- 実機で認証込みの通しの動作を確認済み（トークン検証→シェル起動→入出力の中継まで）
+- この構成変更を反映し、`docs/overview.md`のアーキテクチャ図も更新が必要
+  → `TODO(kawase3)`: overview.mdの図に`console-proxy`を追記
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

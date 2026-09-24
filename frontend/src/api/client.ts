@@ -24,6 +24,12 @@ export function setUnauthorizedHandler(handler: () => void) {
   onUnauthorized = handler
 }
 
+// 統合コンソール(WebSocket)のプロキシ接続で使う。api/client.ts自身はfetchしか使わないため
+// authTokenを外に出す必要は無かったが、Console.tsx側でWS接続時にトークンを送る必要がある。
+export function getAuthToken() {
+  return authToken
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
@@ -112,6 +118,25 @@ function nodeAction(labName: string, nodeName: string, action: 'start' | 'stop' 
 export const startNode = (labName: string, nodeName: string) => nodeAction(labName, nodeName, 'start')
 export const stopNode = (labName: string, nodeName: string) => nodeAction(labName, nodeName, 'stop')
 export const restartNode = (labName: string, nodeName: string) => nodeAction(labName, nodeName, 'restart')
+
+// 統合コンソール用セッション作成（api-contract.md 2.5、2026-09-24実機確認）。
+// 注意: nodeNameは短いノード名ではなく、コンテナのフルネーム（clab-<labname>-<nodename>）を渡す。
+export interface TerminalSessionInfo {
+  sessionId: string
+  labName: string
+  nodeName: string
+  protocol: string
+  state: string
+  createdAt: string
+  expiresAt: string
+}
+
+export function createTerminalSession(labName: string, containerName: string) {
+  return request<TerminalSessionInfo>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/nodes/${encodeURIComponent(containerName)}/terminal-sessions`,
+    { method: 'POST', body: JSON.stringify({ protocol: 'shell', cols: 80, rows: 24 }) },
+  )
+}
 
 // wipe相当（api-contract.md 2.4、2026-09-24実機確認）:
 // 同一 topologyContent を reconfigure=true & nodeFilter=<node> 付きで送ると、

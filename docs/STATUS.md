@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-24 / kawase3（Bさん休暇中にM7の一部を先行実装。frontend/を触った理由は下記Doing参照）
+最終更新: 2026-09-24 / kawase3（Bさん休暇中にM7の一部を先行実装。統合コンソール用に`console-proxy`を新設。frontend/を触った理由は下記Doing参照）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -19,8 +19,8 @@
       （雛形・モックラボ一覧は PR #3 merged / ノードパレット3種のドラッグ&ドロップは今回のPRで完了）
 - [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
 - [ ] M7: FE のモックを実 API に接続（BE/FE 合流）
-      （ログイン・ラボ一覧・トポロジのdeployは先行実装済み[kawase3、Bさん休暇中]。
-      ラボ操作ボタン・統合コンソールの実接続は未着手）
+      （ログイン・ラボ一覧・トポロジのdeploy・統合コンソールの実接続まで先行実装済み[kawase3、Bさん休暇中]。
+      ラボ一覧からのstart/stop/destroy操作は未着手）
 
 ---
 
@@ -81,8 +81,19 @@
     実機検証で**Linuxのネットワークインターフェース名が15文字までという制約（`IFNAMSIZ`）**に
     引っかかり実運用不可と判明（16文字以上で`ovs-vsctl add-br`が失敗）。ハッシュベースの
     短い名前（`sw-`+8桁16進数、11文字）に変更した。詳細は`docs/direction.md`・`docs/api-contract.md`参照
-  - 未着手のまま残っているM7範囲：ラボ一覧からのstart/stop/destroy操作、統合コンソールの実API接続、
+  - 未着手のまま残っているM7範囲（この後さらに進めた分は下記）：ラボ一覧からのstart/stop/destroy操作、
     wipeボタンのUI化、エラー時のUX磨き込み
+
+- **統合コンソールを実API接続（新規アーキテクチャコンポーネント`console-proxy`を追加）**：
+  `clab-api-server`の統合コンソール用WebSocketは`Authorization`ヘッダーでしか認証できないが、
+  ブラウザの`WebSocket` APIはハンドシェイク時にカスタムヘッダーを設定できない（実機・ソース確認済み、
+  回避不可能な仕様制約）ため、ブラウザから直接は接続できないことが判明。
+  `backend/console-proxy/`（Node.js中継プロキシ）を新設して解消した：
+  ブラウザ→`console-proxy`（最初のWSメッセージでトークンを渡す）→`clab-api-server`
+  （`Authorization`ヘッダー付きで接続）という構成。`Console.tsx`をこの構成で実装し直し、
+  実機で認証込みの通し（トークン検証→シェル起動→入出力の中継）を確認済み。
+  `docs/direction.md`・`docs/overview.md`のアーキテクチャ図も更新済み。
+  - **開発時は`console-proxy`を別途起動する必要がある**（`cd backend/console-proxy && npm install && npm start`）
 
 - **CORS設定完了**：`CORS_ALLOWED_ORIGINS=http://localhost:5173`を設定・`clab-api-server`再起動。
   実機確認済み（`http://localhost:5173`からのpreflightが`204`、`Authorization`ヘッダーも許可）。
@@ -95,8 +106,8 @@
     指定ノードだけコンテナを再生成できる（他ノードは無影響）。詳細は`docs/api-contract.md`参照
 
 **Next**
-- Bさんの休み明けに、今回のfrontend/への変更をレビューしてもらう
-- 残りのM7範囲（ラボ操作ボタン、統合コンソールの実接続等）はBさんの復帰後に分担を相談
+- Bさんの休み明けに、今回のfrontend/・backend/console-proxy/への変更をレビューしてもらう
+- 残りのM7範囲（ラボ一覧のstart/stop/destroy操作、wipeボタンのUI化）を引き続き進める
 
 **Blocked / 相手待ち**
 - （なし）
