@@ -1,0 +1,40 @@
+/* ライト/ダーク共通のカラートークン。data-theme="dark" をルート要素に付けると切り替わる。 */
+:root {
+  --bg: #f5f6f3;
+  --surface: #ffffff;
+  --surface-2: #eceee7;
+  --ink: #141f19;
+  --ink-soft: #4d5a52;
+  --ink-faint: #7c887f;
+  --border: #d9ddd0;
+  --accent: #1f9d55;
+  --accent-ink: #ffffff;
+  --warn: #b45309;
+
+  --node-router: #2f6fed;
+  --node-switch: #b45309;
+  --node-pc: #4d5a52;
+  --edge: #8a988e;
+
+  --term-bg: #141f19;
+}
+
+:root[data-theme='dark'] {
+  --bg: #12171a;
+  --surface: #1a2126;
+  --surface-2: #202a30;
+  --ink: #e7ede8;
+  --ink-soft: #aab6ae;
+  --ink-faint: #7e8b83;
+  --border: #2c3a36;
+  --accent: #46d17a;
+  --accent-ink: #0d1310;
+  --warn: #f0a94e;
+
+  --node-router: #6fa2ff;
+  --node-switch: #f0a94e;
+  --node-pc: #aab6ae;
+  --edge: #5c6b60;
+
+  --term-bg: #0d1310;
+}

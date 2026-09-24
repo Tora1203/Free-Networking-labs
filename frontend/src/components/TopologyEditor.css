@@ -10,6 +10,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
 }
 
 .topology-editor__toolbar {
@@ -18,23 +19,25 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid #d9ddd0;
+  border-bottom: 1px solid var(--border);
 }
 
 .topology-editor__lab-name {
   font-size: 13px;
   padding: 5px 8px;
-  border: 1px solid #d9ddd0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   width: 160px;
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .topology-editor__toolbar button {
   padding: 6px 14px;
   border: none;
   border-radius: 6px;
-  background: #1f9d55;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -49,15 +52,43 @@
 }
 
 .topology-editor__status--ok {
-  color: #1f9d55;
+  color: var(--accent);
 }
 
 .topology-editor__status--error {
-  color: #b45309;
+  color: var(--warn);
 }
 
 .topology-editor__canvas {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  position: relative;
+}
+
+.topology-editor__context-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.topology-editor__context-menu button {
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topology-editor__context-menu button:hover {
+  background: var(--surface-2);
 }

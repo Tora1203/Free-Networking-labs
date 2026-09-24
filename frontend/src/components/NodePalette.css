@@ -2,8 +2,8 @@
   flex: none;
   width: 160px;
   padding: 12px;
-  background: #eceee7;
-  border-right: 1px solid #d9ddd0;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -12,22 +12,22 @@
 .node-palette__title {
   margin: 0;
   font-size: 13px;
-  color: #4d5a52;
+  color: var(--ink-soft);
 }
 
 .node-palette__hint {
   margin: -4px 0 4px;
   font-size: 11px;
-  color: #8a9188;
+  color: var(--ink-faint);
 }
 
 .node-palette__item {
   padding: 8px 10px;
   border-radius: 6px;
-  border: 1px solid #d9ddd0;
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--surface);
   font-size: 13px;
-  color: #29332c;
+  color: var(--ink);
   cursor: grab;
   user-select: none;
 }
@@ -37,13 +37,13 @@
 }
 
 .node-palette__item--router {
-  border-left: 4px solid #1f9d55;
+  border-left: 4px solid var(--node-router);
 }
 
 .node-palette__item--l2-switch {
-  border-left: 4px solid #2f6fed;
+  border-left: 4px solid var(--node-switch);
 }
 
 .node-palette__item--pc {
-  border-left: 4px solid #b0752b;
+  border-left: 4px solid var(--node-pc);
 }

@@ -3,6 +3,8 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
 }
 
 .app-nav {
@@ -10,8 +12,8 @@
   display: flex;
   gap: 4px;
   padding: 8px 12px;
-  background: #eceee7;
-  border-bottom: 1px solid #d9ddd0;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
 }
 
 .app-nav__btn {
@@ -20,13 +22,13 @@
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 13px;
-  color: #4d5a52;
+  color: var(--ink-soft);
   cursor: pointer;
 }
 
 .app-nav__btn--active {
-  background: #1f9d55;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .app-nav__spacer {
@@ -37,7 +39,7 @@
   align-self: center;
   font-size: 12px;
   font-family: ui-monospace, monospace;
-  color: #7c887f;
+  color: var(--ink-faint);
   margin-right: 4px;
 }
 

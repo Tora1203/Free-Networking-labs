@@ -105,6 +105,18 @@
   - wipe相当の操作を確定：`POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>`で同一topologyContentを送ると、
     指定ノードだけコンテナを再生成できる（他ノードは無影響）。詳細は`docs/api-contract.md`参照
 
+- **トポロジエディタのUX改善（実際に動かしたkawase3からの指摘6件に対応）**
+  - ノード種別ごとに形・色・略称（R=円/青、SW=角丸四角/オレンジ、PC=四角/グレー）で判別できるように
+    カスタムノードコンポーネント（`TopologyNode.tsx`）を追加
+  - ドロップしたノードに自動で短い表示名（R1, SW1, PC1...）を振るように（種別ごとに独立したカウンター）
+  - リンクに接続インターフェース名（例: `eth1↔eth2`）をラベル表示。deploy時に実際に割り当てる
+    インターフェース番号と同じロジック（`assignInterfaces()`）を共有し、表示とdeploy結果が食い違わないようにした
+  - エッジを直線・太め（`type: 'straight'`, 2px）に変更
+  - ノードを右クリックすると「名前を変更」「削除」のコンテキストメニューが出るように
+  - ダーク/ライトモード切り替えボタンを追加（`theme.css`でCSS変数化、localStorageに保存、
+    OS設定の`prefers-color-scheme`にも初期値として追従）
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build` すべて確認済み。開発中のdevサーバーでHMR確認済み
+
 **Next**
 - Bさんの休み明けに、今回のfrontend/・backend/console-proxy/への変更をレビューしてもらう
 - 残りのM7範囲（ラボ一覧のstart/stop/destroy操作、wipeボタンのUI化）を引き続き進める

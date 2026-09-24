@@ -3,7 +3,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #141f19;
+  background: var(--term-bg);
 }
 
 .console-pane__bar {
@@ -14,18 +14,18 @@
   padding: 6px 12px;
   font-family: ui-monospace, monospace;
   font-size: 11.5px;
-  color: #aab6ae;
-  border-bottom: 1px solid #263129;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--border);
 }
 
 .console-pane__input {
   font-size: 11.5px;
   font-family: ui-monospace, monospace;
   padding: 4px 6px;
-  border: 1px solid #3a463d;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: #182019;
-  color: #e7ede8;
+  background: var(--surface);
+  color: var(--ink);
   width: 110px;
 }
 
@@ -33,8 +33,8 @@
   padding: 4px 10px;
   border: none;
   border-radius: 4px;
-  background: #1f9d55;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-size: 11.5px;
   cursor: pointer;
 }
@@ -45,7 +45,7 @@
 }
 
 .console-pane__status {
-  color: #f0a94e;
+  color: var(--warn);
 }
 
 .console-pane__term {

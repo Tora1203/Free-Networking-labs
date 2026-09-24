@@ -4,7 +4,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f5f6f3;
+  background: var(--bg);
 }
 
 .login-form__card {
@@ -12,8 +12,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  background: #fff;
-  border: 1px solid #d9ddd0;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 28px 24px;
 }
@@ -21,12 +21,13 @@
 .login-form__card h1 {
   margin: 0;
   font-size: 18px;
+  color: var(--ink);
 }
 
 .login-form__hint {
   margin: 0 0 4px;
   font-size: 12px;
-  color: #7c887f;
+  color: var(--ink-faint);
 }
 
 .login-form__field {
@@ -34,20 +35,22 @@
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
-  color: #4d5a52;
+  color: var(--ink-soft);
 }
 
 .login-form__field input {
   font-size: 14px;
   padding: 6px 8px;
-  border: 1px solid #d9ddd0;
+  border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .login-form__error {
   margin: 0;
   font-size: 12px;
-  color: #b45309;
+  color: var(--warn);
 }
 
 .login-form__card button {
@@ -55,8 +58,8 @@
   padding: 8px 12px;
   border: none;
   border-radius: 6px;
-  background: #1f9d55;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-size: 14px;
   cursor: pointer;
 }
