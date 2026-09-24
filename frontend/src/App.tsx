@@ -47,6 +47,7 @@ function App() {
   return (
     <div className="app-shell">
       <nav className="app-nav">
+        <img className="app-nav__logo" src="/logo.svg" alt="ロゴ" />
         {views.map((v) => (
           <button
             key={v.id}

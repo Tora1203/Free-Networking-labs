@@ -18,10 +18,17 @@
   padding: 28px 24px;
 }
 
+.login-form__logo {
+  width: 48px;
+  height: 48px;
+  align-self: center;
+}
+
 .login-form__card h1 {
   margin: 0;
   font-size: 18px;
   color: var(--ink);
+  text-align: center;
 }
 
 .login-form__hint {

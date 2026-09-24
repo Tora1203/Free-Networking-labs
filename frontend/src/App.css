@@ -10,10 +10,17 @@
 .app-nav {
   flex: none;
   display: flex;
+  align-items: center;
   gap: 4px;
   padding: 8px 12px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
+}
+
+.app-nav__logo {
+  width: 26px;
+  height: 26px;
+  margin-right: 8px;
 }
 
 .app-nav__btn {

@@ -59,4 +59,17 @@
   height: 8px;
   background: var(--ink-faint);
   border: 1px solid var(--surface);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* 普段は隠しておき、ノードにカーソルを近づけた時・選択中・接続作業中だけ見せる
+   （常時4つの丸が出ていると見た目がうるさいため）。
+   connectingfrom/connectionindicator は @xyflow/react が接続操作中に自動で付けるクラス
+   （node_modules/@xyflow/react/dist/base.css で確認） */
+.topo-node:hover .topo-node__handle,
+.topo-node--selected .topo-node__handle,
+.topo-node__handle.connectingfrom,
+.topo-node__handle.connectionindicator {
+  opacity: 1;
 }
