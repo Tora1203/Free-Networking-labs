@@ -79,6 +79,16 @@
   background: #b45309;
 }
 
+.lab-dot--paused {
+  background: #7c887f;
+}
+
+.lab-list__error {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #b45309;
+}
+
 .lab-card__meta {
   font-size: 12px;
   color: #4d5a52;

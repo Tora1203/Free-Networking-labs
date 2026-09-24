@@ -66,6 +66,34 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   送信直前にこの形式へ自動変換する（同一ユーザーが同名ラボ・同名ノードを再利用する場合の衝突も回避）。
   実装はFE側の送信直前ロジックで完結する想定。詳細は`docs/api-contract.md`セクション3に追記。
   → **実装済み（2026-09-17）**：`frontend/src/utils/clabNaming.ts`の`toClabBridgeName()`。呼び出し箇所（実際のAPI送信処理）への組み込みはM7で対応。
+  → **⚠️ 2026-09-24 訂正**：`<username>_<labname>_<ノード名>`という連結方式そのものが誤りだった。
+  実機検証で、**Linuxのネットワークインターフェース名は15文字まで**（`IFNAMSIZ`、カーネルの制約。
+  `ovs-vsctl add-br`で16文字以上を渡すと「Invalid argument」で失敗することを確認）という制限に
+  引っかかることが判明。現実的なusername/labname/ノード名の組み合わせは簡単に15文字を超えるため、
+  この方式は実運用に耐えない。**方式を変更**：username/labName/nodeNameの組み合わせを
+  軽量なハッシュ（FNV-1a 32bit）にかけ、`sw-` + 8桁16進数（合計11文字）を使う方式に修正した。
+  ブリッジ名から人間には元の名前が読み取れなくなるトレードオフはあるが、このプロジェクトの
+  想定利用規模（数人×数ラボ）では衝突確率は無視できるレベル。実装は`toClabBridgeName()`を修正、
+  実機で実際にL2疎通するところまで確認済み（`docs/api-contract.md`参照）。
+
+## 決定事項（2026-09-24追記）：アーキテクチャに`console-proxy`を追加
+
+当初のアーキテクチャ（overview.md参照）は「BE = clab-api-serverのみ」を想定していたが、
+統合コンソール機能の実装にあたり、**軽量なWebSocket中継プロキシをもう1つ追加する**ことにした。
+
+- **理由**：`clab-api-server`の統合コンソール用WebSocket
+  （`GET /api/v1/terminal-sessions/{id}/stream`）は`Authorization`ヘッダーでしか認証できない
+  （ソースコード・実機確認済み。クエリパラメータ/Cookie等の代替は無い）。一方、ブラウザの
+  `WebSocket` APIはハンドシェイク時にカスタムヘッダーを一切設定できない（回避不可能な仕様上の制約）。
+  → ブラウザから直接`clab-api-server`のこのエンドポイントには接続できない
+- **対応**：ブラウザ⇄`console-proxy`⇄`clab-api-server`という構成にする。`console-proxy`は
+  ブラウザからは（URLではなく最初のWSメッセージとして）トークンを受け取り、代わりに
+  `Authorization`ヘッダー付きで`clab-api-server`に接続し、以降はメッセージをそのまま中継するだけの
+  薄いレイヤー。実装は`backend/console-proxy/`（Node.js + `ws`ライブラリ、`dev-tools/echo-server.js`と
+  同系統の小さなサービス）
+- 実機で認証込みの通しの動作を確認済み（トークン検証→シェル起動→入出力の中継まで）
+- この構成変更を反映し、`docs/overview.md`のアーキテクチャ図も更新が必要
+  → `TODO(kawase3)`: overview.mdの図に`console-proxy`を追記
 
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**

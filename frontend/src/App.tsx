@@ -2,6 +2,8 @@ import { useState } from 'react'
 import TopologyEditor from './components/TopologyEditor'
 import LabList from './components/LabList'
 import ConsolePane from './components/Console'
+import LoginForm from './components/LoginForm'
+import { useAuthStore } from './store/authStore'
 import './App.css'
 
 type View = 'topology' | 'labs' | 'console'
@@ -14,6 +16,12 @@ const views: { id: View; label: string }[] = [
 
 function App() {
   const [view, setView] = useState<View>('topology')
+  const username = useAuthStore((s) => s.username)
+  const logout = useAuthStore((s) => s.logout)
+
+  if (!username) {
+    return <LoginForm />
+  }
 
   return (
     <div className="app-shell">
@@ -27,6 +35,11 @@ function App() {
             {v.label}
           </button>
         ))}
+        <div className="app-nav__spacer" />
+        <span className="app-nav__user">@{username}</span>
+        <button className="app-nav__btn" onClick={logout}>
+          ログアウト
+        </button>
       </nav>
       <div className="app-content">
         {view === 'topology' && <TopologyEditor />}

@@ -12,6 +12,8 @@
 | 2026-09-10 | kawase3 | 初版（骨組みのみ。実挙動は M3/M4 で追記） |
 | 2026-09-14 | kawase3 | M3: clab-api-server 導入。認証・所有権分離・エラー形式・主要エンドポイントを実機確認して記入 |
 | 2026-09-17 | Bさん | 3章: ovs-bridgeブリッジ名衝突対策の`TODO(Bさん)`を`toClabBridgeName()`実装で解消 |
+| 2026-09-24 | kawase3 | 1章: ログイン失敗文言・トークンリフレッシュ無しを確認。2.4: wipe相当の操作を確定。2.6: events複数ユーザー分離を確認。3章: ovs-bridge命名規則を15文字制限の判明により改訂（ハッシュ方式に変更）、M7の一部（deploy送信ロジック）を先行実装 |
+| 2026-09-24 | kawase3 | 2.5: ブラウザから統合コンソールWebSocketに直接接続できない問題を発見、`console-proxy`を追加して解消。実機で通し確認・M7の一部として先行実装 |
 
 ---
 
@@ -131,6 +133,16 @@
 - **1セッション1回だけ接続可能**：WS接続が切れる（クライアント側切断含む）と即座にセッションが終了扱いになり、再接続すると`410 Gone {"error":"terminal session has already exited"}`になる（実機確認）。再度使うには`terminal-sessions`を作り直す必要がある
 - 代替手段（未検証・必要になったら確認）: `POST /api/v1/labs/{labName}/nodes/{nodeName}/ssh`（外部SSHクライアント用の一時アクセス情報を返すだけで、ブラウザ内ターミナルには使わない）、`sshx`/`gotty`系
 
+- **⚠️ ブラウザから直接は接続できない（2026-09-24発見、要`console-proxy`経由）**：
+  上記2.のWebSocket認証は`Authorization`ヘッダーのみ対応（ソースコード確認済み。クエリパラメータ/Cookie等は無い）。
+  一方ブラウザの`WebSocket` APIはハンドシェイク時にカスタムヘッダーを設定できないため、直接は接続不可能。
+  対策として`backend/console-proxy/`（Node.js中継プロキシ）を追加した。ブラウザ側のプロトコルは：
+  1. `ws://<console-proxy>/console?sessionId=<terminal session id>` に接続
+  2. 接続直後、**最初のメッセージ**として `{"token":"<jwt>"}` を送る（トークンをURLに含めない）
+  3. 以降は上記のフレーム形式がそのまま中継されてくる
+  詳細は`backend/console-proxy/README.md`・`docs/direction.md`（2026-09-24追記）参照。
+  実機で認証込みの通し（トークン検証→シェル起動→入出力）を確認済み。
+
 ### 2.6 状態更新（ノード/リンクのライブ状態）— **実機確認済み（2026-09-17）**
 - `GET /api/v1/events`（**WebSocketではなく、接続を張りっぱなしにするNDJSON応答**。`Content-Type: application/x-ndjson`、1行1JSON、クライアントが切断するまでサーバーは流し続ける）
   - クエリ: `?initialState=true`で接続直後に現在の状態のスナップショットも流す、`?interfaceStats=true`でインターフェースの送受信バイト数も流す
@@ -156,14 +168,21 @@ FE のパレット3種と containerlab kind の対応:
 | PC/ホスト | `linux` | `alpine:3.20` | |
 
 - FE がトポロジを組んだ結果を、どの形式で BE に渡すか: **`POST /api/v1/labs`の`topologyContent`にJSONオブジェクトとして渡す**（2.2参照、確定）
-- **ovs-bridgeのブリッジ名衝突対策（2026-09-16 決定、詳細は`docs/direction.md`）**：
+- **ovs-bridgeのブリッジ名衝突対策（2026-09-24改訂、経緯は`docs/direction.md`）**：
   `ovs-bridge` kindのノードだけ、UI上の表示名とは別に、`POST /api/v1/labs`へ送るJSON内の実際のノード名を
-  `<username>_<labname>_<UI上のノード名>` に変換してから送信する（例: ユーザー`alice`がラボ`lab1`で
-  `sw1`という名前のL2スイッチを置いたら、実際に送るノード名は`alice_lab1_sw1`）。
-  ユーザー名はLinuxアカウント単位で一意なので、これで複数ユーザー間のブリッジ名衝突を防げる。
-  ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
-  `clab-<labname>-<nodename>`で自動的に一意化してくれるため）。
-  → **実装済み**：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`（`TODO(Bさん)`解消。M7で実際のdeploy送信ロジックへの組み込みは今後対応）
+  短いハッシュベースの名前に変換してから送信する。
+  - ~~当初案（2026-09-16）：`<username>_<labname>_<UI上のノード名>`~~ → **実機検証でボツ**。
+    **Linuxのネットワークインターフェース名は15文字までという制約（`IFNAMSIZ`）**があり、
+    16文字以上を`ovs-vsctl add-br`に渡すと`Invalid argument`で失敗することを2026-09-24に実機確認。
+    現実的な名前の組み合わせは簡単に15文字を超えるため、この方式は使えない
+  - **採用方式**：`username/labName/nodeName`をFNV-1a(32bit)でハッシュ化し、`sw-`+8桁16進数
+    （合計11文字、15文字制限に収まる）を実際のノード名として使う（例: `sw-bbb1067d`）。
+    可読性は失うが、このプロジェクトの想定利用規模（数人×数ラボ）では衝突確率は無視できる
+  - ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
+    `clab-<labname>-<nodename>`で自動的に一意化してくれるため。こちらは長さ制限の対象外）
+  - → **実装・実機検証済み（2026-09-24）**：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`。
+    生成した`topologyContent`を実際に`POST /api/v1/labs`でdeployし、L2疎通まで確認した
+    （`frontend/src/components/TopologyEditor.tsx`のDeployボタンから呼び出す形でM7の一部を先行実装）
 
 ## 4. エラー形式
 

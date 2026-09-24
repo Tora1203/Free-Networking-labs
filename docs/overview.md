@@ -43,18 +43,25 @@ CMLのようなGUI操作感（ドラッグ&ドロップでのトポロジ編集�
 
 ```
 ［ブラウザ：React + React Flow(トポロジ編集) / xterm.js(統合コンソール)］
-        │  REST（ラボ操作）／WebSocket（ターミナル・状態更新）
-        ▼
-［clab-api-server：PAM認証（Linuxアカウント）でユーザー・ラボ所有権を管理］
+        │  REST（ラボ操作）                  │ WebSocket（ターミナル）
+        ▼                                    ▼
+［clab-api-server：PAM認証で              ［console-proxy：WebSocket中継］
+ ユーザー・ラボ所有権を管理］                    │ Authorizationヘッダー付きで接続
+        │                                    │（ブラウザはヘッダーを送れないため）
+        ▼                                    ▼
+［containerlab CLI］  ←───────────  clab-api-serverの統合コンソール用WebSocket
         │
         ▼
-［containerlab CLI］
-        │
-        ▼
-［Docker：FRRコンテナ群］
+［Docker：FRR / ovs-bridge / linuxコンテナ群］
 ```
 
 研究室/学校の共有Linuxサーバー1台の上に、上記すべてが同居する。
+
+**`console-proxy`について（2026-09-24追加）**：clab-api-serverの統合コンソール用WebSocketは
+`Authorization`ヘッダーでしか認証できないが、ブラウザのWebSocket APIはハンドシェイク時に
+カスタムヘッダーを設定できない（回避不可能な仕様上の制約）。このため、ヘッダーを代わりに
+付けて接続する薄い中継プロキシを`backend/console-proxy/`に用意している
+（経緯・プロトコルの詳細は`direction.md`・`backend/console-proxy/README.md`参照）。
 
 **認証をclab-api-serverに任せている理由**：clab-api-serverはLinuxのシステムアカウント＋
 PAM認証で動作し、ラボを`$CLAB_LABS_ROOT/<username>/`のようにユーザー名ごとに自動で
@@ -79,7 +86,7 @@ PAM認証で動作し、ラボを`$CLAB_LABS_ROOT/<username>/`のようにユー
   管理、統合コンソールの完成度）の作り込みと、マルチユーザー・ノード数無制限という
   CML Freeにない性質に置く。
 
-## まだ決まっていないこと
+## 決まったこと（2026-09-16/24、詳細は direction.md）
 
-- 同時起動ノード数の上限など、簡易的なリソースガードレールを入れるかどうか
-- リポジトリ構成、状態管理ライブラリ（Zustand/Reduxなど）の選定
+- 同時起動ノード数の上限は設けない
+- 状態管理ライブラリはZustandを採用

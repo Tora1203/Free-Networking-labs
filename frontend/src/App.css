@@ -29,6 +29,18 @@
   color: #fff;
 }
 
+.app-nav__spacer {
+  flex: 1;
+}
+
+.app-nav__user {
+  align-self: center;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: #7c887f;
+  margin-right: 4px;
+}
+
 .app-content {
   flex: 1;
   min-height: 0;

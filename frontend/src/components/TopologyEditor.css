@@ -4,8 +4,60 @@
   display: flex;
 }
 
-.topology-editor__canvas {
+.topology-editor__main {
   flex: 1;
   min-width: 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topology-editor__toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #d9ddd0;
+}
+
+.topology-editor__lab-name {
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid #d9ddd0;
+  border-radius: 6px;
+  width: 160px;
+}
+
+.topology-editor__toolbar button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #1f9d55;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.topology-editor__toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.topology-editor__status {
+  font-size: 12px;
+}
+
+.topology-editor__status--ok {
+  color: #1f9d55;
+}
+
+.topology-editor__status--error {
+  color: #b45309;
+}
+
+.topology-editor__canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
