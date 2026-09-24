@@ -1,0 +1,78 @@
+.topo-node {
+  width: 78px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: grab;
+}
+
+.topo-node__badge {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  background: var(--surface);
+  border: 3px solid var(--ink-faint);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+/* ネットワーク図の慣例：ルーターは円、スイッチは角丸四角、PCは四角 */
+.topo-node--router .topo-node__badge {
+  border-radius: 50%;
+  border-color: var(--node-router);
+  color: var(--node-router);
+}
+
+.topo-node--switch .topo-node__badge {
+  border-radius: 8px;
+  border-color: var(--node-switch);
+  color: var(--node-switch);
+}
+
+.topo-node--pc .topo-node__badge {
+  border-radius: 4px;
+  border-color: var(--node-pc);
+  color: var(--node-pc);
+}
+
+.topo-node--selected .topo-node__badge {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.topo-node__label {
+  font-size: 12.5px;
+  font-family: ui-monospace, monospace;
+  color: var(--ink);
+  background: var(--surface);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.topo-node__handle {
+  width: 8px;
+  height: 8px;
+  background: var(--ink-faint);
+  border: 1px solid var(--surface);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* 普段は隠しておき、ノードにカーソルを近づけた時・選択中・接続作業中だけ見せる
+   （常時4つの丸が出ていると見た目がうるさいため）。
+   注意: `connectionindicator` は「接続開始点として有効」なら常時付くクラスで、
+   ドラッグ中かどうかとは無関係（@xyflow/react/dist/esm/index.mjs で確認済み）。
+   ここでは使わない。実際にドラッグ中を示すのは connectingfrom（ドラッグ元）/
+   connectingto・valid（ドラッグ中の有効な接続先）のみ。 */
+.topo-node:hover .topo-node__handle,
+.topo-node--selected .topo-node__handle,
+.topo-node__handle.connectingfrom,
+.topo-node__handle.connectingto,
+.topo-node__handle.valid {
+  opacity: 1;
+}

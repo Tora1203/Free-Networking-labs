@@ -105,6 +105,23 @@
   - wipe相当の操作を確定：`POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>`で同一topologyContentを送ると、
     指定ノードだけコンテナを再生成できる（他ノードは無影響）。詳細は`docs/api-contract.md`参照
 
+- **トポロジエディタのUX改善（実際に動かしたkawase3からの指摘6件に対応）**
+  - ノード種別ごとに形・色・略称（R=円/青、SW=角丸四角/オレンジ、PC=四角/グレー）で判別できるように
+    カスタムノードコンポーネント（`TopologyNode.tsx`）を追加
+  - ドロップしたノードに自動で短い表示名（R1, SW1, PC1...）を振るように（種別ごとに独立したカウンター）
+  - リンクに接続インターフェース名（例: `eth1↔eth2`）をラベル表示
+  - エッジを直線・太め（`type: 'straight'`, 2px）に変更
+  - ノードを右クリックすると「名前を変更」「削除」のコンテキストメニューが出るように
+  - ダーク/ライトモード切り替えボタンを追加（`theme.css`でCSS変数化、localStorageに保存、
+    OS設定の`prefers-color-scheme`にも初期値として追従）
+  - **CML寄りの追加改善**：
+    - ノード同士を接続すると、CMLのように「どちらのI/Fを使うか」を選ぶポップアップが出るように
+      （デフォルトは各ノードの次に空いているI/F、`eth1`〜`eth8`から選択可、既使用I/Fを選ぶと警告して確定不可に）
+      エッジの実インターフェース名は`edge.data`に保持し、deploy時の`buildTopologyContent`もそこから直接読む
+      （配列の並び順からの自動採番ロジックは廃止、表示とdeploy結果は常に同じデータを見るので食い違わない）
+    - ケーブル（エッジ）を右クリックすると「接続を解除」メニューが出るように
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build` すべて確認済み。開発中のdevサーバーでHMR確認済み
+
 **Next**
 - Bさんの休み明けに、今回のfrontend/・backend/console-proxy/への変更をレビューしてもらう
 - 残りのM7範囲（ラボ一覧のstart/stop/destroy操作、wipeボタンのUI化）を引き続き進める

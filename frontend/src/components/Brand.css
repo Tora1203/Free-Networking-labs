@@ -1,0 +1,35 @@
+.brand {
+  display: flex;
+  align-items: center;
+}
+
+.brand__wordmark {
+  display: block;
+  height: auto;
+}
+
+/* デフォルト（ライトテーマ）はlightを表示、darkは隠す */
+.brand__wordmark--dark {
+  display: none;
+}
+
+/* ダークテーマの時だけ入れ替える */
+:root[data-theme='dark'] .brand__wordmark--light {
+  display: none;
+}
+:root[data-theme='dark'] .brand__wordmark--dark {
+  display: block;
+}
+
+.brand--nav .brand__wordmark {
+  width: 190px;
+}
+
+.brand--login {
+  align-self: center;
+  width: 100%;
+}
+
+.brand--login .brand__wordmark {
+  width: 100%;
+}

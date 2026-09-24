@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuthStore } from '../store/authStore'
+import Brand from './Brand'
 import './LoginForm.css'
 
 export default function LoginForm() {
@@ -19,6 +20,7 @@ export default function LoginForm() {
   return (
     <div className="login-form">
       <form className="login-form__card" onSubmit={onSubmit}>
+        <Brand size="login" />
         <h1>ログイン</h1>
         <p className="login-form__hint">
           Linuxアカウント（clab_api / clab_admins グループ）でログインしてください
