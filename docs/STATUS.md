@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-24 / kawase3（連休明け、api-contract.mdの持ち越しTODOを解消）
+最終更新: 2026-09-24 / kawase3（Bさん休暇中にM7の一部を先行実装。frontend/を触った理由は下記Doing参照）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -19,6 +19,8 @@
       （雛形・モックラボ一覧は PR #3 merged / ノードパレット3種のドラッグ&ドロップは今回のPRで完了）
 - [x] M6: xterm.js をダミー WebSocket に接続して表示確認（FE） → `frontend/src/components/Console.tsx` + `dev-tools/echo-server.js`（PR #3 merged）
 - [ ] M7: FE のモックを実 API に接続（BE/FE 合流）
+      （ログイン・ラボ一覧・トポロジのdeployは先行実装済み[kawase3、Bさん休暇中]。
+      ラボ操作ボタン・統合コンソールの実接続は未着手）
 
 ---
 
@@ -64,6 +66,24 @@
 **Doing**
 - （なし）
 
+- **【frontend/を編集した理由】** Bさんが休暇中でM7が止まっていたため、進められる範囲を代わりに実装した。
+  `frontend/src/{api,store}/`を新規作成、`components/App.tsx`・`LabList.tsx`・`TopologyEditor.tsx`・
+  `utils/clabNaming.ts`を編集。作業前に`npm install`でNode.js環境を`labuser`にも用意し（nvm経由、sudo不要）、
+  変更のたびに`tsc --noEmit`・`oxlint`・`npm run build`・`npm run dev`起動確認まで実施済み。
+  Bさん復帰後にレビューしてもらうこと。
+
+- **M7の一部を先行実装**：ログイン画面（`LoginForm.tsx`）、Zustandでの認証状態管理（`store/authStore.ts`）、
+  APIクライアント（`api/client.ts`：login/getLabs/deployLab/destroyLab/start・stop・restartNode/wipeNode）、
+  `LabList.tsx`を実APIに接続（モック卒業）、`TopologyEditor.tsx`にラボ名入力+Deployボタンを追加し、
+  React Flowのノード/エッジから`topologyContent`を組み立てて実際にdeployできるようにした。
+  使い捨てアカウントで実機テストし、生成したJSONで実際にL2スイッチ+PC×2をdeploy→ping疎通→destroyまで確認済み。
+  - **重要な訂正（`toClabBridgeName()`）**：9/16決定の`<username>_<labname>_<ノード名>`方式は、
+    実機検証で**Linuxのネットワークインターフェース名が15文字までという制約（`IFNAMSIZ`）**に
+    引っかかり実運用不可と判明（16文字以上で`ovs-vsctl add-br`が失敗）。ハッシュベースの
+    短い名前（`sw-`+8桁16進数、11文字）に変更した。詳細は`docs/direction.md`・`docs/api-contract.md`参照
+  - 未着手のまま残っているM7範囲：ラボ一覧からのstart/stop/destroy操作、統合コンソールの実API接続、
+    wipeボタンのUI化、エラー時のUX磨き込み
+
 - **CORS設定完了**：`CORS_ALLOWED_ORIGINS=http://localhost:5173`を設定・`clab-api-server`再起動。
   実機確認済み（`http://localhost:5173`からのpreflightが`204`、`Authorization`ヘッダーも許可）。
   → Bさんの開発サーバーから実APIを叩けるようになりました（M7のブロッカー解消）
@@ -75,8 +95,8 @@
     指定ノードだけコンテナを再生成できる（他ノードは無影響）。詳細は`docs/api-contract.md`参照
 
 **Next**
-- Bさんの休み明けを待ってM7（実API接続）再開
-- M7でBさんが実API接続を進める中で出てくる疑問点のサポート
+- Bさんの休み明けに、今回のfrontend/への変更をレビューしてもらう
+- 残りのM7範囲（ラボ操作ボタン、統合コンソールの実接続等）はBさんの復帰後に分担を相談
 
 **Blocked / 相手待ち**
 - （なし）

@@ -1,6 +1,6 @@
 // clab-api-server の GET /api/v1/labs レスポンス形状を想定した型
 // （実サーバー未接続のため containerlab inspect の一般的なフィールドから推定）
-export type NodeState = 'running' | 'exited' | 'created'
+export type NodeState = 'running' | 'exited' | 'created' | 'paused'
 
 export interface LabNode {
   name: string

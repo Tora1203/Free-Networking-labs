@@ -12,6 +12,7 @@
 | 2026-09-10 | kawase3 | 初版（骨組みのみ。実挙動は M3/M4 で追記） |
 | 2026-09-14 | kawase3 | M3: clab-api-server 導入。認証・所有権分離・エラー形式・主要エンドポイントを実機確認して記入 |
 | 2026-09-17 | Bさん | 3章: ovs-bridgeブリッジ名衝突対策の`TODO(Bさん)`を`toClabBridgeName()`実装で解消 |
+| 2026-09-24 | kawase3 | 1章: ログイン失敗文言・トークンリフレッシュ無しを確認。2.4: wipe相当の操作を確定。2.6: events複数ユーザー分離を確認。3章: ovs-bridge命名規則を15文字制限の判明により改訂（ハッシュ方式に変更）、M7の一部（deploy送信ロジック）を先行実装 |
 
 ---
 
@@ -156,14 +157,21 @@ FE のパレット3種と containerlab kind の対応:
 | PC/ホスト | `linux` | `alpine:3.20` | |
 
 - FE がトポロジを組んだ結果を、どの形式で BE に渡すか: **`POST /api/v1/labs`の`topologyContent`にJSONオブジェクトとして渡す**（2.2参照、確定）
-- **ovs-bridgeのブリッジ名衝突対策（2026-09-16 決定、詳細は`docs/direction.md`）**：
+- **ovs-bridgeのブリッジ名衝突対策（2026-09-24改訂、経緯は`docs/direction.md`）**：
   `ovs-bridge` kindのノードだけ、UI上の表示名とは別に、`POST /api/v1/labs`へ送るJSON内の実際のノード名を
-  `<username>_<labname>_<UI上のノード名>` に変換してから送信する（例: ユーザー`alice`がラボ`lab1`で
-  `sw1`という名前のL2スイッチを置いたら、実際に送るノード名は`alice_lab1_sw1`）。
-  ユーザー名はLinuxアカウント単位で一意なので、これで複数ユーザー間のブリッジ名衝突を防げる。
-  ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
-  `clab-<labname>-<nodename>`で自動的に一意化してくれるため）。
-  → **実装済み**：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`（`TODO(Bさん)`解消。M7で実際のdeploy送信ロジックへの組み込みは今後対応）
+  短いハッシュベースの名前に変換してから送信する。
+  - ~~当初案（2026-09-16）：`<username>_<labname>_<UI上のノード名>`~~ → **実機検証でボツ**。
+    **Linuxのネットワークインターフェース名は15文字までという制約（`IFNAMSIZ`）**があり、
+    16文字以上を`ovs-vsctl add-br`に渡すと`Invalid argument`で失敗することを2026-09-24に実機確認。
+    現実的な名前の組み合わせは簡単に15文字を超えるため、この方式は使えない
+  - **採用方式**：`username/labName/nodeName`をFNV-1a(32bit)でハッシュ化し、`sw-`+8桁16進数
+    （合計11文字、15文字制限に収まる）を実際のノード名として使う（例: `sw-bbb1067d`）。
+    可読性は失うが、このプロジェクトの想定利用規模（数人×数ラボ）では衝突確率は無視できる
+  - ルーター(`linux`+FRR)・PC(`linux`)のノードはこの変換は不要（コンテナ名はcontainerlabが
+    `clab-<labname>-<nodename>`で自動的に一意化してくれるため。こちらは長さ制限の対象外）
+  - → **実装・実機検証済み（2026-09-24）**：`frontend/src/utils/clabNaming.ts` の `toClabBridgeName()`。
+    生成した`topologyContent`を実際に`POST /api/v1/labs`でdeployし、L2疎通まで確認した
+    （`frontend/src/components/TopologyEditor.tsx`のDeployボタンから呼び出す形でM7の一部を先行実装）
 
 ## 4. エラー形式
 
