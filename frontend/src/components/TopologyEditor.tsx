@@ -6,7 +6,6 @@ import {
   Controls,
   MiniMap,
   ConnectionMode,
-  addEdge,
   applyNodeChanges,
   applyEdgeChanges,
   useReactFlow,
@@ -30,6 +29,15 @@ const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-s
 
 const nodeTypes = { topoNode: TopologyNode }
 
+// リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
+// 実際のインターフェース名を保持する（CMLのようにユーザーが接続時に選べるようにするため、
+// 配列の並び順から機械的に決めるのではなく、エッジ自身のデータとして持たせる）。
+interface EdgeIfaceData {
+  sourceIface: string
+  targetIface: string
+  [key: string]: unknown
+}
+
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
   const config = PALETTE_NODE_CONFIGS[kind]
   return { kind, clabKind: config.clabKind, image: config.image, shortLabel }
@@ -42,27 +50,35 @@ const initialNodes: Node[] = [
 ]
 
 const initialEdges: Edge[] = [
-  { id: 'r1-r2', source: 'r1', target: 'r2', sourceHandle: 'right', targetHandle: 'left' },
+  {
+    id: 'r1-r2',
+    source: 'r1',
+    target: 'r2',
+    sourceHandle: 'right',
+    targetHandle: 'left',
+    type: 'straight',
+    data: { sourceIface: 'eth1', targetIface: 'eth1' } satisfies EdgeIfaceData,
+  },
 ]
 
 // 初期デモノードの分だけ、ドロップ時のカウンターを進めておく（R4から採番されるように）
 const initialCounters: Record<PaletteNodeKind, number> = { router: 3, 'l2-switch': 0, pc: 0 }
 
-// ノード間リンクのインターフェース名(eth1, eth2, ...)を、同じノードに何本目の
-// リンクが繋がっているかで機械的に割り当てる。deploy時のtopologyContent組み立てと
-// キャンバス上のラベル表示の両方で同じ結果になるよう、ロジックを1箇所にまとめている。
-function assignInterfaces(edges: Edge[]): Map<string, { source: string; target: string }> {
-  const counters = new Map<string, number>()
-  const nextIface = (nodeId: string) => {
-    const n = (counters.get(nodeId) ?? 0) + 1
-    counters.set(nodeId, n)
-    return `eth${n}`
+const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
+
+function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
+  const used = new Set<string>()
+  for (const e of edges) {
+    const data = e.data as Partial<EdgeIfaceData> | undefined
+    if (e.source === nodeId && data?.sourceIface) used.add(data.sourceIface)
+    if (e.target === nodeId && data?.targetIface) used.add(data.targetIface)
   }
-  const result = new Map<string, { source: string; target: string }>()
-  for (const edge of edges) {
-    result.set(edge.id, { source: nextIface(edge.source), target: nextIface(edge.target) })
-  }
-  return result
+  return used
+}
+
+function nextAvailableIface(nodeId: string, edges: Edge[]): string {
+  const used = usedInterfaces(nodeId, edges)
+  return IFACE_OPTIONS.find((iface) => !used.has(iface)) ?? `eth${used.size + 1}`
 }
 
 // React Flowのノード/エッジから、POST /api/v1/labs に渡す topologyContent を組み立てる。
@@ -82,22 +98,25 @@ function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, la
     nodesMap[clabName] = data.image ? { kind: data.clabKind, image: data.image } : { kind: data.clabKind }
   }
 
-  const ifaces = assignInterfaces(edges)
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
     const targetName = clabNodeNames.get(edge.target)
-    const iface = ifaces.get(edge.id)
-    if (!sourceName || !targetName || !iface) {
-      throw new Error(`リンク「${edge.id}」の接続先ノードが見つかりません`)
+    const iface = edge.data as Partial<EdgeIfaceData> | undefined
+    if (!sourceName || !targetName || !iface?.sourceIface || !iface?.targetIface) {
+      throw new Error(`リンク「${edge.id}」のインターフェース情報が見つかりません`)
     }
-    return { endpoints: [`${sourceName}:${iface.source}`, `${targetName}:${iface.target}`] as [string, string] }
+    return { endpoints: [`${sourceName}:${iface.sourceIface}`, `${targetName}:${iface.targetIface}`] as [string, string] }
   })
 
   return { name: labName, topology: { nodes: nodesMap, links } }
 }
 
 type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
-type ContextMenu = { x: number; y: number; nodeId: string } | null
+type ContextMenu =
+  | { x: number; y: number; kind: 'node'; nodeId: string }
+  | { x: number; y: number; kind: 'edge'; edgeId: string }
+  | null
+type PendingConnection = { source: string; target: string; sourceHandle: string | null; targetHandle: string | null } | null
 
 function TopologyEditorInner() {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -107,6 +126,9 @@ function TopologyEditorInner() {
   const [labName, setLabName] = useState('')
   const [deployStatus, setDeployStatus] = useState<DeployStatus>({ kind: 'idle' })
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
+  const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
+  const [pendingSourceIface, setPendingSourceIface] = useState('')
+  const [pendingTargetIface, setPendingTargetIface] = useState('')
   const { screenToFlowPosition } = useReactFlow()
   const username = useAuthStore((s) => s.username)
 
@@ -118,10 +140,49 @@ function TopologyEditorInner() {
     (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
     [],
   )
+
+  // ノード同士を繋いだら即座に確定させず、CMLのように「どのI/Fを使うか」を選ぶポップアップを出す
   const onConnect: OnConnect = useCallback(
-    (connection) => setEdges((eds) => addEdge({ ...connection, type: 'straight' }, eds)),
-    [],
+    (connection) => {
+      if (!connection.source || !connection.target) return
+      setPendingConnection({
+        source: connection.source,
+        target: connection.target,
+        sourceHandle: connection.sourceHandle,
+        targetHandle: connection.targetHandle,
+      })
+      setPendingSourceIface(nextAvailableIface(connection.source, edges))
+      setPendingTargetIface(nextAvailableIface(connection.target, edges))
+    },
+    [edges],
   )
+
+  const confirmConnection = useCallback(() => {
+    if (!pendingConnection) return
+    const { source, target, sourceHandle, targetHandle } = pendingConnection
+    const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
+    setEdges((eds) =>
+      eds.concat({
+        id,
+        source,
+        target,
+        sourceHandle: sourceHandle ?? undefined,
+        targetHandle: targetHandle ?? undefined,
+        type: 'straight',
+        data: { sourceIface: pendingSourceIface, targetIface: pendingTargetIface } satisfies EdgeIfaceData,
+      }),
+    )
+    setPendingConnection(null)
+  }, [pendingConnection, pendingSourceIface, pendingTargetIface])
+
+  const cancelConnection = useCallback(() => setPendingConnection(null), [])
+
+  const sourceIfaceConflict = pendingConnection
+    ? usedInterfaces(pendingConnection.source, edges).has(pendingSourceIface)
+    : false
+  const targetIfaceConflict = pendingConnection
+    ? usedInterfaces(pendingConnection.target, edges).has(pendingTargetIface)
+    : false
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -148,13 +209,22 @@ function TopologyEditorInner() {
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault()
-    setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id })
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'node', nodeId: node.id })
+  }, [])
+  const onEdgeContextMenu = useCallback((event: React.MouseEvent, edge: Edge) => {
+    event.preventDefault()
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'edge', edgeId: edge.id })
   }, [])
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
   const deleteNode = useCallback((nodeId: string) => {
     setNodes((nds) => nds.filter((n) => n.id !== nodeId))
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId))
+    setContextMenu(null)
+  }, [])
+
+  const disconnectEdge = useCallback((edgeId: string) => {
+    setEdges((eds) => eds.filter((e) => e.id !== edgeId))
     setContextMenu(null)
   }, [])
 
@@ -169,21 +239,22 @@ function TopologyEditorInner() {
     })
   }, [])
 
-  // キャンバス表示用: どのeth番号同士が繋がっているかをエッジのラベルに出す
-  const displayEdges = useMemo(() => {
-    const ifaces = assignInterfaces(edges)
-    return edges.map((edge) => {
-      const iface = ifaces.get(edge.id)
-      return {
-        ...edge,
-        type: edge.type ?? 'straight',
-        label: iface ? `${iface.source}↔${iface.target}` : undefined,
-        style: { stroke: 'var(--edge)', strokeWidth: 2 },
-        labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
-        labelBgStyle: { fill: 'var(--surface)' },
-      }
-    })
-  }, [edges])
+  // キャンバス表示用: エッジのI/F情報をラベルとして出す
+  const displayEdges = useMemo(
+    () =>
+      edges.map((edge) => {
+        const iface = edge.data as Partial<EdgeIfaceData> | undefined
+        return {
+          ...edge,
+          type: edge.type ?? 'straight',
+          label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
+          style: { stroke: 'var(--edge)', strokeWidth: 2 },
+          labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
+          labelBgStyle: { fill: 'var(--surface)' },
+        }
+      }),
+    [edges],
+  )
 
   const canDeploy = useMemo(
     () => labName.trim().length > 0 && nodes.length > 0 && deployStatus.kind !== 'deploying',
@@ -202,6 +273,8 @@ function TopologyEditorInner() {
       setDeployStatus({ kind: 'error', message })
     }
   }, [nodes, edges, username, labName])
+
+  const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
 
   return (
     <div className="topology-editor">
@@ -229,6 +302,7 @@ function TopologyEditorInner() {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeContextMenu={onNodeContextMenu}
+            onEdgeContextMenu={onEdgeContextMenu}
             onPaneClick={closeContextMenu}
             onMoveStart={closeContextMenu}
             connectionMode={ConnectionMode.Loose}
@@ -239,10 +313,56 @@ function TopologyEditorInner() {
             <Controls />
             <MiniMap />
           </ReactFlow>
-          {contextMenu && (
+
+          {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>
               <button onClick={() => deleteNode(contextMenu.nodeId)}>削除</button>
+            </div>
+          )}
+          {contextMenu?.kind === 'edge' && (
+            <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+              <button onClick={() => disconnectEdge(contextMenu.edgeId)}>接続を解除</button>
+            </div>
+          )}
+
+          {pendingConnection && (
+            <div className="topology-editor__modal-overlay" onClick={cancelConnection}>
+              <div className="topology-editor__modal" onClick={(e) => e.stopPropagation()}>
+                <h3>接続するインターフェースを選択</h3>
+                <div className="topology-editor__modal-row">
+                  <label>
+                    {nodeLabel(pendingConnection.source)} 側
+                    <select value={pendingSourceIface} onChange={(e) => setPendingSourceIface(e.target.value)}>
+                      {IFACE_OPTIONS.map((iface) => (
+                        <option key={iface} value={iface}>
+                          {iface}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {sourceIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
+                </div>
+                <div className="topology-editor__modal-row">
+                  <label>
+                    {nodeLabel(pendingConnection.target)} 側
+                    <select value={pendingTargetIface} onChange={(e) => setPendingTargetIface(e.target.value)}>
+                      {IFACE_OPTIONS.map((iface) => (
+                        <option key={iface} value={iface}>
+                          {iface}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {targetIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
+                </div>
+                <div className="topology-editor__modal-actions">
+                  <button onClick={cancelConnection}>キャンセル</button>
+                  <button onClick={confirmConnection} disabled={sourceIfaceConflict || targetIfaceConflict}>
+                    接続
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
