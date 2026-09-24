@@ -1,17 +1,14 @@
 import './Brand.css'
 
-// アイコン(logo.png、透過済み) + テキストの組み合わせ。
-// logo-wordmark-*.png（プレゼン資料用に作られたもの、背景にドット模様あり）は
-// 小さく使うと透過処理の跡が汚くなりやすいため、アイコン+実テキストで再構成している。
-// これならテーマ切り替えにも自動で追従する。
+// ワードマーク画像（logo-wordmark-*.png）を使用。元はプレゼン資料用でドット模様の
+// 背景があったため、透過処理＋コンテンツ部分のみにトリミング済み（frontend/public/参照）。
+// ライト/ダーク2種類あり、どちらを出すかはCSS側で `:root[data-theme]` を見て切り替える
+// （テーマ状態をpropsで渡さなくても自動追従するように）。
 export default function Brand({ size = 'nav' }: { size?: 'nav' | 'login' }) {
   return (
     <div className={`brand brand--${size}`}>
-      <img className="brand__icon" src="/logo.png" alt="" />
-      <span className="brand__text">
-        <span className="brand__text-light">Free</span>
-        <span className="brand__text-bold">NetworkLab</span>
-      </span>
+      <img className="brand__wordmark brand__wordmark--light" src="/logo-wordmark-light.png" alt="FreeNetworkLab" />
+      <img className="brand__wordmark brand__wordmark--dark" src="/logo-wordmark-dark.png" alt="FreeNetworkLab" />
     </div>
   )
 }
