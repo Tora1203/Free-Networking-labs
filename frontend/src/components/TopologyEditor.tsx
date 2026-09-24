@@ -307,7 +307,10 @@ function TopologyEditorInner() {
             onMoveStart={closeContextMenu}
             connectionMode={ConnectionMode.Loose}
             defaultEdgeOptions={{ type: 'straight' }}
+            minZoom={0.4}
+            maxZoom={2}
             fitView
+            fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
           >
             <Background />
             <Controls />
