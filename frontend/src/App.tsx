@@ -3,6 +3,7 @@ import TopologyEditor from './components/TopologyEditor'
 import LabList from './components/LabList'
 import ConsolePane from './components/Console'
 import LoginForm from './components/LoginForm'
+import Brand from './components/Brand'
 import { useAuthStore } from './store/authStore'
 import './App.css'
 
@@ -47,7 +48,7 @@ function App() {
   return (
     <div className="app-shell">
       <nav className="app-nav">
-        <img className="app-nav__logo" src="/logo.png" alt="ロゴ" />
+        <Brand size="nav" />
         {views.map((v) => (
           <button
             key={v.id}

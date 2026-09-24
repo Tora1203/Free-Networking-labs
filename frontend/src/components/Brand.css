@@ -1,0 +1,49 @@
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand__icon {
+  display: block;
+  flex: none;
+}
+
+.brand__text {
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
+
+.brand__text-light {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.brand__text-bold {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.brand--nav .brand__icon {
+  width: 30px;
+  height: 30px;
+}
+
+.brand--nav .brand__text {
+  font-size: 15px;
+}
+
+.brand--login {
+  align-self: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brand--login .brand__icon {
+  width: 56px;
+  height: 56px;
+}
+
+.brand--login .brand__text {
+  font-size: 19px;
+}
