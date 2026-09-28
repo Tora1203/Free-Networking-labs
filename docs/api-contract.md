@@ -102,6 +102,11 @@
   }
   ```
   → FE側は「clab YAMLのキー構造と1:1のJSON」を組み立てて渡す設計でよい（YAML文字列に変換する必要はない）
+- **⚠️ `name`の文字種制限（2026-09-28実機確認）**：`topology.name`に日本語等の非ASCII文字を含めると
+  `400 {"error":"Invalid characters in topology 'name'."}`で拒否される。英数字・ハイフン・
+  アンダースコアのみが安全（未検証だが`^[A-Za-z0-9][A-Za-z0-9_-]*$`相当と推測）。
+  FE側は`frontend/src/utils/labName.ts`で、安全でない名前を決定的なハッシュ名（`lab-xxxxxxxx`）に
+  変換してから送る対応済み（ユーザーには元の名前を表示、実際のAPI上の名前とは別管理）
 - クエリパラメータ: `reconfigure`（自分所有のラボの上書き再deployを許可）、`maxWorkers`、`nodeFilter` 等（詳細はSwagger参照）
 - レスポンス実例: 2.1と同形式（`ClabInspectOutput`、deployされたノード一覧）
 

@@ -9,6 +9,7 @@ import {
   type RawLabNode,
   type RawLabsResponse,
 } from '../api/client'
+import { getLabDisplayName } from '../utils/labName'
 import './LabList.css'
 
 const stateLabel: Record<NodeState, string> = {
@@ -96,10 +97,15 @@ export default function LabList() {
         {labs?.map((lab) => {
           const runningCount = lab.nodes.filter((n) => n.state === 'running').length
           const labBusy = busy[lab.name]
+          // deploy時に日本語名等が使われた場合、実際のAPI上の名前は安全な名前に変換されている
+          // （utils/labName.ts参照）。localStorageに記録された元の名前があればそちらを表示する。
+          const displayName = getLabDisplayName(lab.name)
           return (
             <div className="lab-card" key={lab.name}>
               <div className="lab-card__top">
-                <span className="lab-card__name">{lab.name}</span>
+                <span className="lab-card__name" title={displayName !== lab.name ? `実際の名前: ${lab.name}` : undefined}>
+                  {displayName}
+                </span>
                 <span className="lab-card__owner">@{lab.owner}</span>
               </div>
               <LabStatusDots nodes={lab.nodes} />

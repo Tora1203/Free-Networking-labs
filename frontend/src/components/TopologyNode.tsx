@@ -9,13 +9,20 @@ const KIND_VISUAL: Record<PaletteNodeKind, { badge: string; className: string }>
   pc: { badge: 'PC', className: 'topo-node--pc' },
 }
 
-// 接続はどの向きからでも作れるようにしたいので、四方にハンドルを置く
+// 接続はどの向きからでも作れるようにしたいので、周囲にハンドルを置く
 // （TopologyEditor側で connectionMode="loose" を設定している）。
+// 4方向だけだと、1つのノードに複数のリンクを繋いだ時に同じ点から線が重なって
+// 見づらくなるため、各辺の途中にもう1点ずつ追加して計8点にしている
+// （style で position のデフォルト位置(50%)をずらしている）。
 const HANDLE_POSITIONS = [
   { id: 'top', position: Position.Top },
+  { id: 'top-right', position: Position.Top, style: { left: '80%' } },
   { id: 'right', position: Position.Right },
+  { id: 'bottom-right', position: Position.Right, style: { top: '80%' } },
   { id: 'bottom', position: Position.Bottom },
+  { id: 'bottom-left', position: Position.Bottom, style: { left: '20%' } },
   { id: 'left', position: Position.Left },
+  { id: 'top-left', position: Position.Left, style: { top: '20%' } },
 ] as const
 
 export interface TopoNodeData {
@@ -33,7 +40,14 @@ export default function TopologyNode({ data, selected }: NodeProps) {
   return (
     <div className={`topo-node ${visual.className} ${selected ? 'topo-node--selected' : ''}`}>
       {HANDLE_POSITIONS.map((h) => (
-        <Handle key={h.id} id={h.id} type="source" position={h.position} className="topo-node__handle" />
+        <Handle
+          key={h.id}
+          id={h.id}
+          type="source"
+          position={h.position}
+          className="topo-node__handle"
+          style={'style' in h ? h.style : undefined}
+        />
       ))}
       <div className="topo-node__badge">{visual.badge}</div>
       <div className="topo-node__label">{nodeData.shortLabel}</div>

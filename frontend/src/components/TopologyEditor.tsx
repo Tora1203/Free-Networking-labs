@@ -20,6 +20,7 @@ import NodePalette, { DND_MIME_TYPE } from './NodePalette'
 import TopologyNode, { type TopoNodeData } from './TopologyNode'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
+import { isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { ApiError, deployLab, type TopologyContent } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import './TopologyEditor.css'
@@ -145,6 +146,7 @@ function TopologyEditorInner() {
   const onConnect: OnConnect = useCallback(
     (connection) => {
       if (!connection.source || !connection.target) return
+      if (connection.source === connection.target) return // 自己ループ接続は禁止
       setPendingConnection({
         source: connection.source,
         target: connection.target,
@@ -228,16 +230,20 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
-  const renameNode = useCallback((nodeId: string) => {
-    setContextMenu(null)
-    setNodes((nds) => {
-      const target = nds.find((n) => n.id === nodeId)
+  const renameNode = useCallback(
+    (nodeId: string) => {
+      setContextMenu(null)
+      // window.prompt（副作用）は setState の更新関数の外で呼ぶこと。
+      // 更新関数の中で呼ぶと、StrictModeが更新関数を2回実行する際にプロンプトも2回出てしまい、
+      // 1回目の入力が握りつぶされる（2回目の確定でようやく反映される）不具合になっていた。
+      const target = nodes.find((n) => n.id === nodeId)
       const current = (target?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? ''
       const next = window.prompt('新しいノード名', current)
-      if (!next || !next.trim()) return nds
-      return nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, shortLabel: next.trim() } } : n))
-    })
-  }, [])
+      if (!next || !next.trim()) return
+      setNodes((nds) => nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, shortLabel: next.trim() } } : n)))
+    },
+    [nodes],
+  )
 
   // キャンバス表示用: エッジのI/F情報をラベルとして出す
   const displayEdges = useMemo(
@@ -265,9 +271,15 @@ function TopologyEditorInner() {
     if (!username) return
     setDeployStatus({ kind: 'deploying' })
     try {
-      const topologyContent = buildTopologyContent(nodes, edges, username, labName.trim())
+      const displayName = labName.trim()
+      // ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付ける（日本語等は拒否される、
+      // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
+      // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
+      const safeName = toSafeLabName(displayName)
+      const topologyContent = buildTopologyContent(nodes, edges, username, safeName)
       await deployLab(topologyContent)
-      setDeployStatus({ kind: 'success', message: `ラボ「${labName.trim()}」をdeployしました` })
+      rememberLabDisplayName(safeName, displayName)
+      setDeployStatus({ kind: 'success', message: `ラボ「${displayName}」をdeployしました` })
     } catch (e) {
       const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
       setDeployStatus({ kind: 'error', message })
@@ -287,6 +299,11 @@ function TopologyEditorInner() {
             value={labName}
             onChange={(e) => setLabName(e.target.value)}
           />
+          {labName.trim() && !isSafeLabName(labName.trim()) && (
+            <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前でdeployされます">
+              実際の名前: {toSafeLabName(labName)}
+            </span>
+          )}
           <button onClick={onDeploy} disabled={!canDeploy}>
             {deployStatus.kind === 'deploying' ? 'deploy中...' : 'Deploy'}
           </button>
@@ -301,6 +318,7 @@ function TopologyEditorInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={(c) => c.source !== c.target}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeContextMenu={onEdgeContextMenu}
             onPaneClick={closeContextMenu}

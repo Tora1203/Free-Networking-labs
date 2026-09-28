@@ -9,17 +9,7 @@
 //
 // 変更後：username/labName/nodeNameの組み合わせを短いハッシュ値に変換し、
 // `sw-` + 8桁の16進数（合計11文字、15文字制限に収まる）を使う。
-// 暗号学的な強度は不要（このプロジェクトの想定利用規模は数人×数ラボ）なので、
-// 軽量なFNV-1a(32bit)で十分。
-
-function fnv1aHash(input: string): string {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
+import { fnv1aHash } from './hash'
 
 export function toClabBridgeName(username: string, labName: string, nodeName: string): string {
   return `sw-${fnv1aHash(`${username}/${labName}/${nodeName}`)}`
