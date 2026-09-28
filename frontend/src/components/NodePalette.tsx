@@ -3,10 +3,14 @@ import './NodePalette.css'
 
 export const DND_MIME_TYPE = 'application/reactflow-node-kind'
 
+// ラベル（注釈）はデバイスノードではないので PaletteNodeKind には含めず、
+// 同じDND_MIME_TYPEチャンネルに特別な値として流す（TopologyEditor.tsx の onDrop で分岐）
+export const LABEL_DND_VALUE = 'label'
+
 const paletteOrder: PaletteNodeKind[] = ['router', 'l2-switch', 'pc']
 
 export default function NodePalette() {
-  const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind) => {
+  const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind | typeof LABEL_DND_VALUE) => {
     event.dataTransfer.setData(DND_MIME_TYPE, kind)
     event.dataTransfer.effectAllowed = 'move'
   }
@@ -28,6 +32,15 @@ export default function NodePalette() {
           </div>
         )
       })}
+      <div className="node-palette__divider" />
+      <div
+        className="node-palette__item node-palette__item--label"
+        draggable
+        onDragStart={(event) => onDragStart(event, LABEL_DND_VALUE)}
+        title="IPアドレスなどのメモをトポロジ上に自由に配置できます"
+      >
+        🏷 ラベル
+      </div>
     </aside>
   )
 }

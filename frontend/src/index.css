@@ -2,7 +2,10 @@
 
 :root {
   font: 16px/145% system-ui, 'Segoe UI', Roboto, sans-serif;
-  color-scheme: light dark;
+  /* color-scheme はtheme.css側でdata-theme（自前のライト/ダーク切替）に連動させて
+     明示的に切り替える。ここで`light dark`のように両対応にしてしまうと、
+     <select>のネイティブなドロップダウンやスクロールバーがOS設定だけを見てしまい、
+     アプリでライトを選んでいてもOSがダークならダーク色のまま残ってしまう */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

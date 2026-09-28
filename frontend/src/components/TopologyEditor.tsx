@@ -16,20 +16,23 @@ import {
   type OnEdgesChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import NodePalette, { DND_MIME_TYPE } from './NodePalette'
+import NodePalette, { DND_MIME_TYPE, LABEL_DND_VALUE } from './NodePalette'
 import TopologyNode, { type TopoNodeData } from './TopologyNode'
-import FloatingEdge from './FloatingEdge'
+import LabelNode, { type LabelNodeData } from './LabelNode'
+import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
+import ConsolePane from './ConsolePane'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
 import { isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { ApiError, deployLab, type TopologyContent } from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import { useConsoleStore } from '../store/consoleStore'
 import './TopologyEditor.css'
 
 // パレットの種別ごとに「R1」「SW1」「PC1」のような短い表示名を振るための接頭辞とカウンター
 const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', pc: 'PC' }
 
-const nodeTypes = { topoNode: TopologyNode }
+const nodeTypes = { topoNode: TopologyNode, labelNode: LabelNode }
 const edgeTypes = { floating: FloatingEdge }
 
 // リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
@@ -91,7 +94,10 @@ function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, la
   const clabNodeNames = new Map<string, string>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
 
-  for (const node of nodes) {
+  // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
+  const deviceNodes = nodes.filter((n) => n.type === 'topoNode')
+
+  for (const node of deviceNodes) {
     const data = node.data as Partial<TopoNodeData>
     if (!data.kind || !data.clabKind) {
       throw new Error(`ノード「${node.id}」の種別情報が無く、deployできません（パレットから配置し直してください）`)
@@ -132,8 +138,14 @@ function TopologyEditorInner() {
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
+  // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
+  // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
+  // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
+  const [deployedLab, setDeployedLab] = useState<{ labName: string; nodeIds: Set<string> } | null>(null)
+  const [showConsolePanel, setShowConsolePanel] = useState(false)
   const { screenToFlowPosition } = useReactFlow()
   const username = useAuthStore((s) => s.username)
+  const openConsole = useConsoleStore((s) => s.openConsole)
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -196,11 +208,23 @@ function TopologyEditorInner() {
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault()
-      const kind = event.dataTransfer.getData(DND_MIME_TYPE) as PaletteNodeKind
+      const dragged = event.dataTransfer.getData(DND_MIME_TYPE)
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+
+      // ラベル（IPアドレス等のメモ）はデバイスノードとは別扱い。containerlabのノードではないため
+      // buildTopologyContent側でも除外している
+      if (dragged === LABEL_DND_VALUE) {
+        // crypto.randomUUID()はセキュアコンテキスト（https/localhost）でしか使えず、
+        // LANのIPに http:// でアクセスする運用（docs/api-contract.md参照）があるため使わない
+        const id = `label-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        setNodes((nds) => nds.concat({ id, type: 'labelNode', position, data: { text: '' } satisfies LabelNodeData }))
+        return
+      }
+
+      const kind = dragged as PaletteNodeKind
       const config = PALETTE_NODE_CONFIGS[kind]
       if (!config) return
 
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       counters.current[kind] += 1
       const n = counters.current[kind]
       const id = `${kind}-${n}`
@@ -232,6 +256,18 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
+  // トポロジエディタから直接、統合コンソールをワンタッチで開く（ラボ一覧に行かなくて済むように）。
+  // deployedLabに載っているノード＝直近のdeployに含まれていたノードのみ開ける
+  const openNodeConsole = useCallback(
+    (nodeId: string) => {
+      if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
+      openConsole(deployedLab.labName, nodeId)
+      setShowConsolePanel(true)
+      setContextMenu(null)
+    },
+    [deployedLab, openConsole],
+  )
+
   const renameNode = useCallback(
     (nodeId: string) => {
       setContextMenu(null)
@@ -247,26 +283,43 @@ function TopologyEditorInner() {
     [nodes],
   )
 
-  // キャンバス表示用: エッジのI/F情報をラベルとして出す
-  const displayEdges = useMemo(
-    () =>
-      edges.map((edge) => {
-        const iface = edge.data as Partial<EdgeIfaceData> | undefined
-        return {
-          ...edge,
-          type: edge.type ?? 'floating',
-          label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
-          style: { stroke: 'var(--edge)', strokeWidth: 2 },
-          labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
-          labelBgStyle: { fill: 'var(--surface)' },
-        }
-      }),
-    [edges],
-  )
+  // キャンバス表示用: エッジのI/F情報をラベルとして出す。
+  // 同じ2ノード間に複数リンク（LAGのような並列接続）がある場合、そのままだと
+  // floating edgeの交点計算が全リンクで同じ座標になり1本しか見えなくなるため、
+  // 同じノードペアごとに何番目・全部で何本かを数えてedge.dataに載せる
+  // （実際に弧状にずらす計算はFloatingEdge.tsx側で行う）
+  const displayEdges = useMemo(() => {
+    const pairCounts = new Map<string, number>()
+    for (const edge of edges) {
+      const pairKey = [edge.source, edge.target].sort().join('|')
+      pairCounts.set(pairKey, (pairCounts.get(pairKey) ?? 0) + 1)
+    }
+    const pairSeen = new Map<string, number>()
 
+    return edges.map((edge) => {
+      const iface = edge.data as Partial<EdgeIfaceData> | undefined
+      const pairKey = [edge.source, edge.target].sort().join('|')
+      const parallelIndex = pairSeen.get(pairKey) ?? 0
+      pairSeen.set(pairKey, parallelIndex + 1)
+      const parallelCount = pairCounts.get(pairKey) ?? 1
+
+      return {
+        ...edge,
+        type: edge.type ?? 'floating',
+        label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
+        style: { stroke: 'var(--edge)', strokeWidth: 2 },
+        labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
+        labelBgStyle: { fill: 'var(--surface)' },
+        data: { ...edge.data, parallelIndex, parallelCount } satisfies FloatingEdgeData,
+      }
+    })
+  }, [edges])
+
+  // ラベル（labelNode）はデバイスではないので、deployできるかどうかの判定からは除く
+  const deviceNodeCount = useMemo(() => nodes.filter((n) => n.type === 'topoNode').length, [nodes])
   const canDeploy = useMemo(
-    () => labName.trim().length > 0 && nodes.length > 0 && deployStatus.kind !== 'deploying',
-    [labName, nodes.length, deployStatus.kind],
+    () => labName.trim().length > 0 && deviceNodeCount > 0 && deployStatus.kind !== 'deploying',
+    [labName, deviceNodeCount, deployStatus.kind],
   )
 
   const onDeploy = useCallback(async () => {
@@ -282,6 +335,13 @@ function TopologyEditorInner() {
       await deployLab(topologyContent)
       rememberLabDisplayName(safeName, displayName)
       setDeployStatus({ kind: 'success', message: `ラボ「${displayName}」をdeployしました` })
+      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
+      const consoleNodeIds = new Set(
+        nodes
+          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+          .map((n) => n.id),
+      )
+      setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
     } catch (e) {
       const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
       setDeployStatus({ kind: 'error', message })
@@ -289,6 +349,12 @@ function TopologyEditorInner() {
   }, [nodes, edges, username, labName])
 
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
+
+  // コンテキストメニューの対象がラベルかデバイスかで出す項目を変える
+  const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
+  const contextMenuIsLabel = contextMenuNode?.type === 'labelNode'
+  const contextMenuCanOpenConsole =
+    contextMenu?.kind === 'node' && !contextMenuIsLabel && !!deployedLab?.nodeIds.has(contextMenu.nodeId)
 
   return (
     <div className="topology-editor">
@@ -311,8 +377,17 @@ function TopologyEditorInner() {
           </button>
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
+          <div className="topology-editor__toolbar-spacer" />
+          <button
+            className="topology-editor__panel-toggle"
+            onClick={() => setShowConsolePanel((v) => !v)}
+            title="トポロジを見ながら統合コンソールを操作できます"
+          >
+            🖥 コンソール{showConsolePanel ? 'を隠す' : 'パネル'}
+          </button>
         </div>
-        <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
+        <div className="topology-editor__body">
+          <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}
@@ -340,7 +415,16 @@ function TopologyEditorInner() {
 
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-              <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>
+              {!contextMenuIsLabel && <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>}
+              {!contextMenuIsLabel && (
+                <button
+                  onClick={() => openNodeConsole(contextMenu.nodeId)}
+                  disabled={!contextMenuCanOpenConsole}
+                  title={contextMenuCanOpenConsole ? undefined : 'このノードはまだdeployされていません'}
+                >
+                  コンソールを開く
+                </button>
+              )}
               <button onClick={() => deleteNode(contextMenu.nodeId)}>削除</button>
             </div>
           )}
@@ -389,6 +473,20 @@ function TopologyEditorInner() {
               </div>
             </div>
           )}
+        </div>
+        {showConsolePanel && (
+          <div className="topology-editor__console-panel">
+            <div className="topology-editor__console-panel-bar">
+              <span>統合コンソール</span>
+              <button onClick={() => setShowConsolePanel(false)} title="パネルを隠す">
+                ×
+              </button>
+            </div>
+            <div className="topology-editor__console-panel-body">
+              <ConsolePane />
+            </div>
+          </div>
+        )}
         </div>
       </div>
     </div>

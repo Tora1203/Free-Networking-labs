@@ -7,6 +7,11 @@ import { BaseEdge, getStraightPath, useInternalNode, Position, type EdgeProps, t
 // 常に「相手ノードに一番近い辺」から線が出るようにしている
 // （React Flow公式のFloating Edgesレシピと同じ考え方）。
 
+// 同じ2ノード間に複数リンク（LAGのような並列接続）がある場合、上の交点計算だけだと
+// 全リンクが完全に同じ座標を通るため1本しか見えなくなる。並列本数分だけ弧状に
+// 膨らませて見分けられるようにする（間隔はpx単位、中央寄せ）。
+const PARALLEL_SPACING = 22
+
 function getNodeIntersection(intersectionNode: InternalNode<Node>, targetNode: InternalNode<Node>) {
   const { width, height } = intersectionNode.measured
   const intersectionNodePosition = intersectionNode.internals.positionAbsolute
@@ -62,14 +67,46 @@ function getEdgeParams(source: InternalNode<Node>, target: InternalNode<Node>) {
   }
 }
 
-export default function FloatingEdge({ id, source, target, style, label, labelStyle, labelBgStyle }: EdgeProps) {
+export interface FloatingEdgeData {
+  // 同じノード間にある並列リンクの中で何番目か・全部で何本あるか（0始まり）。
+  // TopologyEditor.tsx の displayEdges 側で算出して渡す。
+  parallelIndex?: number
+  parallelCount?: number
+  [key: string]: unknown
+}
+
+export default function FloatingEdge({ id, source, target, style, label, labelStyle, labelBgStyle, data }: EdgeProps) {
   const sourceNode = useInternalNode(source)
   const targetNode = useInternalNode(target)
 
   if (!sourceNode || !targetNode) return null
 
   const { sx, sy, tx, ty } = getEdgeParams(sourceNode, targetNode)
-  const [path, labelX, labelY] = getStraightPath({ sourceX: sx, sourceY: sy, targetX: tx, targetY: ty })
+
+  const { parallelIndex = 0, parallelCount = 1 } = (data as FloatingEdgeData | undefined) ?? {}
+
+  let path: string
+  let labelX: number
+  let labelY: number
+
+  if (parallelCount <= 1) {
+    ;[path, labelX, labelY] = getStraightPath({ sourceX: sx, sourceY: sy, targetX: tx, targetY: ty })
+  } else {
+    // 中央寄せのオフセット量（例: 3本なら -spacing, 0, +spacing）
+    const offset = (parallelIndex - (parallelCount - 1) / 2) * PARALLEL_SPACING
+    const dx = tx - sx
+    const dy = ty - sy
+    const len = Math.hypot(dx, dy) || 1
+    // 進行方向に垂直な単位ベクトル
+    const nx = -dy / len
+    const ny = dx / len
+    const cx = (sx + tx) / 2 + nx * offset
+    const cy = (sy + ty) / 2 + ny * offset
+    // 端点は正しいノード境界の交点のまま、中央だけ弧状に膨らませる
+    path = `M ${sx},${sy} Q ${cx},${cy} ${tx},${ty}`
+    labelX = cx
+    labelY = cy
+  }
 
   return (
     <BaseEdge
