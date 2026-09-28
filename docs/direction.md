@@ -92,8 +92,7 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   薄いレイヤー。実装は`backend/console-proxy/`（Node.js + `ws`ライブラリ、`dev-tools/echo-server.js`と
   同系統の小さなサービス）
 - 実機で認証込みの通しの動作を確認済み（トークン検証→シェル起動→入出力の中継まで）
-- この構成変更を反映し、`docs/overview.md`のアーキテクチャ図も更新が必要
-  → `TODO(kawase3)`: overview.mdの図に`console-proxy`を追記
+- `docs/overview.md`のアーキテクチャ図に`console-proxy`を追記済み（2026-09-24対応済み）
 
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
