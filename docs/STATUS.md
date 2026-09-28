@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-24 / kawase3（Bさん休暇中にM7の一部を先行実装。統合コンソール用に`console-proxy`を新設。frontend/を触った理由は下記Doing参照）
+最終更新: 2026-09-28 / kawase3（ラボ一覧にstart/stop/destroy操作を追加。frontend/を触った理由は下記Doing参照）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -124,7 +124,14 @@
 
 **Next**
 - Bさんの休み明けに、今回のfrontend/・backend/console-proxy/への変更をレビューしてもらう
-- 残りのM7範囲（ラボ一覧のstart/stop/destroy操作、wipeボタンのUI化）を引き続き進める
+- **ラボ一覧にstart/stop/destroy操作を追加（2026-09-28）**：`api/client.ts`に`startLab`/`stopLab`/
+  `restartLab`（ラボ全体、api-contract.md参照）を追加、`LabList.tsx`の各ラボカードにボタンを設置。
+  destroyは確認ダイアログあり、操作後は一覧を自動refresh。使い捨てアカウントで実機のstart/stop/destroyを確認済み
+  - **未着手のまま残っているもの**：wipeボタンのUI化（`wipeNode()`は実装済みだが、既存ラボの
+    `topologyContent`を取得する手段が無く呼び出せない。`GET /api/v1/labs/{labName}/topology/yaml`等
+    から既存トポロジを取得する処理が別途必要）
+  - ノード単位（ラボ全体でなく個々のノード）のstart/stop操作はまだUIに出していない
+- 残りのM7範囲（wipeボタン、ノード単位操作）を引き続き進める
 
 **Blocked / 相手待ち**
 - （なし）

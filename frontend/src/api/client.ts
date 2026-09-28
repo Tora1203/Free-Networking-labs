@@ -109,6 +109,16 @@ export function destroyLab(labName: string) {
   })
 }
 
+// ラボ全体のstart/stop/restart（api-contract.md 2.4）。ノード個別のstart/stopとは別エンドポイント。
+function labAction(labName: string, action: 'start' | 'stop' | 'restart') {
+  return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}/${action}`, {
+    method: 'POST',
+  })
+}
+export const startLab = (labName: string) => labAction(labName, 'start')
+export const stopLab = (labName: string) => labAction(labName, 'stop')
+export const restartLab = (labName: string) => labAction(labName, 'restart')
+
 function nodeAction(labName: string, nodeName: string, action: 'start' | 'stop' | 'restart') {
   return request<{ message: string }>(
     `/api/v1/labs/${encodeURIComponent(labName)}/nodes/${encodeURIComponent(nodeName)}/${action}`,
