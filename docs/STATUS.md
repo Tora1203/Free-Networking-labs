@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-28 / kawase3（UX修正4件＋接続点をfloating edge化）
+最終更新: 2026-09-28 / kawase3（UX修正4件＋接続点をfloating edge化＋統合コンソールのタブ化）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -153,6 +153,19 @@
     線の描画自体を`FloatingEdge.tsx`（毎レンダリング時に2ノードの中心角度から接続点を
     再計算する方式、React Flow公式のFloating Edgesレシピ）に置き換えた。これにより
     どちらのノードを動かしても線が自然に追従する。PR #14に追加（commit `c9a6783`）
+
+- **統合コンソールのタブ化＋ワンタッチ起動（2026-09-28）**
+  - `ConsoleSession.tsx`（1ノード分の接続本体）と`ConsolePane.tsx`（タブ管理）に分割し、
+    同一ラボ内の複数ノードを同時に開いて操作できるようにした。非アクティブなタブも
+    アンマウントせずCSSで隠すだけなので、裏のWebSocket接続・シェルは維持されたまま
+  - ラボ一覧の各ノード行に🖥ボタンを追加し、ラボ名/ノード名の手入力なしでワンタッチで
+    コンソールを開けるように（`store/consoleStore.ts`・`store/uiStore.ts`新設）。
+    ovs-bridge(l2-switch)や停止中ノードはボタンを無効化
+  - 画面切り替えでコンソール接続が切れないよう、App.tsx側もConsolePaneを常時マウントする構成に変更
+  - `backend/console-proxy/`側は変更不要（元々セッション単位で独立した中継のため）
+  - PR #14に追加（commit `983e4db`）。検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ
+    （実機での複数タブ同時接続の動作確認はまだ。次回ログイン時に確認予定）
+  - SSH（TeraTerm等からの直接ログイン）案は一旦見送り。検討の経緯は`docs/direction.md`参照
 
 **Blocked / 相手待ち**
 - （なし）
