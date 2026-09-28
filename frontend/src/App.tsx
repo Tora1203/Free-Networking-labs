@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react'
 import TopologyEditor from './components/TopologyEditor'
 import LabList from './components/LabList'
-import ConsolePane from './components/Console'
+import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import Brand from './components/Brand'
 import { useAuthStore } from './store/authStore'
+import { useUiStore, type View } from './store/uiStore'
 import './App.css'
 
-type View = 'topology' | 'labs' | 'console'
 type Theme = 'light' | 'dark'
 
 const views: { id: View; label: string }[] = [
   { id: 'topology', label: 'トポロジエディタ' },
   { id: 'labs', label: 'ラボ一覧' },
-  { id: 'console', label: '統合コンソール(検証中)' },
+  { id: 'console', label: '統合コンソール' },
 ]
 
 function readInitialTheme(): Theme {
@@ -27,7 +27,8 @@ function readInitialTheme(): Theme {
 }
 
 function App() {
-  const [view, setView] = useState<View>('topology')
+  const view = useUiStore((s) => s.view)
+  const setView = useUiStore((s) => s.setView)
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
@@ -74,7 +75,11 @@ function App() {
       <div className="app-content">
         {view === 'topology' && <TopologyEditor />}
         {view === 'labs' && <LabList />}
-        {view === 'console' && <ConsolePane />}
+        {/* コンソールは他画面に切り替えてもWebSocket接続を保ちたいので、
+            常時マウントしてCSSで表示/非表示だけ切り替える（ConsolePane内のタブと同じ考え方） */}
+        <div className="app-content__console" hidden={view !== 'console'}>
+          <ConsolePane />
+        </div>
       </div>
     </div>
   )

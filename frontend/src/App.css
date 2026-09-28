@@ -47,4 +47,10 @@
 .app-content {
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+.app-content__console {
+  position: absolute;
+  inset: 0;
 }

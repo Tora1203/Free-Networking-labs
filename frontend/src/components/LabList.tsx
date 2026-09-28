@@ -10,6 +10,8 @@ import {
   type RawLabsResponse,
 } from '../api/client'
 import { getLabDisplayName } from '../utils/labName'
+import { useConsoleStore } from '../store/consoleStore'
+import { useUiStore } from '../store/uiStore'
 import './LabList.css'
 
 const stateLabel: Record<NodeState, string> = {
@@ -35,11 +37,39 @@ function toLabs(raw: RawLabsResponse): Lab[] {
   }))
 }
 
-function LabStatusDots({ nodes }: { nodes: Lab['nodes'] }) {
+// ovs-bridge(l2-switch)はコンテナを起動しないkindなのでシェル/コンソールの対象外
+// （api-contract.md 3章参照）
+function hasConsole(node: Lab['nodes'][number]) {
+  return node.kind !== 'ovs-bridge' && node.state === 'running'
+}
+
+// ノードごとに状態と「コンソールを開く」ボタンを並べる一覧。
+// ワンタッチでコンソールを開けるように、ここから直接 consoleStore にセッションを追加し
+// 画面を統合コンソールへ切り替える（labName/nodeNameの手入力を無くすのが狙い）
+function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] }) {
+  const openConsole = useConsoleStore((s) => s.openConsole)
+  const setView = useUiStore((s) => s.setView)
+
+  const openNodeConsole = (nodeName: string) => {
+    openConsole(labName, nodeName)
+    setView('console')
+  }
+
   return (
-    <div className="lab-dots">
+    <div className="lab-node-list">
       {nodes.map((n) => (
-        <span key={n.name} className={`lab-dot lab-dot--${n.state}`} title={`${n.name}: ${stateLabel[n.state]}`} />
+        <div key={n.name} className="lab-node-row" title={`${n.name}: ${stateLabel[n.state]}`}>
+          <span className={`lab-dot lab-dot--${n.state}`} />
+          <span className="lab-node-row__name">{n.name}</span>
+          <button
+            className="lab-node-row__console"
+            disabled={!hasConsole(n)}
+            title={n.kind === 'ovs-bridge' ? 'L2スイッチにはコンソールがありません' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
+            onClick={() => openNodeConsole(n.name)}
+          >
+            🖥
+          </button>
+        </div>
       ))}
     </div>
   )
@@ -108,7 +138,7 @@ export default function LabList() {
                 </span>
                 <span className="lab-card__owner">@{lab.owner}</span>
               </div>
-              <LabStatusDots nodes={lab.nodes} />
+              <LabNodeList labName={lab.name} nodes={lab.nodes} />
               <div className="lab-card__meta">
                 {runningCount}/{lab.nodes.length} nodes running
               </div>
