@@ -18,6 +18,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import NodePalette, { DND_MIME_TYPE } from './NodePalette'
 import TopologyNode, { type TopoNodeData } from './TopologyNode'
+import FloatingEdge from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
 import { isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
@@ -29,6 +30,7 @@ import './TopologyEditor.css'
 const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', pc: 'PC' }
 
 const nodeTypes = { topoNode: TopologyNode }
+const edgeTypes = { floating: FloatingEdge }
 
 // リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
 // 実際のインターフェース名を保持する（CMLのようにユーザーが接続時に選べるようにするため、
@@ -57,7 +59,7 @@ const initialEdges: Edge[] = [
     target: 'r2',
     sourceHandle: 'right',
     targetHandle: 'left',
-    type: 'straight',
+    type: 'floating',
     data: { sourceIface: 'eth1', targetIface: 'eth1' } satisfies EdgeIfaceData,
   },
 ]
@@ -170,7 +172,7 @@ function TopologyEditorInner() {
         target,
         sourceHandle: sourceHandle ?? undefined,
         targetHandle: targetHandle ?? undefined,
-        type: 'straight',
+        type: 'floating',
         data: { sourceIface: pendingSourceIface, targetIface: pendingTargetIface } satisfies EdgeIfaceData,
       }),
     )
@@ -252,7 +254,7 @@ function TopologyEditorInner() {
         const iface = edge.data as Partial<EdgeIfaceData> | undefined
         return {
           ...edge,
-          type: edge.type ?? 'straight',
+          type: edge.type ?? 'floating',
           label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
           style: { stroke: 'var(--edge)', strokeWidth: 2 },
           labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
@@ -315,6 +317,7 @@ function TopologyEditorInner() {
             nodes={nodes}
             edges={displayEdges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -324,7 +327,7 @@ function TopologyEditorInner() {
             onPaneClick={closeContextMenu}
             onMoveStart={closeContextMenu}
             connectionMode={ConnectionMode.Loose}
-            defaultEdgeOptions={{ type: 'straight' }}
+            defaultEdgeOptions={{ type: 'floating' }}
             minZoom={0.4}
             maxZoom={2}
             fitView

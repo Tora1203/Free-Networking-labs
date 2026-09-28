@@ -9,20 +9,16 @@ const KIND_VISUAL: Record<PaletteNodeKind, { badge: string; className: string }>
   pc: { badge: 'PC', className: 'topo-node--pc' },
 }
 
-// 接続はどの向きからでも作れるようにしたいので、周囲にハンドルを置く
+// 接続はどの向きからでも作れるようにしたいので、四方にハンドルを置く
 // （TopologyEditor側で connectionMode="loose" を設定している）。
-// 4方向だけだと、1つのノードに複数のリンクを繋いだ時に同じ点から線が重なって
-// 見づらくなるため、各辺の途中にもう1点ずつ追加して計8点にしている
-// （style で position のデフォルト位置(50%)をずらしている）。
+// どのハンドルを起点にドラッグしたかは接続の可否にのみ使い、実際の線の描画は
+// floating edge（TopologyEditor.tsx の FloatingEdge）が2ノードの中心角度から
+// 毎回動的に計算するため、線が重なったりノード移動に追従しなかったりする心配はない。
 const HANDLE_POSITIONS = [
   { id: 'top', position: Position.Top },
-  { id: 'top-right', position: Position.Top, style: { left: '80%' } },
   { id: 'right', position: Position.Right },
-  { id: 'bottom-right', position: Position.Right, style: { top: '80%' } },
   { id: 'bottom', position: Position.Bottom },
-  { id: 'bottom-left', position: Position.Bottom, style: { left: '20%' } },
   { id: 'left', position: Position.Left },
-  { id: 'top-left', position: Position.Left, style: { top: '20%' } },
 ] as const
 
 export interface TopoNodeData {
@@ -46,7 +42,6 @@ export default function TopologyNode({ data, selected }: NodeProps) {
           type="source"
           position={h.position}
           className="topo-node__handle"
-          style={'style' in h ? h.style : undefined}
         />
       ))}
       <div className="topo-node__badge">{visual.badge}</div>
