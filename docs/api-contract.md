@@ -24,9 +24,16 @@
 - インストール方法: 公式 `install.sh`（systemdサービス化、`/etc/clab-api-server/clab-api-server.env`で設定）
 - `CLAB_LABS_ROOT=/var/lib/containerlab/labs` に設定済み。ユーザーごとに `.../labs/<username>/<labname>/` に分離される（OS権限も `drwxr-x---` でユーザー本人のみアクセス可、確認済み）
 - 公式 Swagger UI: `https://<server>:8090/swagger/index.html`（Swagger JSON: `/swagger/doc.json`）
-- CORS 設定: **設定済み（2026-09-17）**。`CORS_ALLOWED_ORIGINS=http://localhost:5173` を
-  `/etc/clab-api-server/clab-api-server.env` に追記し再起動。実機確認済み（該当originからのpreflightが
-  `204`、`Authorization`ヘッダーも許可）。開発サーバーのポートを変える場合はこの設定も追記が必要
+- CORS 設定: **設定済み**。`CORS_ALLOWED_ORIGINS=http://localhost:5173,http://10.0.200.50:5173` を
+  `/etc/clab-api-server/clab-api-server.env` に設定済み（同一マシン・LAN上の別マシンどちらからの
+  アクセスも許可済み）。実機確認済み（該当originからのpreflightが`204`、`Authorization`ヘッダーも許可）。
+  開発サーバーのポート/ホストを変える場合はこの設定も追記が必要
+- **⚠️ 別マシン/新しいブラウザから初めてアクセスする時の注意（2026-09-28確認）**：
+  自己署名TLSのため、フロントエンドの`fetch()`はブラウザが証明書を一度も信頼していないと
+  黙って失敗する（ページ自体は開けるのに、ログインボタンを押しても無反応/エラーになる、という
+  分かりにくい症状になる）。**アプリを開く前に一度 `https://<server>:8090/health` を直接開いて
+  証明書の警告を許可**する必要がある（`{"status":"healthy",...}`が表示されればOK）。
+  CORSやコードのバグではなくブラウザ側の一度きりの手続きなので、混同しないよう注意
 
 ## 1. 認証
 
