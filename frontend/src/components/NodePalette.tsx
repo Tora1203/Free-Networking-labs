@@ -3,14 +3,15 @@ import './NodePalette.css'
 
 export const DND_MIME_TYPE = 'application/reactflow-node-kind'
 
-// ラベル（注釈）はデバイスノードではないので PaletteNodeKind には含めず、
+// ラベル（注釈）・エリア（図形）はデバイスノードではないので PaletteNodeKind には含めず、
 // 同じDND_MIME_TYPEチャンネルに特別な値として流す（TopologyEditor.tsx の onDrop で分岐）
 export const LABEL_DND_VALUE = 'label'
+export const AREA_DND_VALUE = 'area'
 
 const paletteOrder: PaletteNodeKind[] = ['router', 'l2-switch', 'pc']
 
 export default function NodePalette() {
-  const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind | typeof LABEL_DND_VALUE) => {
+  const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind | typeof LABEL_DND_VALUE | typeof AREA_DND_VALUE) => {
     event.dataTransfer.setData(DND_MIME_TYPE, kind)
     event.dataTransfer.effectAllowed = 'move'
   }
@@ -40,6 +41,14 @@ export default function NodePalette() {
         title="IPアドレスなどのメモをトポロジ上に自由に配置できます"
       >
         🏷 ラベル
+      </div>
+      <div
+        className="node-palette__item node-palette__item--area"
+        draggable
+        onDragStart={(event) => onDragStart(event, AREA_DND_VALUE)}
+        title="ノードをまとめて囲む枠を配置できます（見た目だけのグループ化）"
+      >
+        ▭ エリア
       </div>
     </aside>
   )

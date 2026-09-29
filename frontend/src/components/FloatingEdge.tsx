@@ -10,7 +10,21 @@ import { BaseEdge, getStraightPath, useInternalNode, Position, type EdgeProps, t
 // 同じ2ノード間に複数リンク（LAGのような並列接続）がある場合、上の交点計算だけだと
 // 全リンクが完全に同じ座標を通るため1本しか見えなくなる。並列本数分だけ弧状に
 // 膨らませて見分けられるようにする（間隔はpx単位、中央寄せ）。
-const PARALLEL_SPACING = 22
+const PARALLEL_SPACING = 26
+
+// I/Fラベルを常に弧の中心(t=0.5)に置くと、並列本数が4本以上になった時に
+// 中央寄り同士のラベルがケーブルや他のラベルと重なって読めなくなる（2026-09-29指摘）。
+// リンクごとに弧の上の位置(t)を少しずつ前後にずらすことで、各ラベルを自分の弧の上
+// （＝どのケーブルのラベルか分かる位置）に置きつつ、並列リンク同士でも重ならないようにする。
+const LABEL_T_STEP = 0.09
+
+function quadraticBezierPoint(p0: { x: number; y: number }, c: { x: number; y: number }, p1: { x: number; y: number }, t: number) {
+  const mt = 1 - t
+  return {
+    x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p1.x,
+    y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p1.y,
+  }
+}
 
 function getNodeIntersection(intersectionNode: InternalNode<Node>, targetNode: InternalNode<Node>) {
   const { width, height } = intersectionNode.measured
@@ -104,8 +118,13 @@ export default function FloatingEdge({ id, source, target, style, label, labelSt
     const cy = (sy + ty) / 2 + ny * offset
     // 端点は正しいノード境界の交点のまま、中央だけ弧状に膨らませる
     path = `M ${sx},${sy} Q ${cx},${cy} ${tx},${ty}`
-    labelX = cx
-    labelY = cy
+
+    // ラベルは自分の弧の上の、少しだけ中心からずらした位置に置く
+    const t = 0.5 + (parallelIndex - (parallelCount - 1) / 2) * LABEL_T_STEP
+    const clampedT = Math.min(0.82, Math.max(0.18, t))
+    const labelPoint = quadraticBezierPoint({ x: sx, y: sy }, { x: cx, y: cy }, { x: tx, y: ty }, clampedT)
+    labelX = labelPoint.x
+    labelY = labelPoint.y
   }
 
   return (

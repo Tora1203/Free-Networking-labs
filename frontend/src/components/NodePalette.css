@@ -57,3 +57,9 @@
 .node-palette__item--label {
   border-left: 4px dashed var(--ink-faint);
 }
+
+.node-palette__item--area {
+  border: 1px dashed var(--border);
+  border-left: 4px dashed var(--ink-faint);
+  background: transparent;
+}

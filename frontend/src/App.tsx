@@ -29,6 +29,7 @@ function readInitialTheme(): Theme {
 function App() {
   const view = useUiStore((s) => s.view)
   const setView = useUiStore((s) => s.setView)
+  const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
@@ -75,9 +76,17 @@ function App() {
       <div className="app-content">
         {view === 'topology' && <TopologyEditor />}
         {view === 'labs' && <LabList />}
-        {/* コンソールは他画面に切り替えてもWebSocket接続を保ちたいので、
-            常時マウントしてCSSで表示/非表示だけ切り替える（ConsolePane内のタブと同じ考え方） */}
-        <div className="app-content__console" hidden={view !== 'console'}>
+        {/* ConsolePane（xterm.js＋WebSocket接続を持つ）はApp直下にこの1箇所だけマウントする。
+            画面切り替えでWebSocket接続を保ちたいのはもちろん、トポロジエディタ側にも
+            もう1つ同じConsolePaneをマウントすると同じセッションへの接続が二重に張られてしまい
+            片方が無反応になる不具合になっていたため（2026-09-29修正）、表示位置はCSSだけで
+            切り替える：フル画面（統合コンソールタブ）／トポロジエディタ右側にドッキング／非表示 */}
+        <div
+          className={`app-content__console app-content__console--${
+            view === 'console' ? 'full' : consolePanelDocked && view === 'topology' ? 'docked' : 'hidden'
+          }`}
+          hidden={view !== 'console' && !(consolePanelDocked && view === 'topology')}
+        >
           <ConsolePane />
         </div>
       </div>

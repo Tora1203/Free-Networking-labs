@@ -50,7 +50,16 @@
   position: relative;
 }
 
-.app-content__console {
+.app-content__console--full {
   position: absolute;
   inset: 0;
+}
+
+.app-content__console--docked {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 440px;
+  border-left: 1px solid var(--border);
 }
