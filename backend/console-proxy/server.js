@@ -69,13 +69,19 @@ function connectUpstream(client, sessionId, token) {
   upstream.on('open', () => {
     // クライアント→アップストリーム
     client.on('message', (data) => {
-      if (upstream.readyState === WebSocket.OPEN) upstream.send(data)
+      // wsライブラリはmessageイベントでdataをBufferとして渡してくる。そのままsend(buffer)すると
+      // 元がテキストフレームだったかどうかに関わらずバイナリフレームとして送信されてしまい、
+      // ブラウザ側のWebSocketは既定でバイナリメッセージをBlobとして渡してくる。このプロトコルは
+      // 常にJSONテキスト（{"type":"output","data":"<base64>"}等）しかやり取りしないため、
+      // 文字列に変換してから送ることでテキストフレームとして中継する
+      // （2026-09-30発見：この変換が無かったためevent.dataがBlobになりJSON.parseが失敗していた）
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(data.toString('utf8'))
     })
   })
 
   // アップストリーム→クライアント
   upstream.on('message', (data) => {
-    if (client.readyState === WebSocket.OPEN) client.send(data)
+    if (client.readyState === WebSocket.OPEN) client.send(data.toString('utf8'))
   })
 
   upstream.on('unexpected-response', (_req, res) => {
