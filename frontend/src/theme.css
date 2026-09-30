@@ -1,5 +1,10 @@
-/* ライト/ダーク共通のカラートークン。data-theme="dark" をルート要素に付けると切り替わる。 */
+/* ライト/ダーク共通のカラートークン。data-theme="dark" をルート要素に付けると切り替わる。
+   color-scheme もここで明示的に切り替える。index.cssで`color-scheme: light dark`と
+   固定していた時期があり、その場合OSがダーク設定だとアプリ側でライトを選んでいても
+   <select>のネイティブなドロップダウンやスクロールバーだけダーク色のまま残ってしまっていた
+   （2026-09-28指摘・修正）。 */
 :root {
+  color-scheme: light;
   --bg: #f5f6f3;
   --surface: #ffffff;
   --surface-2: #eceee7;
@@ -20,6 +25,7 @@
 }
 
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --bg: #12171a;
   --surface: #1a2126;
   --surface-2: #202a30;

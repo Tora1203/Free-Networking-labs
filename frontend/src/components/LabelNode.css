@@ -1,0 +1,38 @@
+.label-node {
+  min-width: 60px;
+  max-width: 220px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border: 1px dashed var(--ink-faint);
+  border-radius: 5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+
+.label-node--selected {
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.label-node--editing {
+  padding: 0;
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.label-node__textarea {
+  width: 160px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  resize: both;
+  outline: none;
+}

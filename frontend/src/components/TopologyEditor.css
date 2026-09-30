@@ -22,6 +22,16 @@
   border-bottom: 1px solid var(--border);
 }
 
+.topology-editor__toolbar-spacer {
+  flex: 1;
+}
+
+.topology-editor__toolbar button.topology-editor__panel-toggle {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--border);
+}
+
 .topology-editor__lab-name {
   font-size: 13px;
   padding: 5px 8px;
