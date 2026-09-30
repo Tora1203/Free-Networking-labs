@@ -108,6 +108,10 @@
   FE側は`frontend/src/utils/labName.ts`で、安全でない名前を決定的なハッシュ名（`lab-xxxxxxxx`）に
   変換してから送る対応済み（ユーザーには元の名前を表示、実際のAPI上の名前とは別管理）
 - クエリパラメータ: `reconfigure`（自分所有のラボの上書き再deployを許可）、`maxWorkers`、`nodeFilter` 等（詳細はSwagger参照）
+  - **FE側の利用（2026-09-30）**：トポロジエディタでdeploy済みのラボ名のまま編集して再度Deployすると
+    `reconfigure=true`を付けて送るようにした（付けないと既存ラボ名へのPOSTは失敗し、
+    deploy後にトポロジを直せなくなるため）。`nodeFilter`無しでトポロジ全体を送った場合の挙動
+    （ノードの追加・削除まで反映されるか）は`TODO(kawase3)`：実機確認したら追記する
 - レスポンス実例: 2.1と同形式（`ClabInspectOutput`、deployされたノード一覧）
 
 ### 2.3 ラボ destroy / 削除

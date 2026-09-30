@@ -48,7 +48,13 @@ export default function ConsolePane() {
       </div>
       <div className="console-manager__body">
         {sessions.map((s) => (
-          <ConsoleSession key={s.id} labName={s.labName} nodeName={s.nodeName} visible={s.id === activeId} />
+          <ConsoleSession
+            key={s.id}
+            labName={s.labName}
+            nodeName={s.nodeName}
+            visible={s.id === activeId}
+            autoCommand={s.autoCommand}
+          />
         ))}
       </div>
     </div>

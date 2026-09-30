@@ -18,9 +18,14 @@ interface Props {
   // タブが非表示の間もソケット接続自体は維持したいので、コンポーネントはアンマウントせず
   // CSSで隠すだけにする。visibleが立った瞬間にxterm.jsへ再fitさせる必要があるため props で渡す。
   visible: boolean
+  // シェルに接続できた直後に自動で流し込むコマンド（例: ルーターはvtyshを自動起動）。
+  // clab-api-serverのterminal-sessions APIには「シェル以外の初期コマンドを指定する」手段が無いため
+  // （protocolはssh/shell/telnetのみ、api-contract.md 2.5参照）、シェルに入った後で
+  // 通常の入力と同じ経路でコマンドを送り込むことで実現している
+  autoCommand?: string
 }
 
-export default function ConsoleSession({ labName, nodeName, visible }: Props) {
+export default function ConsoleSession({ labName, nodeName, visible, autoCommand }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -69,6 +74,9 @@ export default function ConsoleSession({ labName, nodeName, visible }: Props) {
           if (msg.type === 'ready') {
             setStatus('connected')
             term.writeln(`[connected to ${labName}/${nodeName}]`)
+            if (autoCommand && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: 'input', data: `${autoCommand}\n` }))
+            }
           } else if (msg.type === 'output') {
             // api-contract.md 2.5: サーバー→クライアントの出力はbase64
             term.write(atob(msg.data))
@@ -106,7 +114,7 @@ export default function ConsoleSession({ labName, nodeName, visible }: Props) {
       socketRef.current?.close()
       term.dispose()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- labName/nodeNameはこのセッションの生存期間中不変
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- labName/nodeName/autoCommandはこのセッションの生存期間中不変
   }, [])
 
   // タブが表示状態に切り替わった瞬間、隠れていた間にリサイズされていた分をfitし直す

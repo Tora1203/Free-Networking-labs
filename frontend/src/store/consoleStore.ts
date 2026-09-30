@@ -8,12 +8,15 @@ export interface ConsoleSessionInfo {
   id: string
   labName: string
   nodeName: string
+  // シェルに接続した直後に自動で流し込むコマンド（例: ルーターはvtyshを自動起動）。
+  // 末尾の改行は付けずに渡す（ConsoleSession.tsx側でEnter相当を追加する）
+  autoCommand?: string
 }
 
 interface ConsoleState {
   sessions: ConsoleSessionInfo[]
   activeId: string | null
-  openConsole: (labName: string, nodeName: string) => void
+  openConsole: (labName: string, nodeName: string, autoCommand?: string) => void
   closeConsole: (id: string) => void
   setActive: (id: string) => void
 }
@@ -25,11 +28,11 @@ function sessionId(labName: string, nodeName: string) {
 export const useConsoleStore = create<ConsoleState>()((set, get) => ({
   sessions: [],
   activeId: null,
-  openConsole: (labName, nodeName) => {
+  openConsole: (labName, nodeName, autoCommand) => {
     const id = sessionId(labName, nodeName)
     const exists = get().sessions.some((s) => s.id === id)
     set((s) => ({
-      sessions: exists ? s.sessions : [...s.sessions, { id, labName, nodeName }],
+      sessions: exists ? s.sessions : [...s.sessions, { id, labName, nodeName, autoCommand }],
       activeId: id,
     }))
   },

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Lab, NodeState } from '../types/lab'
+import { PALETTE_NODE_CONFIGS, type Lab, type NodeState } from '../types/lab'
 import {
   ApiError,
   destroyLab,
@@ -43,6 +43,12 @@ function hasConsole(node: Lab['nodes'][number]) {
   return node.kind !== 'ovs-bridge' && node.state === 'running'
 }
 
+// containerlab側ではrouter/pcはどちらもkind:'linux'なので、imageで判別する
+// （CMLのように、ルーターは開いた瞬間からvtysh操作にしておきたいため）
+function isRouter(node: Lab['nodes'][number]) {
+  return node.image === PALETTE_NODE_CONFIGS.router.image
+}
+
 // ノードごとに状態と「コンソールを開く」ボタンを並べる一覧。
 // ワンタッチでコンソールを開けるように、ここから直接 consoleStore にセッションを追加し
 // 画面を統合コンソールへ切り替える（labName/nodeNameの手入力を無くすのが狙い）
@@ -50,8 +56,8 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
   const openConsole = useConsoleStore((s) => s.openConsole)
   const setView = useUiStore((s) => s.setView)
 
-  const openNodeConsole = (nodeName: string) => {
-    openConsole(labName, nodeName)
+  const openNodeConsole = (node: Lab['nodes'][number]) => {
+    openConsole(labName, node.name, isRouter(node) ? 'vtysh' : undefined)
     setView('console')
   }
 
@@ -65,7 +71,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
             className="lab-node-row__console"
             disabled={!hasConsole(n)}
             title={n.kind === 'ovs-bridge' ? 'L2スイッチにはコンソールがありません' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
-            onClick={() => openNodeConsole(n.name)}
+            onClick={() => openNodeConsole(n)}
           >
             🖥
           </button>

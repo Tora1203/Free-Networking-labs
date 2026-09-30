@@ -282,11 +282,13 @@ function TopologyEditorInner() {
   const openNodeConsole = useCallback(
     (nodeId: string) => {
       if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
-      openConsole(deployedLab.labName, nodeId)
+      // ルーターはCMLのように最初からvtyshを開いた状態にしておく
+      const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
+      openConsole(deployedLab.labName, nodeId, kind === 'router' ? 'vtysh' : undefined)
       setConsolePanelDocked(true)
       setContextMenu(null)
     },
-    [deployedLab, openConsole, setConsolePanelDocked],
+    [deployedLab, nodes, openConsole, setConsolePanelDocked],
   )
 
   const renameNode = useCallback(
@@ -342,6 +344,8 @@ function TopologyEditorInner() {
     () => labName.trim().length > 0 && deviceNodeCount > 0 && deployStatus.kind !== 'deploying',
     [labName, deviceNodeCount, deployStatus.kind],
   )
+  // 入力欄のラボ名が「直近deployしたラボ」と同じなら、今回のDeployは新規ではなく変更の反映になる
+  const isRedeploy = useMemo(() => deployedLab?.labName === toSafeLabName(labName.trim()), [deployedLab, labName])
 
   const onDeploy = useCallback(async () => {
     if (!username) return
@@ -353,9 +357,15 @@ function TopologyEditorInner() {
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
       const topologyContent = buildTopologyContent(nodes, edges, username, safeName)
-      await deployLab(topologyContent)
+      // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
+      // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
+      // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
+      await deployLab(topologyContent, { reconfigure: isRedeploy })
       rememberLabDisplayName(safeName, displayName)
-      setDeployStatus({ kind: 'success', message: `ラボ「${displayName}」をdeployしました` })
+      setDeployStatus({
+        kind: 'success',
+        message: isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`,
+      })
       // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
       const consoleNodeIds = new Set(
         nodes
@@ -367,7 +377,7 @@ function TopologyEditorInner() {
       const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
       setDeployStatus({ kind: 'error', message })
     }
-  }, [nodes, edges, username, labName])
+  }, [nodes, edges, username, labName, isRedeploy])
 
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
 
@@ -393,8 +403,8 @@ function TopologyEditorInner() {
               実際の名前: {toSafeLabName(labName)}
             </span>
           )}
-          <button onClick={onDeploy} disabled={!canDeploy}>
-            {deployStatus.kind === 'deploying' ? 'deploy中...' : 'Deploy'}
+          <button onClick={onDeploy} disabled={!canDeploy} title={isRedeploy ? '既にdeploy済みのラボに変更を反映します' : undefined}>
+            {deployStatus.kind === 'deploying' ? (isRedeploy ? '反映中...' : 'deploy中...') : isRedeploy ? '変更を反映' : 'Deploy'}
           </button>
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}

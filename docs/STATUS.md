@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-09-30 / kawase3（console-proxyのバイナリフレーム化バグを修正・統合コンソールが実際に開通）
+最終更新: 2026-09-30 / kawase3（console-proxy修正・deploy後のトポロジ再反映・ルーターのvtysh自動起動）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -220,6 +220,20 @@
   - `data.toString('utf8')`してから中継するよう修正し、`console-proxy`を再起動して反映済み
     （このプロトコルは常にJSON文字列しかやり取りしないため、バイナリフレームである必要は無い）
   - 動作確認は次のログイン時にお願いしたい
+
+- **質問2件に対応（2026-09-30）**
+  - **「deployしたらもうトポロジ変更できない？」**：これまでは常に新規deployとして送っていたため、
+    同じラボ名で再度Deployすると「既に存在する」で失敗し、実質的にトポロジを直せなかった。
+    入力欄のラボ名が直近deployしたラボと同じなら`reconfigure=true`を付けて送るように修正
+    （`deployLab()`に`{reconfigure}`オプションを追加）。ボタンの表示も新規は「Deploy」、
+    2回目以降は「変更を反映」に変わる。`reconfigure=true`単体（nodeFilter無し）でノードの
+    追加・削除まで反映されるかは`docs/api-contract.md`に`TODO(kawase3)`として記録、実機確認が必要
+  - **「routerは最初からvtyshで開いてほしい」**：clab-api-serverのterminal-sessions APIには
+    シェル以外の初期コマンドを指定する手段が無いため、シェル接続完了直後にフロント側から
+    `vtysh\n`を通常の入力として自動送信する方式で実現（`consoleStore`の`autoCommand`、
+    ルーター判定はトポロジエディタでは`data.kind==='router'`、ラボ一覧では
+    `image===PALETTE_NODE_CONFIGS.router.image`で行っている）
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機での動作確認はまだ
 
 **Blocked / 相手待ち**
 - （なし）
