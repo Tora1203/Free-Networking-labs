@@ -1,5 +1,10 @@
-/* ライト/ダーク共通のカラートークン。data-theme="dark" をルート要素に付けると切り替わる。 */
+/* ライト/ダーク共通のカラートークン。data-theme="dark" をルート要素に付けると切り替わる。
+   color-scheme もここで明示的に切り替える。index.cssで`color-scheme: light dark`と
+   固定していた時期があり、その場合OSがダーク設定だとアプリ側でライトを選んでいても
+   <select>のネイティブなドロップダウンやスクロールバーだけダーク色のまま残ってしまっていた
+   （2026-09-28指摘・修正）。 */
 :root {
+  color-scheme: light;
   --bg: #f5f6f3;
   --surface: #ffffff;
   --surface-2: #eceee7;
@@ -17,9 +22,16 @@
   --edge: #8a988e;
 
   --term-bg: #141f19;
+  /* --term-bgは常に暗い色（ターミナルらしい見た目を保つためライト/ダーク共通）なので、
+     その上の文字色も--ink等のテーマ追従トークンではなく常に明るい固定色を使う必要がある。
+     ライトモードだと--ink（文字色）が--term-bgとほぼ同じ暗さになり、タブ名や接続先表示の
+     文字が背景に沈んで読めなくなっていた（2026-10-05指摘：「タブの色が消えて分からない」） */
+  --term-ink: #e7ede8;
+  --term-ink-faint: #93a39a;
 }
 
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --bg: #12171a;
   --surface: #1a2126;
   --surface-2: #202a30;

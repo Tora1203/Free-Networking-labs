@@ -102,8 +102,23 @@
   }
   ```
   → FE側は「clab YAMLのキー構造と1:1のJSON」を組み立てて渡す設計でよい（YAML文字列に変換する必要はない）
+- **⚠️ `name`の文字種制限（2026-09-28実機確認）**：`topology.name`に日本語等の非ASCII文字を含めると
+  `400 {"error":"Invalid characters in topology 'name'."}`で拒否される。英数字・ハイフン・
+  アンダースコアのみが安全（未検証だが`^[A-Za-z0-9][A-Za-z0-9_-]*$`相当と推測）。
+  FE側は`frontend/src/utils/labName.ts`で、安全でない名前を決定的なハッシュ名（`lab-xxxxxxxx`）に
+  変換してから送る対応済み（ユーザーには元の名前を表示、実際のAPI上の名前とは別管理）
 - クエリパラメータ: `reconfigure`（自分所有のラボの上書き再deployを許可）、`maxWorkers`、`nodeFilter` 等（詳細はSwagger参照）
+  - **FE側の利用（2026-09-30）**：トポロジエディタでdeploy済みのラボ名のまま編集して再度Deployすると
+    `reconfigure=true`を付けて送るようにした（付けないと既存ラボ名へのPOSTは失敗し、
+    deploy後にトポロジを直せなくなるため）。`nodeFilter`無しでトポロジ全体を送った場合の挙動
+    （ノードの追加・削除まで反映されるか）は`TODO(kawase3)`：実機確認したら追記する
 - レスポンス実例: 2.1と同形式（`ClabInspectOutput`、deployされたノード一覧）
+
+### 2.2.1 既存ラボのトポロジ取得（2026-10-05、Swagger仕様で確認・利用開始）
+- `GET /api/v1/labs/{labName}/topology/yaml` — デプロイ済みラボのトポロジYAMLを`text/plain`で返す
+  （JSONではないので`JSON.parse`しないこと。FE側は`api/client.ts`の`getLabTopologyYaml()`参照）
+- `GET /api/v1/labs/{labName}/topology/annotations` も存在する（ノード座標等の「見た目」情報と
+  思われるが実際のフォーマットは`TODO(kawase3)`：未確認。読み込み側の実装は`utils/topologyFromYaml.ts`参照）
 
 ### 2.3 ラボ destroy / 削除
 - `DELETE /api/v1/labs/{labName}`（**確定パス**、実機確認済み）。クエリ `?cleanup=true` でラボディレクトリも削除

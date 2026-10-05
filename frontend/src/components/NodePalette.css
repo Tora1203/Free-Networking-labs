@@ -47,3 +47,19 @@
 .node-palette__item--pc {
   border-left: 4px solid var(--node-pc);
 }
+
+.node-palette__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.node-palette__item--label {
+  border-left: 4px dashed var(--ink-faint);
+}
+
+.node-palette__item--area {
+  border: 1px dashed var(--border);
+  border-left: 4px dashed var(--ink-faint);
+  background: transparent;
+}

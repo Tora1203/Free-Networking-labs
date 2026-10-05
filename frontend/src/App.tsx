@@ -1,19 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import TopologyEditor from './components/TopologyEditor'
-import LabList from './components/LabList'
-import ConsolePane from './components/Console'
+import Home from './components/Home'
+import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import Brand from './components/Brand'
 import { useAuthStore } from './store/authStore'
+import { useUiStore, type View } from './store/uiStore'
 import './App.css'
 
-type View = 'topology' | 'labs' | 'console'
 type Theme = 'light' | 'dark'
 
+// トポロジエディタ（'editor'）はここには含めない。ホームから「新規作成」または
+// 「既存ラボをエディタで開く」のどちらかを選んで入る専用画面であり、常時表示のタブではない
+// （2026-10-05決定、docs/direction.md参照）
 const views: { id: View; label: string }[] = [
-  { id: 'topology', label: 'トポロジエディタ' },
-  { id: 'labs', label: 'ラボ一覧' },
-  { id: 'console', label: '統合コンソール(検証中)' },
+  { id: 'home', label: 'ホーム' },
+  { id: 'console', label: '統合コンソール' },
 ]
 
 function readInitialTheme(): Theme {
@@ -27,10 +29,15 @@ function readInitialTheme(): Theme {
 }
 
 function App() {
-  const [view, setView] = useState<View>('topology')
+  const view = useUiStore((s) => s.view)
+  const setView = useUiStore((s) => s.setView)
+  const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
+  const consolePanelWidth = useUiStore((s) => s.consolePanelWidth)
+  const setConsolePanelWidth = useUiStore((s) => s.setConsolePanelWidth)
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
+  const resizingRef = useRef(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -41,14 +48,38 @@ function App() {
     }
   }, [theme])
 
+  // ドッキングパネルの幅をドラッグで調整できるようにする（2026-10-05追加：
+  // 「右側コンソールのサイズが調整できない」という指摘に対応）。
+  // パネルは右端固定・左端がハンドルなので、ポインタのX座標とウィンドウ幅の差がそのまま幅になる
+  const onResizeStart = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault()
+      resizingRef.current = true
+      const onMove = (e: MouseEvent) => {
+        if (!resizingRef.current) return
+        setConsolePanelWidth(window.innerWidth - e.clientX)
+      }
+      const onUp = () => {
+        resizingRef.current = false
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    [setConsolePanelWidth],
+  )
+
   if (!username) {
     return <LoginForm />
   }
 
+  const consoleDocked = consolePanelDocked && view === 'editor'
+
   return (
     <div className="app-shell">
       <nav className="app-nav">
-        <Brand size="nav" />
+        <Brand size="nav" onClick={() => setView('home')} />
         {views.map((v) => (
           <button
             key={v.id}
@@ -72,9 +103,23 @@ function App() {
         </button>
       </nav>
       <div className="app-content">
-        {view === 'topology' && <TopologyEditor />}
-        {view === 'labs' && <LabList />}
-        {view === 'console' && <ConsolePane />}
+        {view === 'home' && <Home />}
+        {view === 'editor' && <TopologyEditor />}
+        {/* ConsolePane（xterm.js＋WebSocket接続を持つ）はApp直下にこの1箇所だけマウントする。
+            画面切り替えでWebSocket接続を保ちたいのはもちろん、トポロジエディタ側にも
+            もう1つ同じConsolePaneをマウントすると同じセッションへの接続が二重に張られてしまい
+            片方が無反応になる不具合になっていたため（2026-09-29修正）、表示位置はCSSだけで
+            切り替える：フル画面（統合コンソールタブ）／トポロジエディタ右側にドッキング／非表示 */}
+        <div
+          className={`app-content__console app-content__console--${view === 'console' ? 'full' : consoleDocked ? 'docked' : 'hidden'}`}
+          style={consoleDocked ? { width: consolePanelWidth } : undefined}
+          hidden={view !== 'console' && !consoleDocked}
+        >
+          {consoleDocked && (
+            <div className="app-content__console-resizer" onMouseDown={onResizeStart} title="ドラッグして幅を調整" />
+          )}
+          <ConsolePane />
+        </div>
       </div>
     </div>
   )

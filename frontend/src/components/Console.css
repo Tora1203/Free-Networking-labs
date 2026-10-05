@@ -1,3 +1,69 @@
+.console-manager {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bg);
+}
+
+.console-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.console-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 6px 6px 0 0;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+.console-tab__label {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.console-tab--active {
+  background: var(--term-bg);
+  /* --term-bgは常に暗いので、ここだけはテーマ追従の--inkではなく常に明るい固定色を使う
+     （ライトモードだと--inkがほぼ同じ暗さになり文字が読めなくなっていた） */
+  color: var(--term-ink);
+}
+
+.console-tab__close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.console-tab__close:hover {
+  opacity: 1;
+}
+
+.console-manager__body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
 .console-pane {
   width: 100%;
   height: 100%;
@@ -6,46 +72,77 @@
   background: var(--term-bg);
 }
 
+.console-manager__body .console-pane {
+  position: absolute;
+  inset: 0;
+}
+
+.console-pane--empty {
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.console-pane__hint {
+  max-width: 420px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--term-ink-faint);
+}
+
 .console-pane__bar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 6px 12px;
   font-family: ui-monospace, monospace;
   font-size: 11.5px;
-  color: var(--ink-faint);
+  color: var(--term-ink-faint);
   border-bottom: 1px solid var(--border);
 }
 
-.console-pane__input {
-  font-size: 11.5px;
-  font-family: ui-monospace, monospace;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--ink);
-  width: 110px;
+.console-pane__target {
+  color: var(--term-ink);
+  font-weight: 600;
 }
 
-.console-pane__bar button {
-  padding: 4px 10px;
-  border: none;
-  border-radius: 4px;
+.console-pane__badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+}
+
+.console-pane__badge--connecting {
+  background: var(--warn);
+  color: var(--accent-ink);
+}
+
+.console-pane__badge--connected {
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 11.5px;
-  cursor: pointer;
 }
 
-.console-pane__bar button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.console-pane__badge--closed,
+.console-pane__badge--error {
+  background: var(--ink-faint);
+  color: var(--surface);
 }
 
 .console-pane__status {
   color: var(--warn);
+}
+
+.console-pane__reconnect {
+  margin-left: auto;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
 }
 
 .console-pane__term {

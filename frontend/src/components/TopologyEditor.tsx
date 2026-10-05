@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -16,18 +16,34 @@ import {
   type OnEdgesChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import NodePalette, { DND_MIME_TYPE } from './NodePalette'
+import NodePalette, { DND_MIME_TYPE, LABEL_DND_VALUE, AREA_DND_VALUE } from './NodePalette'
 import TopologyNode, { type TopoNodeData } from './TopologyNode'
+import LabelNode, { type LabelNodeData } from './LabelNode'
+import AreaNode, { type AreaNodeData } from './AreaNode'
+import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
-import { ApiError, deployLab, type TopologyContent } from '../api/client'
+import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
+import { parseTopologyYaml } from '../utils/topologyFromYaml'
+import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
+import {
+  ApiError,
+  deployLab,
+  getLabAnnotations,
+  getLabTopologyYaml,
+  putLabAnnotations,
+  type TopologyContent,
+} from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import { useConsoleStore } from '../store/consoleStore'
+import { useUiStore } from '../store/uiStore'
 import './TopologyEditor.css'
 
 // パレットの種別ごとに「R1」「SW1」「PC1」のような短い表示名を振るための接頭辞とカウンター
 const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', pc: 'PC' }
 
-const nodeTypes = { topoNode: TopologyNode }
+const nodeTypes = { topoNode: TopologyNode, labelNode: LabelNode, areaNode: AreaNode }
+const edgeTypes = { floating: FloatingEdge }
 
 // リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
 // 実際のインターフェース名を保持する（CMLのようにユーザーが接続時に選べるようにするため、
@@ -43,26 +59,29 @@ function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
   return { kind, clabKind: config.clabKind, image: config.image, shortLabel }
 }
 
-const initialNodes: Node[] = [
-  { id: 'r1', type: 'topoNode', position: { x: 0, y: 0 }, data: makeNodeData('router', 'R1') },
-  { id: 'r2', type: 'topoNode', position: { x: 220, y: 0 }, data: makeNodeData('router', 'R2') },
-  { id: 'r3', type: 'topoNode', position: { x: 110, y: 150 }, data: makeNodeData('router', 'R3') },
-]
+// 以前はデモ用にr1/r2/r3のルーター3台を最初から置いていたが、既存の動いているラボの
+// コンテナ名（例: `test`ラボの`r1`等）とたまたま一致することがあり、デモノードを
+// 実際のラボのノードと誤解して右クリックしてしまう事故につながっていた（2026-10-05指摘）。
+// 今はホームから「新規作成」で入った時だけこの空の状態を使う（「エディタで開く」で入った時は
+// 下のuseEffectで既存ラボのYAMLから復元するので、このinitialNodes/initialEdgesは使われない）
+const initialNodes: Node[] = []
+const initialEdges: Edge[] = []
+const initialCounters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, pc: 0 }
 
-const initialEdges: Edge[] = [
-  {
-    id: 'r1-r2',
-    source: 'r1',
-    target: 'r2',
-    sourceHandle: 'right',
-    targetHandle: 'left',
-    type: 'straight',
-    data: { sourceIface: 'eth1', targetIface: 'eth1' } satisfies EdgeIfaceData,
-  },
-]
+// ラベル・エリアのid採番。crypto.randomUUID()はセキュアコンテキスト（https/localhost）でしか
+// 使えず、LANのIPに http:// でアクセスする運用（docs/api-contract.md参照）があるため使わない
+function randomAnnotationId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+}
 
-// 初期デモノードの分だけ、ドロップ時のカウンターを進めておく（R4から採番されるように）
-const initialCounters: Record<PaletteNodeKind, number> = { router: 3, 'l2-switch': 0, pc: 0 }
+// 新規作成モードでは、deployするためだけに毎回ラボ名を考えて入力する手間を省くため、
+// YYYYMMDDHH形式の名前を自動で入れておく（そのまま使ってもいいし、書き換えてもよい）
+// （2026-10-05指摘）
+function defaultLabName(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}`
+}
 
 const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
 
@@ -88,7 +107,10 @@ function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, la
   const clabNodeNames = new Map<string, string>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
 
-  for (const node of nodes) {
+  // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
+  const deviceNodes = nodes.filter((n) => n.type === 'topoNode')
+
+  for (const node of deviceNodes) {
     const data = node.data as Partial<TopoNodeData>
     if (!data.kind || !data.clabKind) {
       throw new Error(`ノード「${node.id}」の種別情報が無く、deployできません（パレットから配置し直してください）`)
@@ -123,14 +145,68 @@ function TopologyEditorInner() {
   const counters = useRef<Record<PaletteNodeKind, number>>({ ...initialCounters })
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [edges, setEdges] = useState<Edge[]>(initialEdges)
-  const [labName, setLabName] = useState('')
+  // 新規作成モードなら最初からYYYYMMDDHHの名前を入れておく（既存ラボを開く時はuseEffectで上書きする）
+  const [labName, setLabName] = useState(() => (useUiStore.getState().editorTarget.mode === 'new' ? defaultLabName() : ''))
   const [deployStatus, setDeployStatus] = useState<DeployStatus>({ kind: 'idle' })
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
+  // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
+  // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
+  // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
+  const [deployedLab, setDeployedLab] = useState<{ labName: string; nodeIds: Set<string> } | null>(null)
+  // 既存ラボをエディタで開く時のYAML取得状態（ホームからの「エディタで開く」導線、2026-10-05追加）
+  const [loadStatus, setLoadStatus] = useState<{ kind: 'idle' | 'loading' | 'error'; message?: string }>({ kind: 'idle' })
   const { screenToFlowPosition } = useReactFlow()
   const username = useAuthStore((s) => s.username)
+  const openConsole = useConsoleStore((s) => s.openConsole)
+  const editorTarget = useUiStore((s) => s.editorTarget)
+  const setView = useUiStore((s) => s.setView)
+  // ConsolePane自体はApp.tsx側に1つだけマウントされている。ここで管理するのは
+  // 「トポロジエディタの右側にドッキング表示するか」というフラグだけ（詳細はstore/uiStore.ts参照）
+  const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
+  const setConsolePanelDocked = useUiStore((s) => s.setConsolePanelDocked)
+
+  // ホームの「エディタで開く」から来た場合、デプロイ済みのトポロジYAMLを取得してキャンバスに復元する。
+  // エディタはホームから「新規作成」/「既存ラボを開く」のどちらかでしか入れない専用画面で、
+  // 入る度にTopologyEditorInnerが新たにマウントされるため、マウント時に一度だけ行えばよい
+  // （2026-10-05決定、docs/direction.md参照）
+  useEffect(() => {
+    if (editorTarget.mode !== 'edit') return
+    const targetLabName = editorTarget.labName
+    setLoadStatus({ kind: 'loading' })
+    getLabTopologyYaml(targetLabName)
+      .then(async (yamlText) => {
+        const parsed = parseTopologyYaml(yamlText)
+        // 座標・ラベル/エリアの保存データがあれば復元する。保存されていない（404）、
+        // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
+        // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
+        let nodes = parsed.nodes
+        try {
+          const annotationsText = await getLabAnnotations(targetLabName)
+          nodes = applyAnnotations(nodes, annotationsText)
+        } catch {
+          // 保存データが無い場合（404等）はそのまま
+        }
+        setNodes(nodes)
+        setEdges(parsed.edges)
+        counters.current = parsed.counters
+        setLabName(getLabDisplayName(targetLabName))
+        const consoleNodeIds = new Set(
+          nodes
+            .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+            .map((n) => n.id),
+        )
+        setDeployedLab({ labName: targetLabName, nodeIds: consoleNodeIds })
+        setLoadStatus({ kind: 'idle' })
+      })
+      .catch((e: unknown) => {
+        const message = e instanceof ApiError || e instanceof Error ? e.message : 'トポロジの取得に失敗しました'
+        setLoadStatus({ kind: 'error', message })
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- マウント時に一度だけ実行する（上のコメント参照）
+  }, [])
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -145,6 +221,7 @@ function TopologyEditorInner() {
   const onConnect: OnConnect = useCallback(
     (connection) => {
       if (!connection.source || !connection.target) return
+      if (connection.source === connection.target) return // 自己ループ接続は禁止
       setPendingConnection({
         source: connection.source,
         target: connection.target,
@@ -168,7 +245,7 @@ function TopologyEditorInner() {
         target,
         sourceHandle: sourceHandle ?? undefined,
         targetHandle: targetHandle ?? undefined,
-        type: 'straight',
+        type: 'floating',
         data: { sourceIface: pendingSourceIface, targetIface: pendingTargetIface } satisfies EdgeIfaceData,
       }),
     )
@@ -192,11 +269,34 @@ function TopologyEditorInner() {
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault()
-      const kind = event.dataTransfer.getData(DND_MIME_TYPE) as PaletteNodeKind
+      const dragged = event.dataTransfer.getData(DND_MIME_TYPE)
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+
+      // ラベル（IPアドレス等のメモ）・エリア（グループ化の枠）はデバイスノードとは別扱い。
+      // containerlabのノードではないためbuildTopologyContent側でも除外している
+      if (dragged === LABEL_DND_VALUE) {
+        setNodes((nds) => nds.concat({ id: randomAnnotationId('label'), type: 'labelNode', position, data: { text: '' } satisfies LabelNodeData }))
+        return
+      }
+      if (dragged === AREA_DND_VALUE) {
+        setNodes((nds) =>
+          nds.concat({
+            id: randomAnnotationId('area'),
+            type: 'areaNode',
+            position,
+            // 常にデバイスノードの背面に表示されるようにする（前面に出て隠れてしまわないように）
+            zIndex: -1,
+            style: { width: 260, height: 180 },
+            data: { text: '', colorIndex: 0 } satisfies AreaNodeData,
+          }),
+        )
+        return
+      }
+
+      const kind = dragged as PaletteNodeKind
       const config = PALETTE_NODE_CONFIGS[kind]
       if (!config) return
 
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       counters.current[kind] += 1
       const n = counters.current[kind]
       const id = `${kind}-${n}`
@@ -228,85 +328,173 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
-  const renameNode = useCallback((nodeId: string) => {
-    setContextMenu(null)
-    setNodes((nds) => {
-      const target = nds.find((n) => n.id === nodeId)
+  // トポロジエディタから直接、統合コンソールをワンタッチで開く（ラボ一覧に行かなくて済むように）。
+  // deployedLabに載っているノード＝直近のdeployに含まれていたノードのみ開ける
+  const openNodeConsole = useCallback(
+    (nodeId: string) => {
+      if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
+      // ルーターはCMLのように最初からvtyshを開いた状態にしておく
+      const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
+      openConsole(deployedLab.labName, nodeId, kind === 'router' ? 'vtysh' : undefined)
+      setConsolePanelDocked(true)
+      setContextMenu(null)
+    },
+    [deployedLab, nodes, openConsole, setConsolePanelDocked],
+  )
+
+  const renameNode = useCallback(
+    (nodeId: string) => {
+      setContextMenu(null)
+      // window.prompt（副作用）は setState の更新関数の外で呼ぶこと。
+      // 更新関数の中で呼ぶと、StrictModeが更新関数を2回実行する際にプロンプトも2回出てしまい、
+      // 1回目の入力が握りつぶされる（2回目の確定でようやく反映される）不具合になっていた。
+      const target = nodes.find((n) => n.id === nodeId)
       const current = (target?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? ''
       const next = window.prompt('新しいノード名', current)
-      if (!next || !next.trim()) return nds
-      return nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, shortLabel: next.trim() } } : n))
+      if (!next || !next.trim()) return
+      setNodes((nds) => nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, shortLabel: next.trim() } } : n)))
+    },
+    [nodes],
+  )
+
+  // キャンバス表示用: エッジのI/F情報をラベルとして出す。
+  // 同じ2ノード間に複数リンク（LAGのような並列接続）がある場合、そのままだと
+  // floating edgeの交点計算が全リンクで同じ座標になり1本しか見えなくなるため、
+  // 同じノードペアごとに何番目・全部で何本かを数えてedge.dataに載せる
+  // （実際に弧状にずらす計算はFloatingEdge.tsx側で行う）
+  const displayEdges = useMemo(() => {
+    const pairCounts = new Map<string, number>()
+    for (const edge of edges) {
+      const pairKey = [edge.source, edge.target].sort().join('|')
+      pairCounts.set(pairKey, (pairCounts.get(pairKey) ?? 0) + 1)
+    }
+    const pairSeen = new Map<string, number>()
+
+    return edges.map((edge) => {
+      const iface = edge.data as Partial<EdgeIfaceData> | undefined
+      const pairKey = [edge.source, edge.target].sort().join('|')
+      const parallelIndex = pairSeen.get(pairKey) ?? 0
+      pairSeen.set(pairKey, parallelIndex + 1)
+      const parallelCount = pairCounts.get(pairKey) ?? 1
+
+      return {
+        ...edge,
+        type: edge.type ?? 'floating',
+        label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
+        style: { stroke: 'var(--edge)', strokeWidth: 2 },
+        labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
+        labelBgStyle: { fill: 'var(--surface)' },
+        data: { ...edge.data, parallelIndex, parallelCount } satisfies FloatingEdgeData,
+      }
     })
-  }, [])
+  }, [edges])
 
-  // キャンバス表示用: エッジのI/F情報をラベルとして出す
-  const displayEdges = useMemo(
-    () =>
-      edges.map((edge) => {
-        const iface = edge.data as Partial<EdgeIfaceData> | undefined
-        return {
-          ...edge,
-          type: edge.type ?? 'straight',
-          label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
-          style: { stroke: 'var(--edge)', strokeWidth: 2 },
-          labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
-          labelBgStyle: { fill: 'var(--surface)' },
-        }
-      }),
-    [edges],
-  )
-
+  // ラベル（labelNode）はデバイスではないので、deployできるかどうかの判定からは除く
+  const deviceNodeCount = useMemo(() => nodes.filter((n) => n.type === 'topoNode').length, [nodes])
   const canDeploy = useMemo(
-    () => labName.trim().length > 0 && nodes.length > 0 && deployStatus.kind !== 'deploying',
-    [labName, nodes.length, deployStatus.kind],
+    () => labName.trim().length > 0 && deviceNodeCount > 0 && deployStatus.kind !== 'deploying',
+    [labName, deviceNodeCount, deployStatus.kind],
   )
+  // 入力欄のラボ名が「直近deployしたラボ」と同じなら、今回のDeployは新規ではなく変更の反映になる
+  const isRedeploy = useMemo(() => deployedLab?.labName === toSafeLabName(labName.trim()), [deployedLab, labName])
 
   const onDeploy = useCallback(async () => {
     if (!username) return
     setDeployStatus({ kind: 'deploying' })
     try {
-      const topologyContent = buildTopologyContent(nodes, edges, username, labName.trim())
-      await deployLab(topologyContent)
-      setDeployStatus({ kind: 'success', message: `ラボ「${labName.trim()}」をdeployしました` })
+      const displayName = labName.trim()
+      // ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付ける（日本語等は拒否される、
+      // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
+      // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
+      const safeName = toSafeLabName(displayName)
+      const topologyContent = buildTopologyContent(nodes, edges, username, safeName)
+      // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
+      // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
+      // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
+      await deployLab(topologyContent, { reconfigure: isRedeploy })
+      rememberLabDisplayName(safeName, displayName)
+      setDeployStatus({
+        kind: 'success',
+        message: isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`,
+      })
+      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
+      const consoleNodeIds = new Set(
+        nodes
+          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+          .map((n) => n.id),
+      )
+      setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
+      // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
+      // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
+      putLabAnnotations(safeName, serializeAnnotations(nodes)).catch((err: unknown) => {
+        console.warn('ノード配置の保存に失敗しました', err)
+      })
     } catch (e) {
       const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
       setDeployStatus({ kind: 'error', message })
     }
-  }, [nodes, edges, username, labName])
+  }, [nodes, edges, username, labName, isRedeploy])
 
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
+
+  // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
+  const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
+  const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
+  const contextMenuCanOpenConsole =
+    contextMenu?.kind === 'node' && !contextMenuIsAnnotation && !!deployedLab?.nodeIds.has(contextMenu.nodeId)
 
   return (
     <div className="topology-editor">
       <NodePalette />
       <div className="topology-editor__main">
         <div className="topology-editor__toolbar">
+          <button className="topology-editor__back" onClick={() => setView('home')} title="ホームに戻る">
+            ← ホーム
+          </button>
           <input
             className="topology-editor__lab-name"
             placeholder="ラボ名"
             value={labName}
             onChange={(e) => setLabName(e.target.value)}
+            disabled={loadStatus.kind === 'loading'}
           />
-          <button onClick={onDeploy} disabled={!canDeploy}>
-            {deployStatus.kind === 'deploying' ? 'deploy中...' : 'Deploy'}
+          {loadStatus.kind === 'loading' && <span className="topology-editor__status">トポロジを読み込み中...</span>}
+          {loadStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{loadStatus.message}</span>}
+          {labName.trim() && !isSafeLabName(labName.trim()) && (
+            <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前でdeployされます">
+              実際の名前: {toSafeLabName(labName)}
+            </span>
+          )}
+          <button onClick={onDeploy} disabled={!canDeploy} title={isRedeploy ? '既にdeploy済みのラボに変更を反映します' : undefined}>
+            {deployStatus.kind === 'deploying' ? (isRedeploy ? '反映中...' : 'deploy中...') : isRedeploy ? '変更を反映' : 'Deploy'}
           </button>
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
+          <div className="topology-editor__toolbar-spacer" />
+          <button
+            className="topology-editor__panel-toggle"
+            onClick={() => setConsolePanelDocked(!consolePanelDocked)}
+            title="トポロジを見ながら統合コンソールを操作できます"
+          >
+            🖥 コンソール{consolePanelDocked ? 'を隠す' : 'パネル'}
+          </button>
         </div>
         <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={(c) => c.source !== c.target}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeContextMenu={onEdgeContextMenu}
             onPaneClick={closeContextMenu}
             onMoveStart={closeContextMenu}
             connectionMode={ConnectionMode.Loose}
-            defaultEdgeOptions={{ type: 'straight' }}
+            defaultEdgeOptions={{ type: 'floating' }}
             minZoom={0.4}
             maxZoom={2}
             fitView
@@ -319,7 +507,16 @@ function TopologyEditorInner() {
 
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-              <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>
+              {!contextMenuIsAnnotation && <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>}
+              {!contextMenuIsAnnotation && (
+                <button
+                  onClick={() => openNodeConsole(contextMenu.nodeId)}
+                  disabled={!contextMenuCanOpenConsole}
+                  title={contextMenuCanOpenConsole ? undefined : 'このノードはまだdeployされていません'}
+                >
+                  コンソールを開く
+                </button>
+              )}
               <button onClick={() => deleteNode(contextMenu.nodeId)}>削除</button>
             </div>
           )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Lab, NodeState } from '../types/lab'
+import { PALETTE_NODE_CONFIGS, type Lab, type NodeState } from '../types/lab'
 import {
   ApiError,
   destroyLab,
@@ -9,7 +9,10 @@ import {
   type RawLabNode,
   type RawLabsResponse,
 } from '../api/client'
-import './LabList.css'
+import { getLabDisplayName } from '../utils/labName'
+import { useConsoleStore } from '../store/consoleStore'
+import { useUiStore } from '../store/uiStore'
+import './Home.css'
 
 const stateLabel: Record<NodeState, string> = {
   running: 'running',
@@ -34,11 +37,45 @@ function toLabs(raw: RawLabsResponse): Lab[] {
   }))
 }
 
-function LabStatusDots({ nodes }: { nodes: Lab['nodes'] }) {
+// ovs-bridge(l2-switch)はコンテナを起動しないkindなのでシェル/コンソールの対象外
+// （api-contract.md 3章参照）
+function hasConsole(node: Lab['nodes'][number]) {
+  return node.kind !== 'ovs-bridge' && node.state === 'running'
+}
+
+// containerlab側ではrouter/pcはどちらもkind:'linux'なので、imageで判別する
+// （CMLのように、ルーターは開いた瞬間からvtysh操作にしておきたいため）
+function isRouter(node: Lab['nodes'][number]) {
+  return node.image === PALETTE_NODE_CONFIGS.router.image
+}
+
+// ノードごとに状態と「コンソールを開く」ボタンを並べる一覧。
+// ワンタッチでコンソールを開けるように、ここから直接 consoleStore にセッションを追加し
+// 画面を統合コンソールへ切り替える（labName/nodeNameの手入力を無くすのが狙い）
+function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] }) {
+  const openConsole = useConsoleStore((s) => s.openConsole)
+  const setView = useUiStore((s) => s.setView)
+
+  const openNodeConsole = (node: Lab['nodes'][number]) => {
+    openConsole(labName, node.name, isRouter(node) ? 'vtysh' : undefined)
+    setView('console')
+  }
+
   return (
-    <div className="lab-dots">
+    <div className="lab-node-list">
       {nodes.map((n) => (
-        <span key={n.name} className={`lab-dot lab-dot--${n.state}`} title={`${n.name}: ${stateLabel[n.state]}`} />
+        <div key={n.name} className="lab-node-row" title={`${n.name}: ${stateLabel[n.state]}`}>
+          <span className={`lab-dot lab-dot--${n.state}`} />
+          <span className="lab-node-row__name">{n.name}</span>
+          <button
+            className="lab-node-row__console"
+            disabled={!hasConsole(n)}
+            title={n.kind === 'ovs-bridge' ? 'L2スイッチにはコンソールがありません' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
+            onClick={() => openNodeConsole(n)}
+          >
+            🖥
+          </button>
+        </div>
       ))}
     </div>
   )
@@ -46,11 +83,16 @@ function LabStatusDots({ nodes }: { nodes: Lab['nodes'] }) {
 
 type BusyAction = 'start' | 'stop' | 'destroy'
 
-export default function LabList() {
+// ホーム画面：ラボ一覧＋新規作成の入り口。
+// トポロジエディタには「新規作成」または各ラボの「エディタで開く」からしか入れない
+// （2026-10-05決定、docs/direction.md参照）。常時表示のタブに戻すと、今エディタに出ている
+// トポロジがどのラボなのか分からなくなる誤操作の元になっていたため。
+export default function Home() {
   const [labs, setLabs] = useState<Lab[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<Record<string, BusyAction | undefined>>({})
   const [actionError, setActionError] = useState<Record<string, string | undefined>>({})
+  const openEditor = useUiStore((s) => s.openEditor)
 
   const refresh = useCallback(() => {
     getLabs()
@@ -86,8 +128,15 @@ export default function LabList() {
   return (
     <div className="lab-list">
       <header className="lab-list__header">
-        <h1>ラボ一覧</h1>
-        <p className="lab-list__hint">GET /api/v1/labs（自分が所有するラボのみ表示されます）</p>
+        <div className="lab-list__header-row">
+          <div>
+            <h1>ホーム</h1>
+            <p className="lab-list__hint">GET /api/v1/labs（自分が所有するラボのみ表示されます）</p>
+          </div>
+          <button className="lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
+            ＋ 新規ラボを作成
+          </button>
+        </div>
       </header>
       {error && <p className="lab-list__error">{error}</p>}
       {labs === null && !error && <p className="lab-list__hint">読み込み中...</p>}
@@ -96,13 +145,18 @@ export default function LabList() {
         {labs?.map((lab) => {
           const runningCount = lab.nodes.filter((n) => n.state === 'running').length
           const labBusy = busy[lab.name]
+          // deploy時に日本語名等が使われた場合、実際のAPI上の名前は安全な名前に変換されている
+          // （utils/labName.ts参照）。localStorageに記録された元の名前があればそちらを表示する。
+          const displayName = getLabDisplayName(lab.name)
           return (
             <div className="lab-card" key={lab.name}>
               <div className="lab-card__top">
-                <span className="lab-card__name">{lab.name}</span>
+                <span className="lab-card__name" title={displayName !== lab.name ? `実際の名前: ${lab.name}` : undefined}>
+                  {displayName}
+                </span>
                 <span className="lab-card__owner">@{lab.owner}</span>
               </div>
-              <LabStatusDots nodes={lab.nodes} />
+              <LabNodeList labName={lab.name} nodes={lab.nodes} />
               <div className="lab-card__meta">
                 {runningCount}/{lab.nodes.length} nodes running
               </div>
@@ -118,6 +172,9 @@ export default function LabList() {
                   {labBusy === 'destroy' ? '削除中...' : 'Destroy'}
                 </button>
               </div>
+              <button className="lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
+                ✎ エディタで開く
+              </button>
             </div>
           )
         })}

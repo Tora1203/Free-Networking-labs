@@ -1,0 +1,45 @@
+.area-node {
+  width: 100%;
+  height: 100%;
+  border: 2px dashed var(--ink-faint);
+  border-radius: 10px;
+  box-sizing: border-box;
+  cursor: grab;
+}
+
+.area-node__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: grab;
+}
+
+.area-node__title {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  cursor: text;
+  user-select: none;
+}
+
+.area-node__title-input {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  width: 120px;
+}
+
+.area-node__color-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+  cursor: pointer;
+  padding: 0;
+}

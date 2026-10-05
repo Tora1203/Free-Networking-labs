@@ -55,10 +55,10 @@
 }
 
 .topo-node__handle {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
   background: var(--ink-faint);
-  border: 1px solid var(--surface);
+  border: 1.5px solid var(--surface);
   opacity: 0;
   transition: opacity 0.12s ease;
 }

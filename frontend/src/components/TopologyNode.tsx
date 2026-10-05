@@ -11,6 +11,9 @@ const KIND_VISUAL: Record<PaletteNodeKind, { badge: string; className: string }>
 
 // 接続はどの向きからでも作れるようにしたいので、四方にハンドルを置く
 // （TopologyEditor側で connectionMode="loose" を設定している）。
+// どのハンドルを起点にドラッグしたかは接続の可否にのみ使い、実際の線の描画は
+// floating edge（TopologyEditor.tsx の FloatingEdge）が2ノードの中心角度から
+// 毎回動的に計算するため、線が重なったりノード移動に追従しなかったりする心配はない。
 const HANDLE_POSITIONS = [
   { id: 'top', position: Position.Top },
   { id: 'right', position: Position.Right },
@@ -33,7 +36,13 @@ export default function TopologyNode({ data, selected }: NodeProps) {
   return (
     <div className={`topo-node ${visual.className} ${selected ? 'topo-node--selected' : ''}`}>
       {HANDLE_POSITIONS.map((h) => (
-        <Handle key={h.id} id={h.id} type="source" position={h.position} className="topo-node__handle" />
+        <Handle
+          key={h.id}
+          id={h.id}
+          type="source"
+          position={h.position}
+          className="topo-node__handle"
+        />
       ))}
       <div className="topo-node__badge">{visual.badge}</div>
       <div className="topo-node__label">{nodeData.shortLabel}</div>

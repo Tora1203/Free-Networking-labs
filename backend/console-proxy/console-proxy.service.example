@@ -1,0 +1,31 @@
+# systemdのuserサービスとしてconsole-proxyを常駐させるためのテンプレート。
+# Claude Codeのセッション内でバックグラウンド起動していたところ、理由不明のまま何度も
+# 停止することがあったため（2026-10-05、docs/STATUS.md参照）、セッションと無関係に
+# 動く形にした。sudoは不要（`systemctl --user`はユーザー権限で使える）。
+#
+# 使い方:
+#   1. パス（WorkingDirectory / ExecStartのnodeバイナリ）を自分の環境に合わせて書き換える
+#      （nodeのパスは `source ~/.nvm/nvm.sh && which node` で確認できる）
+#   2. ~/.config/systemd/user/console-proxy.service にコピー
+#   3. systemctl --user daemon-reload
+#   4. systemctl --user enable --now console-proxy.service
+#   5. （再起動後も自動起動させたい場合のみ）loginctl enable-linger $USER
+
+[Unit]
+Description=Free-Networking-labs console-proxy (WebSocket relay for integrated console)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/<your-username>/Free-Networking-labs/backend/console-proxy
+ExecStart=/home/<your-username>/.nvm/versions/node/<version>/bin/node server.js
+# 環境変数を変えたい場合（デフォルトは.env.example参照）
+# Environment=PROXY_PORT=8082
+# Environment=CLAB_API_BASE_URL=https://localhost:8090
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
