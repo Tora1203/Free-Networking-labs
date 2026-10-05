@@ -38,8 +38,11 @@ export const useConsoleStore = create<ConsoleState>()((set, get) => ({
   },
   closeConsole: (id) =>
     set((s) => {
+      const closedIndex = s.sessions.findIndex((sess) => sess.id === id)
       const sessions = s.sessions.filter((sess) => sess.id !== id)
-      const activeId = s.activeId === id ? (sessions.at(-1)?.id ?? null) : s.activeId
+      // 閉じたタブがアクティブだった場合、直感的に「1つ左（無ければ右）」のタブへ移す
+      const activeId =
+        s.activeId === id ? (sessions[closedIndex - 1] ?? sessions[closedIndex] ?? null)?.id ?? null : s.activeId
       return { sessions, activeId }
     }),
   setActive: (id) => set({ activeId: id }),

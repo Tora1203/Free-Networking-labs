@@ -22,6 +22,9 @@ interface UiState {
   // ここのフラグでCSSの見た目（フル画面/ドッキング/非表示）だけを切り替える。
   consolePanelDocked: boolean
   setConsolePanelDocked: (docked: boolean) => void
+  // ドッキングパネルの幅（px）。ユーザーがドラッグで調整できるように（2026-10-05追加）
+  consolePanelWidth: number
+  setConsolePanelWidth: (width: number) => void
 }
 
 export const useUiStore = create<UiState>()((set) => ({
@@ -31,4 +34,6 @@ export const useUiStore = create<UiState>()((set) => ({
   openEditor: (target) => set({ editorTarget: target, view: 'editor' }),
   consolePanelDocked: false,
   setConsolePanelDocked: (docked) => set({ consolePanelDocked: docked }),
+  consolePanelWidth: 440,
+  setConsolePanelWidth: (width) => set({ consolePanelWidth: Math.min(900, Math.max(280, width)) }),
 }))

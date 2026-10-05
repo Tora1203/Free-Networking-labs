@@ -27,6 +27,13 @@
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
+}
+
+.console-tab__label {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .console-tab--active {
@@ -122,6 +129,18 @@
 
 .console-pane__status {
   color: var(--warn);
+}
+
+.console-pane__reconnect {
+  margin-left: auto;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
 }
 
 .console-pane__term {

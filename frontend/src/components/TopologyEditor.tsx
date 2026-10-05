@@ -25,7 +25,15 @@ import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
-import { ApiError, deployLab, getLabTopologyYaml, type TopologyContent } from '../api/client'
+import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
+import {
+  ApiError,
+  deployLab,
+  getLabAnnotations,
+  getLabTopologyYaml,
+  putLabAnnotations,
+  type TopologyContent,
+} from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
@@ -159,14 +167,24 @@ function TopologyEditorInner() {
     const targetLabName = editorTarget.labName
     setLoadStatus({ kind: 'loading' })
     getLabTopologyYaml(targetLabName)
-      .then((yamlText) => {
+      .then(async (yamlText) => {
         const parsed = parseTopologyYaml(yamlText)
-        setNodes(parsed.nodes)
+        // 座標・ラベル/エリアの保存データがあれば復元する。保存されていない（404）、
+        // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
+        // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
+        let nodes = parsed.nodes
+        try {
+          const annotationsText = await getLabAnnotations(targetLabName)
+          nodes = applyAnnotations(nodes, annotationsText)
+        } catch {
+          // 保存データが無い場合（404等）はそのまま
+        }
+        setNodes(nodes)
         setEdges(parsed.edges)
         counters.current = parsed.counters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
-          parsed.nodes
+          nodes
             .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
             .map((n) => n.id),
         )
@@ -396,6 +414,11 @@ function TopologyEditorInner() {
           .map((n) => n.id),
       )
       setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
+      // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
+      // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
+      putLabAnnotations(safeName, serializeAnnotations(nodes)).catch((err: unknown) => {
+        console.warn('ノード配置の保存に失敗しました', err)
+      })
     } catch (e) {
       const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
       setDeployStatus({ kind: 'error', message })

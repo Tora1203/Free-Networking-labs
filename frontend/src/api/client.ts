@@ -132,6 +132,22 @@ export function getLabTopologyYaml(labName: string) {
   return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`)
 }
 
+// ノード座標・ラベル/エリア注釈の保存先。SwaggerではGET/PUT共にtext/plainの
+// 「文字列を保存するだけ」のエンドポイントで、中身のフォーマットはクライアント側が決めてよい
+// （2026-10-05確認）。独自のJSON形式で保存する（utils/annotations.ts参照）。
+// 保存されていない場合は404（File not found）が返る。
+export function getLabAnnotations(labName: string) {
+  return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/annotations`)
+}
+
+export function putLabAnnotations(labName: string, content: string) {
+  return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/annotations`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain' },
+    body: content,
+  })
+}
+
 export function destroyLab(labName: string) {
   return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}?cleanup=true`, {
     method: 'DELETE',

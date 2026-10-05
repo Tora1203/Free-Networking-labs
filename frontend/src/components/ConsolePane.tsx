@@ -21,6 +21,11 @@ export default function ConsolePane() {
     )
   }
 
+  // 複数ラボを同時に開いていない限りはノード名だけで十分見分けられるので、
+  // タブが増えた時に文字で埋まって見づらくなるのを避けるため表示を短くする
+  // （2026-10-05指摘：複数タブで視認性が著しく低下する）
+  const multipleLabsOpen = new Set(sessions.map((s) => s.labName)).size > 1
+
   return (
     <div className="console-manager">
       <div className="console-tabs">
@@ -29,10 +34,9 @@ export default function ConsolePane() {
             key={s.id}
             className={`console-tab ${s.id === activeId ? 'console-tab--active' : ''}`}
             onClick={() => setActive(s.id)}
+            title={`${s.labName} / ${s.nodeName}`}
           >
-            <span className="console-tab__label">
-              {s.labName}/{s.nodeName}
-            </span>
+            <span className="console-tab__label">{multipleLabsOpen ? `${s.labName}/${s.nodeName}` : s.nodeName}</span>
             <button
               className="console-tab__close"
               title="閉じる"

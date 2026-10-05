@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import TopologyEditor from './components/TopologyEditor'
 import Home from './components/Home'
 import ConsolePane from './components/ConsolePane'
@@ -32,9 +32,12 @@ function App() {
   const view = useUiStore((s) => s.view)
   const setView = useUiStore((s) => s.setView)
   const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
+  const consolePanelWidth = useUiStore((s) => s.consolePanelWidth)
+  const setConsolePanelWidth = useUiStore((s) => s.setConsolePanelWidth)
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
+  const resizingRef = useRef(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -45,9 +48,33 @@ function App() {
     }
   }, [theme])
 
+  // ドッキングパネルの幅をドラッグで調整できるようにする（2026-10-05追加：
+  // 「右側コンソールのサイズが調整できない」という指摘に対応）。
+  // パネルは右端固定・左端がハンドルなので、ポインタのX座標とウィンドウ幅の差がそのまま幅になる
+  const onResizeStart = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault()
+      resizingRef.current = true
+      const onMove = (e: MouseEvent) => {
+        if (!resizingRef.current) return
+        setConsolePanelWidth(window.innerWidth - e.clientX)
+      }
+      const onUp = () => {
+        resizingRef.current = false
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    [setConsolePanelWidth],
+  )
+
   if (!username) {
     return <LoginForm />
   }
+
+  const consoleDocked = consolePanelDocked && view === 'editor'
 
   return (
     <div className="app-shell">
@@ -84,11 +111,13 @@ function App() {
             片方が無反応になる不具合になっていたため（2026-09-29修正）、表示位置はCSSだけで
             切り替える：フル画面（統合コンソールタブ）／トポロジエディタ右側にドッキング／非表示 */}
         <div
-          className={`app-content__console app-content__console--${
-            view === 'console' ? 'full' : consolePanelDocked && view === 'editor' ? 'docked' : 'hidden'
-          }`}
-          hidden={view !== 'console' && !(consolePanelDocked && view === 'editor')}
+          className={`app-content__console app-content__console--${view === 'console' ? 'full' : consoleDocked ? 'docked' : 'hidden'}`}
+          style={consoleDocked ? { width: consolePanelWidth } : undefined}
+          hidden={view !== 'console' && !consoleDocked}
         >
+          {consoleDocked && (
+            <div className="app-content__console-resizer" onMouseDown={onResizeStart} title="ドラッグして幅を調整" />
+          )}
           <ConsolePane />
         </div>
       </div>
