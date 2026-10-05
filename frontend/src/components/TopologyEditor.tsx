@@ -74,6 +74,15 @@ function randomAnnotationId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 }
 
+// 新規作成モードでは、deployするためだけに毎回ラボ名を考えて入力する手間を省くため、
+// YYYYMMDDHH形式の名前を自動で入れておく（そのまま使ってもいいし、書き換えてもよい）
+// （2026-10-05指摘）
+function defaultLabName(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}`
+}
+
 const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
 
 function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
@@ -136,7 +145,8 @@ function TopologyEditorInner() {
   const counters = useRef<Record<PaletteNodeKind, number>>({ ...initialCounters })
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [edges, setEdges] = useState<Edge[]>(initialEdges)
-  const [labName, setLabName] = useState('')
+  // 新規作成モードなら最初からYYYYMMDDHHの名前を入れておく（既存ラボを開く時はuseEffectで上書きする）
+  const [labName, setLabName] = useState(() => (useUiStore.getState().editorTarget.mode === 'new' ? defaultLabName() : ''))
   const [deployStatus, setDeployStatus] = useState<DeployStatus>({ kind: 'idle' })
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)

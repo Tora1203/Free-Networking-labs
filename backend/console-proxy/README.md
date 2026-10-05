@@ -35,3 +35,18 @@ CLAB_API_BASE_URL=https://localhost:8090 PROXY_PORT=8082 npm start
 - `PROXY_PORT`: 待受ポート（デフォルト `8082`）
 - `CLAB_API_BASE_URL`: `clab-api-server`のベースURL（デフォルト `https://localhost:8090`。
   自己署名証明書を許容する設定になっている）
+
+## 常駐させる（推奨）
+
+開発中にターミナルで直接`npm start`しているだけだと、セッションが終わると一緒に落ちてしまう
+（2026-10-05、Claude Codeのバックグラウンドタスクとして動かしていた時に理由不明のまま
+何度も停止する事象があった）。`systemctl --user`でuserサービス化しておくと安定する
+（sudo不要）。`console-proxy.service.example`をコピーして使う：
+
+```sh
+cp console-proxy.service.example ~/.config/systemd/user/console-proxy.service
+# パスを自分の環境に書き換えてから
+systemctl --user daemon-reload
+systemctl --user enable --now console-proxy.service
+systemctl --user status console-proxy.service
+```
