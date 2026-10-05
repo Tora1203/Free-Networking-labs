@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import TopologyEditor from './components/TopologyEditor'
-import LabList from './components/LabList'
+import Home from './components/Home'
 import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import Brand from './components/Brand'
@@ -10,9 +10,11 @@ import './App.css'
 
 type Theme = 'light' | 'dark'
 
+// トポロジエディタ（'editor'）はここには含めない。ホームから「新規作成」または
+// 「既存ラボをエディタで開く」のどちらかを選んで入る専用画面であり、常時表示のタブではない
+// （2026-10-05決定、docs/direction.md参照）
 const views: { id: View; label: string }[] = [
-  { id: 'topology', label: 'トポロジエディタ' },
-  { id: 'labs', label: 'ラボ一覧' },
+  { id: 'home', label: 'ホーム' },
   { id: 'console', label: '統合コンソール' },
 ]
 
@@ -50,7 +52,7 @@ function App() {
   return (
     <div className="app-shell">
       <nav className="app-nav">
-        <Brand size="nav" />
+        <Brand size="nav" onClick={() => setView('home')} />
         {views.map((v) => (
           <button
             key={v.id}
@@ -74,8 +76,8 @@ function App() {
         </button>
       </nav>
       <div className="app-content">
-        {view === 'topology' && <TopologyEditor />}
-        {view === 'labs' && <LabList />}
+        {view === 'home' && <Home />}
+        {view === 'editor' && <TopologyEditor />}
         {/* ConsolePane（xterm.js＋WebSocket接続を持つ）はApp直下にこの1箇所だけマウントする。
             画面切り替えでWebSocket接続を保ちたいのはもちろん、トポロジエディタ側にも
             もう1つ同じConsolePaneをマウントすると同じセッションへの接続が二重に張られてしまい
@@ -83,9 +85,9 @@ function App() {
             切り替える：フル画面（統合コンソールタブ）／トポロジエディタ右側にドッキング／非表示 */}
         <div
           className={`app-content__console app-content__console--${
-            view === 'console' ? 'full' : consolePanelDocked && view === 'topology' ? 'docked' : 'hidden'
+            view === 'console' ? 'full' : consolePanelDocked && view === 'editor' ? 'docked' : 'hidden'
           }`}
-          hidden={view !== 'console' && !(consolePanelDocked && view === 'topology')}
+          hidden={view !== 'console' && !(consolePanelDocked && view === 'editor')}
         >
           <ConsolePane />
         </div>

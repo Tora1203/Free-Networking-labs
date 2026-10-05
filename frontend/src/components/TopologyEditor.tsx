@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -23,8 +23,9 @@ import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName } from '../utils/clabNaming'
-import { isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
-import { ApiError, deployLab, type TopologyContent } from '../api/client'
+import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
+import { parseTopologyYaml } from '../utils/topologyFromYaml'
+import { ApiError, deployLab, getLabTopologyYaml, type TopologyContent } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
@@ -53,8 +54,8 @@ function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
 // 以前はデモ用にr1/r2/r3のルーター3台を最初から置いていたが、既存の動いているラボの
 // コンテナ名（例: `test`ラボの`r1`等）とたまたま一致することがあり、デモノードを
 // 実際のラボのノードと誤解して右クリックしてしまう事故につながっていた（2026-10-05指摘）。
-// トポロジエディタは「今deployしようとしている新規トポロジ」専用で、既存ラボを読み込む機能は
-// まだ無いため、誤解を避けるため空のキャンバスから始めるようにした
+// 今はホームから「新規作成」で入った時だけこの空の状態を使う（「エディタで開く」で入った時は
+// 下のuseEffectで既存ラボのYAMLから復元するので、このinitialNodes/initialEdgesは使われない）
 const initialNodes: Node[] = []
 const initialEdges: Edge[] = []
 const initialCounters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, pc: 0 }
@@ -137,13 +138,47 @@ function TopologyEditorInner() {
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
   // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
   const [deployedLab, setDeployedLab] = useState<{ labName: string; nodeIds: Set<string> } | null>(null)
+  // 既存ラボをエディタで開く時のYAML取得状態（ホームからの「エディタで開く」導線、2026-10-05追加）
+  const [loadStatus, setLoadStatus] = useState<{ kind: 'idle' | 'loading' | 'error'; message?: string }>({ kind: 'idle' })
   const { screenToFlowPosition } = useReactFlow()
   const username = useAuthStore((s) => s.username)
   const openConsole = useConsoleStore((s) => s.openConsole)
+  const editorTarget = useUiStore((s) => s.editorTarget)
+  const setView = useUiStore((s) => s.setView)
   // ConsolePane自体はApp.tsx側に1つだけマウントされている。ここで管理するのは
   // 「トポロジエディタの右側にドッキング表示するか」というフラグだけ（詳細はstore/uiStore.ts参照）
   const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
   const setConsolePanelDocked = useUiStore((s) => s.setConsolePanelDocked)
+
+  // ホームの「エディタで開く」から来た場合、デプロイ済みのトポロジYAMLを取得してキャンバスに復元する。
+  // エディタはホームから「新規作成」/「既存ラボを開く」のどちらかでしか入れない専用画面で、
+  // 入る度にTopologyEditorInnerが新たにマウントされるため、マウント時に一度だけ行えばよい
+  // （2026-10-05決定、docs/direction.md参照）
+  useEffect(() => {
+    if (editorTarget.mode !== 'edit') return
+    const targetLabName = editorTarget.labName
+    setLoadStatus({ kind: 'loading' })
+    getLabTopologyYaml(targetLabName)
+      .then((yamlText) => {
+        const parsed = parseTopologyYaml(yamlText)
+        setNodes(parsed.nodes)
+        setEdges(parsed.edges)
+        counters.current = parsed.counters
+        setLabName(getLabDisplayName(targetLabName))
+        const consoleNodeIds = new Set(
+          parsed.nodes
+            .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+            .map((n) => n.id),
+        )
+        setDeployedLab({ labName: targetLabName, nodeIds: consoleNodeIds })
+        setLoadStatus({ kind: 'idle' })
+      })
+      .catch((e: unknown) => {
+        const message = e instanceof ApiError || e instanceof Error ? e.message : 'トポロジの取得に失敗しました'
+        setLoadStatus({ kind: 'error', message })
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- マウント時に一度だけ実行する（上のコメント参照）
+  }, [])
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -380,12 +415,18 @@ function TopologyEditorInner() {
       <NodePalette />
       <div className="topology-editor__main">
         <div className="topology-editor__toolbar">
+          <button className="topology-editor__back" onClick={() => setView('home')} title="ホームに戻る">
+            ← ホーム
+          </button>
           <input
             className="topology-editor__lab-name"
             placeholder="ラボ名"
             value={labName}
             onChange={(e) => setLabName(e.target.value)}
+            disabled={loadStatus.kind === 'loading'}
           />
+          {loadStatus.kind === 'loading' && <span className="topology-editor__status">トポロジを読み込み中...</span>}
+          {loadStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{loadStatus.message}</span>}
           {labName.trim() && !isSafeLabName(labName.trim()) && (
             <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前でdeployされます">
               実際の名前: {toSafeLabName(labName)}

@@ -114,6 +114,12 @@
     （ノードの追加・削除まで反映されるか）は`TODO(kawase3)`：実機確認したら追記する
 - レスポンス実例: 2.1と同形式（`ClabInspectOutput`、deployされたノード一覧）
 
+### 2.2.1 既存ラボのトポロジ取得（2026-10-05、Swagger仕様で確認・利用開始）
+- `GET /api/v1/labs/{labName}/topology/yaml` — デプロイ済みラボのトポロジYAMLを`text/plain`で返す
+  （JSONではないので`JSON.parse`しないこと。FE側は`api/client.ts`の`getLabTopologyYaml()`参照）
+- `GET /api/v1/labs/{labName}/topology/annotations` も存在する（ノード座標等の「見た目」情報と
+  思われるが実際のフォーマットは`TODO(kawase3)`：未確認。読み込み側の実装は`utils/topologyFromYaml.ts`参照）
+
 ### 2.3 ラボ destroy / 削除
 - `DELETE /api/v1/labs/{labName}`（**確定パス**、実機確認済み）。クエリ `?cleanup=true` でラボディレクトリも削除
 - レスポンス実例: `{"message":"Lab 'iso-test-1' destroyed successfully"}`

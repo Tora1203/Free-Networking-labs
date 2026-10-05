@@ -26,6 +26,16 @@
   flex: 1;
 }
 
+.topology-editor__toolbar button.topology-editor__back {
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 6px 10px;
+}
+
+.topology-editor__toolbar button.topology-editor__back:hover {
+  color: var(--ink);
+}
+
 .topology-editor__toolbar button.topology-editor__panel-toggle {
   background: var(--surface-2);
   color: var(--ink);

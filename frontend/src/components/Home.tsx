@@ -12,7 +12,7 @@ import {
 import { getLabDisplayName } from '../utils/labName'
 import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
-import './LabList.css'
+import './Home.css'
 
 const stateLabel: Record<NodeState, string> = {
   running: 'running',
@@ -83,11 +83,16 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
 
 type BusyAction = 'start' | 'stop' | 'destroy'
 
-export default function LabList() {
+// ホーム画面：ラボ一覧＋新規作成の入り口。
+// トポロジエディタには「新規作成」または各ラボの「エディタで開く」からしか入れない
+// （2026-10-05決定、docs/direction.md参照）。常時表示のタブに戻すと、今エディタに出ている
+// トポロジがどのラボなのか分からなくなる誤操作の元になっていたため。
+export default function Home() {
   const [labs, setLabs] = useState<Lab[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<Record<string, BusyAction | undefined>>({})
   const [actionError, setActionError] = useState<Record<string, string | undefined>>({})
+  const openEditor = useUiStore((s) => s.openEditor)
 
   const refresh = useCallback(() => {
     getLabs()
@@ -123,8 +128,15 @@ export default function LabList() {
   return (
     <div className="lab-list">
       <header className="lab-list__header">
-        <h1>ラボ一覧</h1>
-        <p className="lab-list__hint">GET /api/v1/labs（自分が所有するラボのみ表示されます）</p>
+        <div className="lab-list__header-row">
+          <div>
+            <h1>ホーム</h1>
+            <p className="lab-list__hint">GET /api/v1/labs（自分が所有するラボのみ表示されます）</p>
+          </div>
+          <button className="lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
+            ＋ 新規ラボを作成
+          </button>
+        </div>
       </header>
       {error && <p className="lab-list__error">{error}</p>}
       {labs === null && !error && <p className="lab-list__hint">読み込み中...</p>}
@@ -160,6 +172,9 @@ export default function LabList() {
                   {labBusy === 'destroy' ? '削除中...' : 'Destroy'}
                 </button>
               </div>
+              <button className="lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
+                ✎ エディタで開く
+              </button>
             </div>
           )
         })}

@@ -51,6 +51,29 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return body as T
 }
 
+// topology/yamlエンドポイントはJSONではなくtext/plainでYAML本文を返すため、
+// request<T>()（JSON.parse前提）とは別の軽量版を使う。
+async function requestText(path: string, options: RequestInit = {}): Promise<string> {
+  const headers = new Headers(options.headers)
+  if (authToken) headers.set('Authorization', `Bearer ${authToken}`)
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+  const text = await res.text()
+
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const body = JSON.parse(text)
+      if (body && typeof body === 'object' && 'error' in body) message = body.error
+    } catch {
+      if (text) message = text
+    }
+    if (res.status === 401) onUnauthorized?.()
+    throw new ApiError(res.status, message)
+  }
+  return text
+}
+
 export interface LoginResponse {
   token: string
 }
@@ -101,6 +124,12 @@ export function deployLab(topologyContent: TopologyContent, opts?: { reconfigure
     method: 'POST',
     body: JSON.stringify({ topologyContent }),
   })
+}
+
+// 既存ラボをトポロジエディタで開くための、デプロイ済みトポロジYAMLの取得
+// （SwaggerのGET /api/v1/labs/{labName}/topology/yamlで2026-10-05に存在を確認）
+export function getLabTopologyYaml(labName: string) {
+  return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`)
 }
 
 export function destroyLab(labName: string) {
