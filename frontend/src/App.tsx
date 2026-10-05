@@ -12,11 +12,11 @@ type Theme = 'light' | 'dark'
 
 // トポロジエディタ（'editor'）はここには含めない。ホームから「新規作成」または
 // 「既存ラボをエディタで開く」のどちらかを選んで入る専用画面であり、常時表示のタブではない
-// （2026-10-05決定、docs/direction.md参照）
-const views: { id: View; label: string }[] = [
-  { id: 'home', label: 'ホーム' },
-  { id: 'console', label: '統合コンソール' },
-]
+// （2026-10-05決定、docs/direction.md参照）。
+// 統合コンソールも単独のタブは持たない（2026-10-05決定）。コンソールは常にどこかのラボの
+// ノードに対して開くものなので、トポロジエディタのドッキングパネルとしてしか存在しない
+// （store/uiStore.tsのコメント参照）
+const views: { id: View; label: string }[] = [{ id: 'home', label: 'ホーム' }]
 
 function readInitialTheme(): Theme {
   try {
@@ -106,14 +106,14 @@ function App() {
         {view === 'home' && <Home />}
         {view === 'editor' && <TopologyEditor />}
         {/* ConsolePane（xterm.js＋WebSocket接続を持つ）はApp直下にこの1箇所だけマウントする。
-            画面切り替えでWebSocket接続を保ちたいのはもちろん、トポロジエディタ側にも
-            もう1つ同じConsolePaneをマウントすると同じセッションへの接続が二重に張られてしまい
-            片方が無反応になる不具合になっていたため（2026-09-29修正）、表示位置はCSSだけで
-            切り替える：フル画面（統合コンソールタブ）／トポロジエディタ右側にドッキング／非表示 */}
+            トポロジエディタ側にもう1つ同じConsolePaneをマウントすると同じセッションへの接続が
+            二重に張られてしまい片方が無反応になる不具合になっていたため（2026-09-29修正）、
+            表示位置はCSSだけで切り替える：トポロジエディタ右側にドッキング／非表示
+            （統合コンソールの単独タブは廃止済み、2026-10-05決定） */}
         <div
-          className={`app-content__console app-content__console--${view === 'console' ? 'full' : consoleDocked ? 'docked' : 'hidden'}`}
+          className={`app-content__console app-content__console--${consoleDocked ? 'docked' : 'hidden'}`}
           style={consoleDocked ? { width: consolePanelWidth } : undefined}
-          hidden={view !== 'console' && !consoleDocked}
+          hidden={!consoleDocked}
         >
           {consoleDocked && (
             <div className="app-content__console-resizer" onMouseDown={onResizeStart} title="ドラッグして幅を調整" />

@@ -50,11 +50,6 @@
   position: relative;
 }
 
-.app-content__console--full {
-  position: absolute;
-  inset: 0;
-}
-
 .app-content__console--docked {
   position: absolute;
   top: 0;
