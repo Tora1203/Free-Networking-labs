@@ -19,6 +19,9 @@ interface ConsoleState {
   openConsole: (labName: string, nodeName: string, autoCommand?: string) => void
   closeConsole: (id: string) => void
   setActive: (id: string) => void
+  // 別のラボをエディタで開いた時に、前のラボのコンソールタブが残り続けないようにする
+  // （2026-10-05指摘：「labを切り替えた時に前のlabの機械のコンソールが残るのは良くない」）
+  closeAllConsoles: () => void
 }
 
 function sessionId(labName: string, nodeName: string) {
@@ -46,4 +49,5 @@ export const useConsoleStore = create<ConsoleState>()((set, get) => ({
       return { sessions, activeId }
     }),
   setActive: (id) => set({ activeId: id }),
+  closeAllConsoles: () => set({ sessions: [], activeId: null }),
 }))

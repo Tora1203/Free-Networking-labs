@@ -161,6 +161,7 @@ function TopologyEditorInner() {
   const { screenToFlowPosition } = useReactFlow()
   const username = useAuthStore((s) => s.username)
   const openConsole = useConsoleStore((s) => s.openConsole)
+  const closeAllConsoles = useConsoleStore((s) => s.closeAllConsoles)
   const editorTarget = useUiStore((s) => s.editorTarget)
   const setView = useUiStore((s) => s.setView)
   // ConsolePane自体はApp.tsx側に1つだけマウントされている。ここで管理するのは
@@ -173,8 +174,15 @@ function TopologyEditorInner() {
   // 入る度にTopologyEditorInnerが新たにマウントされるため、マウント時に一度だけ行えばよい
   // （2026-10-05決定、docs/direction.md参照）
   useEffect(() => {
+    // エディタに入る度（新規作成/既存ラボを開くのどちらでも）、前にいたラボのコンソールタブは
+    // もう無関係なので閉じる（2026-10-05指摘：ラボを切り替えても前のラボのコンソールが残っていた）。
+    // ドッキングパネルの開閉状態も一旦リセットし、必要ならautoOpenConsoleNodeで開き直す
+    closeAllConsoles()
+    setConsolePanelDocked(false)
+
     if (editorTarget.mode !== 'edit') return
     const targetLabName = editorTarget.labName
+    const autoOpenConsoleNode = editorTarget.autoOpenConsoleNode
     setLoadStatus({ kind: 'loading' })
     getLabTopologyYaml(targetLabName)
       .then(async (yamlText) => {
@@ -200,6 +208,14 @@ function TopologyEditorInner() {
         )
         setDeployedLab({ labName: targetLabName, nodeIds: consoleNodeIds })
         setLoadStatus({ kind: 'idle' })
+
+        // ホームの🖥ボタンから来た場合、読み込み完了後にそのノードのコンソールを自動で開く
+        if (autoOpenConsoleNode && consoleNodeIds.has(autoOpenConsoleNode)) {
+          const targetNode = nodes.find((n) => n.id === autoOpenConsoleNode)
+          const kind = (targetNode?.data as Partial<TopoNodeData> | undefined)?.kind
+          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? 'vtysh' : undefined)
+          setConsolePanelDocked(true)
+        }
       })
       .catch((e: unknown) => {
         const message = e instanceof ApiError || e instanceof Error ? e.message : 'トポロジの取得に失敗しました'

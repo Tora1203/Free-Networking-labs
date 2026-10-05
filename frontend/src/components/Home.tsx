@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PALETTE_NODE_CONFIGS, type Lab, type NodeState } from '../types/lab'
+import type { Lab, NodeState } from '../types/lab'
 import {
   ApiError,
   destroyLab,
@@ -10,7 +10,6 @@ import {
   type RawLabsResponse,
 } from '../api/client'
 import { getLabDisplayName } from '../utils/labName'
-import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
 import './Home.css'
 
@@ -43,22 +42,15 @@ function hasConsole(node: Lab['nodes'][number]) {
   return node.kind !== 'ovs-bridge' && node.state === 'running'
 }
 
-// containerlab側ではrouter/pcはどちらもkind:'linux'なので、imageで判別する
-// （CMLのように、ルーターは開いた瞬間からvtysh操作にしておきたいため）
-function isRouter(node: Lab['nodes'][number]) {
-  return node.image === PALETTE_NODE_CONFIGS.router.image
-}
-
 // ノードごとに状態と「コンソールを開く」ボタンを並べる一覧。
-// ワンタッチでコンソールを開けるように、ここから直接 consoleStore にセッションを追加し
-// 画面を統合コンソールへ切り替える（labName/nodeNameの手入力を無くすのが狙い）
+// 統合コンソールは単独のタブを持たず、常にトポロジエディタのドッキングパネルとしてしか
+// 存在しない（2026-10-05決定）。このボタンは裏でそのラボをエディタで開き、読み込み完了後に
+// 対象ノードのコンソールを自動でドッキング表示する（TopologyEditor.tsx参照）
 function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] }) {
-  const openConsole = useConsoleStore((s) => s.openConsole)
-  const setView = useUiStore((s) => s.setView)
+  const openEditor = useUiStore((s) => s.openEditor)
 
   const openNodeConsole = (node: Lab['nodes'][number]) => {
-    openConsole(labName, node.name, isRouter(node) ? 'vtysh' : undefined)
-    setView('console')
+    openEditor({ mode: 'edit', labName, autoOpenConsoleNode: node.name })
   }
 
   return (

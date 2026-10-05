@@ -14,8 +14,8 @@ export default function ConsolePane() {
     return (
       <div className="console-pane console-pane--empty">
         <p className="console-pane__hint">
-          開いているコンソールはありません。「ラボ一覧」のノードの<strong>🖥ボタン</strong>、または
-          トポロジエディタでノードを右クリックして<strong>「コンソールを開く」</strong>を押すと、ここにタブとして開きます。
+          開いているコンソールはありません。ホームのノードの<strong>🖥ボタン</strong>、または
+          このトポロジのノードを右クリックして<strong>「コンソールを開く」</strong>を押すと、ここにタブとして開きます。
         </p>
       </div>
     )
