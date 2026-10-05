@@ -50,26 +50,14 @@ function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
   return { kind, clabKind: config.clabKind, image: config.image, shortLabel }
 }
 
-const initialNodes: Node[] = [
-  { id: 'r1', type: 'topoNode', position: { x: 0, y: 0 }, data: makeNodeData('router', 'R1') },
-  { id: 'r2', type: 'topoNode', position: { x: 220, y: 0 }, data: makeNodeData('router', 'R2') },
-  { id: 'r3', type: 'topoNode', position: { x: 110, y: 150 }, data: makeNodeData('router', 'R3') },
-]
-
-const initialEdges: Edge[] = [
-  {
-    id: 'r1-r2',
-    source: 'r1',
-    target: 'r2',
-    sourceHandle: 'right',
-    targetHandle: 'left',
-    type: 'floating',
-    data: { sourceIface: 'eth1', targetIface: 'eth1' } satisfies EdgeIfaceData,
-  },
-]
-
-// 初期デモノードの分だけ、ドロップ時のカウンターを進めておく（R4から採番されるように）
-const initialCounters: Record<PaletteNodeKind, number> = { router: 3, 'l2-switch': 0, pc: 0 }
+// 以前はデモ用にr1/r2/r3のルーター3台を最初から置いていたが、既存の動いているラボの
+// コンテナ名（例: `test`ラボの`r1`等）とたまたま一致することがあり、デモノードを
+// 実際のラボのノードと誤解して右クリックしてしまう事故につながっていた（2026-10-05指摘）。
+// トポロジエディタは「今deployしようとしている新規トポロジ」専用で、既存ラボを読み込む機能は
+// まだ無いため、誤解を避けるため空のキャンバスから始めるようにした
+const initialNodes: Node[] = []
+const initialEdges: Edge[] = []
+const initialCounters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, pc: 0 }
 
 // ラベル・エリアのid採番。crypto.randomUUID()はセキュアコンテキスト（https/localhost）でしか
 // 使えず、LANのIPに http:// でアクセスする運用（docs/api-contract.md参照）があるため使わない
