@@ -163,7 +163,15 @@ async function handleVlan(req, res, token) {
     return
   }
 
-  const owned = await verifyLabOwnership(token, labName)
+  // VLAN設定はdeploy成功の直後に呼ばれる想定だが、deployLab()が返ってきた直後は
+  // clab-api-server側の`GET /api/v1/labs`にまだラボが反映されていないことがあり
+  // （2026-10-06実機確認：「所有ではありません」で失敗したが実際はdeploy済みだった）、
+  // 一発では見えない可能性がある。少し待って何度か再確認する
+  let owned = false
+  for (let attempt = 0; attempt < 5 && !owned; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 400))
+    owned = await verifyLabOwnership(token, labName)
+  }
   if (!owned) {
     sendJson(res, 403, { error: `ラボ「${labName}」は自分の所有ではありません` })
     return

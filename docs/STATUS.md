@@ -355,6 +355,19 @@
   - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。ブリッジ作成込みでの
     実機deploy確認は次回
 
+- **実機確認中に見つかった不具合2件を修正（2026-10-06）**
+  - **`ovs-vsctl: database connection failed (Permission denied)`**：`systemctl --user`の
+    ユーザーマネージャ（`user@1000.service`）が、`labuser`を`clab_admins`グループに
+    追加するより前（9/9ログイン時点）から起動し続けていたため、新しいグループ情報を
+    拾えていなかった（`/proc/<pid>/status`のGroupsで確認）。`sudo systemctl restart
+    user@$(id -u labuser).service`でユーザーマネージャ自体を再起動し解消
+    （`console-proxy`・`ovs-helper`は`enabled`なので自動的に正しいグループで再起動された）
+  - **「ラボ「fine」は自分の所有ではありません」でVLAN設定が失敗**：deploy成功直後に
+    `GET /api/v1/labs`を叩いても、clab-api-server側にまだラボが反映されていない
+    タイミングがあったと判明。`ovs-helper`の所有権確認に400msおきの再試行（最大5回）を追加
+  - 両方修正後、deploy成功＋ブリッジ作成までは実機で確認済み。VLAN投入まで通るかは
+    kawase3に再テストを依頼中
+
 **Blocked / 相手待ち**
 - （なし）
 
