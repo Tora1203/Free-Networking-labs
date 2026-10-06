@@ -136,6 +136,10 @@
     `POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>` に**同じ**`topologyContent`を渡すことで、
     指定ノードだけコンテナを破棄→再作成できる（`container_id`が変わり、コンテナ内の状態は消える。
     他ノードは触られない）。FEの「wipeボタン」はこの呼び出しで実現できる
+- **`POST /api/v1/labs/{labName}/exec`（コマンド実行）・`GET /api/v1/labs/{labName}/interfaces`
+  （2026-10-06、Swagger仕様で存在確認）**：どちらもコンテナ単位（`nodeFilter`/`node`クエリで
+  指定）。`ovs-bridge` kindのノードはコンテナを持たないため、この2つではホスト側のOVS
+  データベースには届かない（VLAN設定を検討した際に確認。詳細は`docs/direction.md`参照）
 
 ### 2.5 統合コンソール（WebSocket / ターミナル）— **実機確認済み（2026-09-17）**
 - 手順:
