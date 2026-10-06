@@ -76,7 +76,13 @@ async function verifyLabOwnership(token, labName) {
           }
           try {
             const labs = JSON.parse(body)
-            resolve(Object.prototype.hasOwnProperty.call(labs, labName))
+            const owned = Object.prototype.hasOwnProperty.call(labs, labName)
+            if (!owned) {
+              // デバッグ用：所有権確認が失敗した時に実際何が返ってきていたかを残す
+              // （2026-10-06、「所有ではありません」が再試行しても解消しない事象の調査用）
+              console.log(`[ovs-helper] lab "${labName}" not found. GET /api/v1/labs keys: ${Object.keys(labs).join(', ') || '(empty)'}`)
+            }
+            resolve(owned)
           } catch {
             reject(new Error('clab-api-serverからの応答を解釈できませんでした'))
           }
@@ -195,10 +201,11 @@ async function handleVlan(req, res, token) {
   // VLAN設定はdeploy成功の直後に呼ばれる想定だが、deployLab()が返ってきた直後は
   // clab-api-server側の`GET /api/v1/labs`にまだラボが反映されていないことがあり
   // （2026-10-06実機確認：「所有ではありません」で失敗したが実際はdeploy済みだった）、
-  // 一発では見えない可能性がある。少し待って何度か再確認する
+  // 一発では見えない可能性がある。少し待って何度か再確認する。
+  // 400ms×5回（2秒）では解消しなかったため、15回×1秒（最大15秒）まで伸ばした
   let owned = false
-  for (let attempt = 0; attempt < 5 && !owned; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 400))
+  for (let attempt = 0; attempt < 15 && !owned; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000))
     owned = await verifyLabOwnership(token, labName)
   }
   if (!owned) {

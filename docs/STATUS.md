@@ -374,6 +374,20 @@
     （VLAN設定はdeploy後に毎回再投入するので、消しても実質的な影響は無い）
   - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機での再テストは次回
 
+- **Vite開発サーバーも理由不明で停止（2026-10-06）**：`console-proxy`・`ovs-helper`と同様に、
+  ターミナルで直接`npm run dev`していたVite自体が落ち、フロントに一切アクセスできなくなる
+  事象が発生。同じくsystemdのuserサービス化で対応（`frontend/frontend-dev.service.example`
+  を追加、このサーバー上では`enable --now`済み）
+- **「所有ではありません」の再試行を強化＋デバッグログ追加**：400ms×5回（2秒）では
+  解消しなかったため、1秒×15回（最大15秒）に延長。失敗時は実際にGET /api/v1/labsで
+  返ってきたラボ名一覧をログに残すようにした（原因切り分け用）
+- **トランクVLANの設定方法を改善（2026-10-06、「all allowedか指定VLANだけにするか」指摘）**：
+  今までトランクは常に「指定VLANのみ許可」だったが、「全VLAN許可」も選べるようにした。
+  OVSはポートにtag/trunksのどちらも設定しないとデフォルトで全VLAN許可のトランクになるため、
+  「全VLAN許可」を選んだ場合はovs-helperを呼ぶ必要が無い（resetPort後の状態がそのまま
+  該当する）。`VlanConfig`の`trunk`モードは`vlans: number[] | 'all'`に変更
+  （`frontend/src/api/ovsHelperClient.ts`・`TopologyEditor.tsx`）
+
 **Blocked / 相手待ち**
 - （なし）
 

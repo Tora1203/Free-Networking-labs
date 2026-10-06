@@ -11,7 +11,11 @@ import { ApiError, getAuthToken } from './client'
 
 const OVS_HELPER_BASE_URL = import.meta.env.VITE_OVS_HELPER_URL ?? 'http://localhost:8083'
 
-export type VlanConfig = { mode: 'access'; vlan: number } | { mode: 'trunk'; vlans: number[] }
+// トランクの'all'（全VLAN許可）はovs-helper側には送らない。OVSのポートはtag/trunksを
+// どちらも設定しなければデフォルトで全VLANを通すトランクになるため、deploy前のポートリセット
+// （resetPort、ovs-vsctl --if-exists del-port）だけで既にこの状態になっており、
+// 追加の呼び出しが不要（TopologyEditor.tsx参照、2026-10-06指摘対応）
+export type VlanConfig = { mode: 'access'; vlan: number } | { mode: 'trunk'; vlans: number[] | 'all' }
 
 async function postToHelper(path: string, body: Record<string, unknown>): Promise<void> {
   const token = getAuthToken()

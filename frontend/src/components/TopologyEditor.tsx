@@ -60,8 +60,13 @@ interface EdgeIfaceData {
   [key: string]: unknown
 }
 
+// VLANモードの選択肢。トランクは「全VLAN許可」と「指定VLANのみ許可」を分ける
+// （2026-10-06指摘：最初はトランク＝常に指定リスト必須だったが、
+// OVSの「tag/trunksどちらも設定しない＝全VLAN許可のトランク」という挙動に合わせて選べるようにした）
+type VlanMode = 'none' | 'access' | 'trunk-all' | 'trunk-list'
+
 // VLAN入力欄の文字列をVlanConfigに変換する。modeが'none'なら未設定として扱う
-function parseVlanInput(mode: 'none' | 'access' | 'trunk', value: string): { config?: VlanConfig; error?: string } {
+function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; error?: string } {
   if (mode === 'none') return {}
   const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
   if (mode === 'access') {
@@ -69,6 +74,7 @@ function parseVlanInput(mode: 'none' | 'access' | 'trunk', value: string): { con
     if (!isValidVlanId(n)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
     return { config: { mode: 'access', vlan: n } }
   }
+  if (mode === 'trunk-all') return { config: { mode: 'trunk', vlans: 'all' } }
   const vlans = value
     .split(',')
     .map((s) => s.trim())
@@ -179,8 +185,11 @@ function buildTopologyContent(
 
     if (sourceIsSwitch) switchPorts.push(sourcePort)
     if (targetIsSwitch) switchPorts.push(targetPort)
-    if (iface.sourceVlan) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
-    if (iface.targetVlan) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
+    // trunkの「全VLAN許可」はovs-helperに送る必要がない（resetPort後のポートは
+    // デフォルトで全VLAN許可のトランクになっているため、何もしなくてよい）
+    const isAllTrunk = (v?: VlanConfig) => v?.mode === 'trunk' && v.vlans === 'all'
+    if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
+    if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
 
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
@@ -208,9 +217,9 @@ function TopologyEditorInner() {
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
   // L2スイッチ側のポートにだけ表示するVLAN設定の入力欄（2026-10-06追加）
-  const [pendingSourceVlanMode, setPendingSourceVlanMode] = useState<'none' | 'access' | 'trunk'>('none')
+  const [pendingSourceVlanMode, setPendingSourceVlanMode] = useState<VlanMode>('none')
   const [pendingSourceVlanValue, setPendingSourceVlanValue] = useState('')
-  const [pendingTargetVlanMode, setPendingTargetVlanMode] = useState<'none' | 'access' | 'trunk'>('none')
+  const [pendingTargetVlanMode, setPendingTargetVlanMode] = useState<VlanMode>('none')
   const [pendingTargetVlanValue, setPendingTargetVlanValue] = useState('')
   // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
@@ -468,7 +477,8 @@ function TopologyEditorInner() {
     }
     const pairSeen = new Map<string, number>()
 
-    const vlanLabel = (v?: VlanConfig) => (v ? (v.mode === 'access' ? `VLAN${v.vlan}` : `trunk(${v.vlans.join(',')})`) : '')
+    const vlanLabel = (v?: VlanConfig) =>
+      v ? (v.mode === 'access' ? `VLAN${v.vlan}` : `trunk(${v.vlans === 'all' ? 'all' : v.vlans.join(',')})`) : ''
 
     return edges.map((edge) => {
       const iface = edge.data as Partial<EdgeIfaceData> | undefined
@@ -678,21 +688,20 @@ function TopologyEditorInner() {
                   {sourceIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
                   {sourceIsSwitch && (
                     <div className="topology-editor__modal-vlan">
-                      <select value={pendingSourceVlanMode} onChange={(e) => setPendingSourceVlanMode(e.target.value as 'none' | 'access' | 'trunk')}>
+                      <select value={pendingSourceVlanMode} onChange={(e) => setPendingSourceVlanMode(e.target.value as VlanMode)}>
                         <option value="none">VLAN未設定</option>
                         <option value="access">アクセス</option>
-                        <option value="trunk">トランク</option>
+                        <option value="trunk-all">トランク（全VLAN許可）</option>
+                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
                       </select>
-                      {pendingSourceVlanMode !== 'none' && (
+                      {pendingSourceVlanMode === 'access' || pendingSourceVlanMode === 'trunk-list' ? (
                         <input
                           value={pendingSourceVlanValue}
                           onChange={(e) => setPendingSourceVlanValue(e.target.value)}
                           placeholder={pendingSourceVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
                         />
-                      )}
-                      {pendingSourceVlanMode !== 'none' && sourceVlanResult.error && (
-                        <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>
-                      )}
+                      ) : null}
+                      {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -710,21 +719,20 @@ function TopologyEditorInner() {
                   {targetIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
                   {targetIsSwitch && (
                     <div className="topology-editor__modal-vlan">
-                      <select value={pendingTargetVlanMode} onChange={(e) => setPendingTargetVlanMode(e.target.value as 'none' | 'access' | 'trunk')}>
+                      <select value={pendingTargetVlanMode} onChange={(e) => setPendingTargetVlanMode(e.target.value as VlanMode)}>
                         <option value="none">VLAN未設定</option>
                         <option value="access">アクセス</option>
-                        <option value="trunk">トランク</option>
+                        <option value="trunk-all">トランク（全VLAN許可）</option>
+                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
                       </select>
-                      {pendingTargetVlanMode !== 'none' && (
+                      {pendingTargetVlanMode === 'access' || pendingTargetVlanMode === 'trunk-list' ? (
                         <input
                           value={pendingTargetVlanValue}
                           onChange={(e) => setPendingTargetVlanValue(e.target.value)}
                           placeholder={pendingTargetVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
                         />
-                      )}
-                      {pendingTargetVlanMode !== 'none' && targetVlanResult.error && (
-                        <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>
-                      )}
+                      ) : null}
+                      {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
                     </div>
                   )}
                 </div>
