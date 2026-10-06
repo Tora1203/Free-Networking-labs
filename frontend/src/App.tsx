@@ -5,18 +5,14 @@ import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import Brand from './components/Brand'
 import { useAuthStore } from './store/authStore'
-import { useUiStore, type View } from './store/uiStore'
+import { useUiStore } from './store/uiStore'
 import './App.css'
 
 type Theme = 'light' | 'dark'
 
-// トポロジエディタ（'editor'）はここには含めない。ホームから「新規作成」または
-// 「既存ラボをエディタで開く」のどちらかを選んで入る専用画面であり、常時表示のタブではない
-// （2026-10-05決定、docs/direction.md参照）。
-// 統合コンソールも単独のタブは持たない（2026-10-05決定）。コンソールは常にどこかのラボの
-// ノードに対して開くものなので、トポロジエディタのドッキングパネルとしてしか存在しない
-// （store/uiStore.tsのコメント参照）
-const views: { id: View; label: string }[] = [{ id: 'home', label: 'ホーム' }]
+// ナビのタブボタンは持たない（2026-10-06決定）。ロゴクリックで常にホームに戻れるので、
+// 「ホーム」ボタンを別に置くのは冗長だった。トポロジエディタ（'editor'）・統合コンソールも
+// 単独のタブは持たず、ホームからの導線経由でしか開けない専用画面（docs/direction.md参照）
 
 function readInitialTheme(): Theme {
   try {
@@ -80,15 +76,6 @@ function App() {
     <div className="app-shell">
       <nav className="app-nav">
         <Brand size="nav" onClick={() => setView('home')} />
-        {views.map((v) => (
-          <button
-            key={v.id}
-            className={v.id === view ? 'app-nav__btn app-nav__btn--active' : 'app-nav__btn'}
-            onClick={() => setView(v.id)}
-          >
-            {v.label}
-          </button>
-        ))}
         <div className="app-nav__spacer" />
         <button
           className="app-nav__btn"
