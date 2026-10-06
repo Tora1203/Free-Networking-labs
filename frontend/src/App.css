@@ -27,11 +27,6 @@
   cursor: pointer;
 }
 
-.app-nav__btn--active {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
 .app-nav__spacer {
   flex: 1;
 }
