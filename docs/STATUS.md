@@ -345,9 +345,18 @@
   - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機でのVLAN投入確認は
     まだ（`ovs-helper`をsystemdサービス化してから次回確認予定、権限操作が本セッションの
     自動承認で止められたため手動セットアップをkawase3に依頼済み）
+  - `ovs-helper`のsystemdサービス化完了（kawase3対応済み）。実機確認の過程で新たな不具合発見：
+    **containerlabはovs-bridge kindのブリッジを自動生成しない**ため、事前に
+    `ovs-vsctl add-br`していないと`bridge "..." referenced in topology but does not exist`
+    でdeployが失敗することが判明（M2時点で分かっていた既知の制約だが、今回自動deployフローに
+    ブリッジ作成処理が入っていなかった）。`ovs-helper`に`POST /bridge`を追加し、
+    `onDeploy`でdeployLab()を呼ぶ直前に、トポロジ内の各L2スイッチのブリッジ名で呼ぶように
+    修正（`--may-exist`で既存ブリッジがあってもエラーにならないので再deployでも安全）
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。ブリッジ作成込みでの
+    実機deploy確認は次回
 
 **Blocked / 相手待ち**
-- `backend/ovs-helper/`のsystemdサービス化（手順は依頼済み、`console-proxy.service.example`と同様）
+- （なし）
 
 ---
 

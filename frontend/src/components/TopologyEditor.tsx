@@ -23,7 +23,7 @@ import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
-import { applyVlanConfig, type VlanConfig } from '../api/ovsHelperClient'
+import { applyVlanConfig, ensureBridge, type VlanConfig } from '../api/ovsHelperClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
 import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
@@ -512,6 +512,16 @@ function TopologyEditorInner() {
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
       const { topologyContent, vlanTasks } = buildTopologyContent(nodes, edges, username, safeName)
+
+      // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
+      // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
+      // 「bridge "..." referenced in topology but does not exist」で失敗することが判明）。
+      // 既に存在していてもエラーにならないので、reconfigure時も毎回呼んで問題ない
+      const bridgeNames = nodes
+        .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
+        .map((n) => toClabBridgeName(username, safeName, n.id))
+      await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
+
       // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
       // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
       // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
