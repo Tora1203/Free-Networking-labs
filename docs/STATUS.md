@@ -387,6 +387,16 @@
   「全VLAN許可」を選んだ場合はovs-helperを呼ぶ必要が無い（resetPort後の状態がそのまま
   該当する）。`VlanConfig`の`trunk`モードは`vlans: number[] | 'all'`に変更
   （`frontend/src/api/ovsHelperClient.ts`・`TopologyEditor.tsx`）
+- **「所有ではありません」の真因が判明（2026-10-06）**：15秒まで再試行を延長しても解消しない
+  ケースがあり、`ovs-helper`のログに`GET /api/v1/labs`の返り値を出すと常に`{}`（空）だった。
+  clab-api-serverのログで突き止めた原因は`Lab deployed successfully ... containerCount=0`——
+  **`GET /api/v1/labs`はcontainerlabのinspect結果（＝実行中コンテナ一覧）ベースで、
+  コンテナを1台も持たないラボ（スイッチ同士を直結しただけの構成等）は何秒待っても
+  一覧に出てこない**。待ち時間の問題ではなかった。
+  所有権確認を`GET /api/v1/labs/{labName}/topology/yaml`（保存済みYAMLを読むだけで
+  所有権チェック済みの200/404を返す。コンテナ数に依存しない）に切り替えて修正。
+  再試行も不要になった分500ms×3回に戻した（`backend/ovs-helper/server.js`の`verifyLabOwnership`）。
+  実機での再テストは次回
 
 **Blocked / 相手待ち**
 - （なし）

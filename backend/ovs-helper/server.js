@@ -61,31 +61,31 @@ function isValidVlanId(n) {
   return Number.isInteger(n) && n >= MIN_VLAN && n <= MAX_VLAN
 }
 
+// 所有権確認には `GET /api/v1/labs` ではなく `GET /api/v1/labs/{labName}/topology/yaml` を使う。
+// `GET /api/v1/labs`はcontainerlabのinspect結果（＝実行中コンテナ一覧）を元に返しているらしく、
+// コンテナを1台も持たないラボ（今回のようにOVSブリッジ同士を直結しただけのラボ、
+// `Lab deployed successfully ... containerCount=0`のログで確認）は何秒待っても
+// 一覧に出てこないことが判明した（2026-10-06実機確認。15秒再試行しても「所有ではありません」で
+// 失敗し続けた事象の真因。待ち時間の問題ではなかった）。
+// topology/yamlエンドポイントは保存済みYAMLファイルを読むだけで、所有権チェック済みの
+// 200/404を返す（存在しない・他人のラボなら404）ため、コンテナ数に依存しない
 async function verifyLabOwnership(token, labName) {
   return new Promise((resolve, reject) => {
     const req = https.request(
-      `${CLAB_API_BASE_URL}/api/v1/labs`,
+      `${CLAB_API_BASE_URL}/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`,
       { headers: { Authorization: `Bearer ${token}` }, rejectUnauthorized: false },
       (res) => {
-        let body = ''
-        res.on('data', (chunk) => (body += chunk))
+        res.resume()
         res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error('認証に失敗しました'))
+          if (res.statusCode === 200) {
+            resolve(true)
             return
           }
-          try {
-            const labs = JSON.parse(body)
-            const owned = Object.prototype.hasOwnProperty.call(labs, labName)
-            if (!owned) {
-              // デバッグ用：所有権確認が失敗した時に実際何が返ってきていたかを残す
-              // （2026-10-06、「所有ではありません」が再試行しても解消しない事象の調査用）
-              console.log(`[ovs-helper] lab "${labName}" not found. GET /api/v1/labs keys: ${Object.keys(labs).join(', ') || '(empty)'}`)
-            }
-            resolve(owned)
-          } catch {
-            reject(new Error('clab-api-serverからの応答を解釈できませんでした'))
+          if (res.statusCode === 404) {
+            resolve(false)
+            return
           }
+          reject(new Error('認証に失敗しました'))
         })
       },
     )
@@ -198,14 +198,12 @@ async function handleVlan(req, res, token) {
     return
   }
 
-  // VLAN設定はdeploy成功の直後に呼ばれる想定だが、deployLab()が返ってきた直後は
-  // clab-api-server側の`GET /api/v1/labs`にまだラボが反映されていないことがあり
-  // （2026-10-06実機確認：「所有ではありません」で失敗したが実際はdeploy済みだった）、
-  // 一発では見えない可能性がある。少し待って何度か再確認する。
-  // 400ms×5回（2秒）では解消しなかったため、15回×1秒（最大15秒）まで伸ばした
+  // topology/yamlエンドポイントはファイルを直接読むだけなので基本的に即座に反映されるはずだが、
+  // 保険として少しだけ再試行する（本質的な原因はcontainerCount=0ラボが`GET /api/v1/labs`に
+  // 出てこないことだったため、以前の15回×1秒のロングリトライは不要になった）
   let owned = false
-  for (let attempt = 0; attempt < 15 && !owned; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000))
+  for (let attempt = 0; attempt < 3 && !owned; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 500))
     owned = await verifyLabOwnership(token, labName)
   }
   if (!owned) {
