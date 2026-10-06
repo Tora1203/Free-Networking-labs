@@ -365,8 +365,14 @@
   - **「ラボ「fine」は自分の所有ではありません」でVLAN設定が失敗**：deploy成功直後に
     `GET /api/v1/labs`を叩いても、clab-api-server側にまだラボが反映されていない
     タイミングがあったと判明。`ovs-helper`の所有権確認に400msおきの再試行（最大5回）を追加
-  - 両方修正後、deploy成功＋ブリッジ作成までは実機で確認済み。VLAN投入まで通るかは
-    kawase3に再テストを依頼中
+  - 両方修正後、再テストで3件目の不具合を発見：
+    **`interface "..." is defined via topology but already exists`**。ポート名が
+    (username,labName,switchNodeId,iface)から決定的に決まるため、同じラボを再deployすると
+    毎回同じポート名になり、前回deployでOVS側に作られたインターフェースが残っていて衝突する。
+    `ovs-helper`に`POST /port/reset`（`ovs-vsctl --if-exists del-port`）を追加し、
+    `onDeploy`でdeployLab()を呼ぶ直前に全L2スイッチ側ポートに対して呼ぶように修正
+    （VLAN設定はdeploy後に毎回再投入するので、消しても実質的な影響は無い）
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機での再テストは次回
 
 **Blocked / 相手待ち**
 - （なし）

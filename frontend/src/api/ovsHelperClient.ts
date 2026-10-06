@@ -39,3 +39,10 @@ export function ensureBridge(bridge: string): Promise<void> {
 export function applyVlanConfig(labName: string, port: string, config: VlanConfig): Promise<void> {
   return postToHelper('/vlan', { labName, port, ...config })
 }
+
+// deployより前に呼ぶ。ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、
+// 再deployすると同じ名前になり、前回のOVS側インターフェースが残っているとcontainerlabが
+// 「already exists」で失敗する（2026-10-06実機確認）。存在しなければ何もしない
+export function resetPort(port: string): Promise<void> {
+  return postToHelper('/port/reset', { port })
+}

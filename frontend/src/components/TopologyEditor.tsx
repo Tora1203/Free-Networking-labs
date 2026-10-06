@@ -23,7 +23,7 @@ import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
-import { applyVlanConfig, ensureBridge, type VlanConfig } from '../api/ovsHelperClient'
+import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
 import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
@@ -139,7 +139,7 @@ function buildTopologyContent(
   edges: Edge[],
   username: string,
   labName: string,
-): { topologyContent: TopologyContent; vlanTasks: VlanTask[] } {
+): { topologyContent: TopologyContent; vlanTasks: VlanTask[]; switchPorts: string[] } {
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
@@ -159,6 +159,7 @@ function buildTopologyContent(
   }
 
   const vlanTasks: VlanTask[] = []
+  const switchPorts: string[] = []
 
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
@@ -171,22 +172,20 @@ function buildTopologyContent(
     // L2スイッチ側のポート名は、ブリッジ名と同じ理由（ホスト全体でグローバルな名前空間）で
     // ハッシュ化した実名を使う。UI上はeth1等の分かりやすい名前のまま見せる
     // （2026-10-06発見、docs/direction.md参照）。VLAN設定も同じ実名を使って後段で投入する
-    const sourcePort =
-      nodeKinds.get(edge.source) === 'l2-switch'
-        ? toClabPortName(username, labName, edge.source, iface.sourceIface)
-        : iface.sourceIface
-    const targetPort =
-      nodeKinds.get(edge.target) === 'l2-switch'
-        ? toClabPortName(username, labName, edge.target, iface.targetIface)
-        : iface.targetIface
+    const sourceIsSwitch = nodeKinds.get(edge.source) === 'l2-switch'
+    const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
+    const sourcePort = sourceIsSwitch ? toClabPortName(username, labName, edge.source, iface.sourceIface) : iface.sourceIface
+    const targetPort = targetIsSwitch ? toClabPortName(username, labName, edge.target, iface.targetIface) : iface.targetIface
 
+    if (sourceIsSwitch) switchPorts.push(sourcePort)
+    if (targetIsSwitch) switchPorts.push(targetPort)
     if (iface.sourceVlan) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
     if (iface.targetVlan) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
 
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
 
-  return { topologyContent: { name: labName, topology: { nodes: nodesMap, links } }, vlanTasks }
+  return { topologyContent: { name: labName, topology: { nodes: nodesMap, links } }, vlanTasks, switchPorts }
 }
 
 type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
@@ -511,7 +510,7 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks } = buildTopologyContent(nodes, edges, username, safeName)
+      const { topologyContent, vlanTasks, switchPorts } = buildTopologyContent(nodes, edges, username, safeName)
 
       // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
       // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
@@ -521,6 +520,12 @@ function TopologyEditorInner() {
         .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
         .map((n) => toClabBridgeName(username, safeName, n.id))
       await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
+
+      // ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、再deployすると
+      // 必ず同じ名前になる。前回のdeployで作られたOVS側のインターフェースが残っていると、
+      // containerlabが「already exists」で失敗する（2026-10-06実機確認）ため、
+      // deploy前に一度消してから作り直させる（存在しなければ何もしない）
+      await Promise.all(switchPorts.map((port) => resetPort(port)))
 
       // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
       // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、

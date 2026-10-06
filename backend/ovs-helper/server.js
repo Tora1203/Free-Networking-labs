@@ -1,4 +1,4 @@
-// L2スイッチ(ovs-bridge kind)のブリッジ作成・ポートへのVLAN設定（アクセス/トランク）を
+// L2スイッチ(ovs-bridge kind)のブリッジ作成・ポートのリセット・VLAN設定（アクセス/トランク）を
 // 行うための専用ヘルパー。
 //
 // なぜブリッジ作成が必要か（2026-10-06、実機確認）:
@@ -8,6 +8,14 @@
 //   （`CLAUDE.md`・`docs/direction.md`のM2の発見事項を参照。既存の既知の制約だが、
 //   これまでフロント側の自動deployフローにはブリッジ作成処理が入っておらず、
 //   手動でブリッジを作っていない状態でのdeployが失敗することが判明した）。
+//
+// なぜポートのリセットが必要か（2026-10-06、実機確認）:
+//   ポート名は(username,labName,switchNodeId,iface)から決定的にハッシュ化されるため、
+//   同じラボを再deployすると毎回同じポート名になる。前回のdeployでOVS側に作られた
+//   インターフェースが残っていると、containerlabが
+//   `interface "..." is defined via topology but already exists` で失敗する。
+//   deploy前に`ovs-vsctl --if-exists del-port`で一度消してから作り直させる
+//   （VLAN設定はdeploy後に毎回再投入するので、消しても実質的な影響はない）。
 //
 // なぜVLAN設定が必要か:
 //   containerlabのトポロジYAMLにはVLAN設定の項目が無く、deploy後に`ovs-vsctl`をホスト側で
@@ -151,6 +159,27 @@ async function handleBridge(req, res, token) {
   sendJson(res, 200, { message: `bridge ${bridge} を用意しました` })
 }
 
+async function handlePortReset(req, res, token) {
+  const payload = await readJsonBody(req)
+  const { port } = payload ?? {}
+  if (typeof port !== 'string' || !PORT_NAME_PATTERN.test(port)) {
+    sendJson(res, 400, { error: 'portの形式が不正です' })
+    return
+  }
+
+  const tokenOk = await verifyTokenOnly(token)
+  if (!tokenOk) {
+    sendJson(res, 401, { error: '認証に失敗しました' })
+    return
+  }
+
+  // 存在しなくてもエラーにしない。ポート名は(username,labName,switchNodeId,iface)から
+  // 決定的に決まるため、再deployすると同じ名前になり、前回のOVS側インターフェースが
+  // 残っているとcontainerlabが「already exists」で失敗する（2026-10-06実機確認）
+  await runOvsVsctl(['--if-exists', 'del-port', port])
+  sendJson(res, 200, { message: `port ${port} をリセットしました` })
+}
+
 async function handleVlan(req, res, token) {
   const payload = await readJsonBody(req)
   const { labName, port, mode, vlan, vlans } = payload ?? {}
@@ -197,7 +226,7 @@ async function handleVlan(req, res, token) {
   sendJson(res, 200, { message: `port ${port} に ${mode} 設定を適用しました` })
 }
 
-const ROUTES = { '/bridge': handleBridge, '/vlan': handleVlan }
+const ROUTES = { '/bridge': handleBridge, '/port/reset': handlePortReset, '/vlan': handleVlan }
 
 const server = createServer((req, res) => {
   applyCors(req, res)
