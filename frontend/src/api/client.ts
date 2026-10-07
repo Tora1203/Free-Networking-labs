@@ -203,10 +203,13 @@ export function wipeNode(topologyContent: TopologyContent, nodeName: string) {
   )
 }
 
-// コンテナ内でコマンドを実行する（api-contract.md 2.4、Swagger仕様で存在確認・
-// 2026-10-07、実機での動作確認はTODO(kawase3)）。PC/ルーターの固定IPアドレス設定に使う
+// コンテナ内でコマンドを実行する（api-contract.md 2.4）。PC/ルーターの固定IPアドレス設定に使う
 // （L2スイッチはコンテナを持たないためこの経路では届かず、backend/ovs-helper/を使う）。
-// nodeFilterはトポロジYAML上の短いノード名（wipeNode()と同じ）
+// nodeFilterは短いノード名ではなく**コンテナのフルネーム**が必要（2026-10-07実機確認：
+// 短い名前だと`filter did not match any containers`で失敗した。execはdeploy済みコンテナを
+// 対象にするため、terminal-sessions（ConsoleSession.tsx）と同じ`clab-<labName>-<nodeName>`が
+// 要る。wipeNode()のnodeFilterはトポロジ定義＝デプロイ前の層を指すので短い名前のままでよく、
+// 同じ引数名でも層が違うため挙動が異なる点に注意）
 export interface ExecResult {
   cmd: string[]
   'return-code': number
@@ -216,8 +219,9 @@ export interface ExecResult {
 export type ExecResponse = Record<string, ExecResult[]>
 
 export function execInLab(labName: string, nodeName: string, command: string) {
+  const containerName = `clab-${labName}-${nodeName}`
   return request<ExecResponse>(
-    `/api/v1/labs/${encodeURIComponent(labName)}/exec?nodeFilter=${encodeURIComponent(nodeName)}`,
+    `/api/v1/labs/${encodeURIComponent(labName)}/exec?nodeFilter=${encodeURIComponent(containerName)}`,
     { method: 'POST', body: JSON.stringify({ command }) },
   )
 }

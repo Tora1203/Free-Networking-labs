@@ -430,10 +430,15 @@
   L2スイッチがVLANをovs-helper経由で投入するのと同様、PCはコンテナを持つので
   clab-api-serverの`POST /api/v1/labs/{labName}/exec`を直接使い、deploy成功後に
   `ip addr add <addr> dev <iface>`を実行する（`frontend/src/api/client.ts`の`execInLab()`、
-  `TopologyEditor.tsx`の`addressTasks`）。execのリクエスト/レスポンス形は現時点でSwagger仕様から
-  推測しただけで**実機確認はまだ**（`docs/api-contract.md`にTODO(kawase3)として明記）。
-  `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**次回、front-testラボ等で
-  実際にPC同士をIP設定してpingが通るか確認する**
+  `TopologyEditor.tsx`の`addressTasks`）
+- **execのnodeFilterはコンテナのフルネームが必要と判明（2026-10-07実機確認）**：
+  `front-test`でユーザー実機テストしたところ、`nodeFilter=pc-1`（短い名前）では
+  `500 exec failed: filter did not match any containers`で全滅。execはデプロイ前の
+  トポロジ定義を見る`wipeNode()`と違い、デプロイ済みコンテナを対象にするため、
+  `terminal-sessions`と同じ`clab-<labName>-<nodeName>`のフルネームが要る。
+  `execInLab()`内でフルネームに変換するよう修正。`docs/api-contract.md`も修正
+  （フルネーム変換後の成功レスポンス自体の確認は次回）。
+  `npx tsc --noEmit`はクリア。**次回、front-testラボで再度IP設定してpingが通るか確認する**
 
 **Blocked / 相手待ち**
 - `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
