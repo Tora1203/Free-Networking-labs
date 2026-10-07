@@ -9,6 +9,7 @@ export default function ConsolePane() {
   const activeId = useConsoleStore((s) => s.activeId)
   const setActive = useConsoleStore((s) => s.setActive)
   const closeConsole = useConsoleStore((s) => s.closeConsole)
+  const closeAllConsoles = useConsoleStore((s) => s.closeAllConsoles)
 
   if (sessions.length === 0) {
     return (
@@ -49,6 +50,11 @@ export default function ConsolePane() {
             </button>
           </div>
         ))}
+        {sessions.length > 1 && (
+          <button className="console-tabs__close-all" title="すべてのコンソールを閉じる" onClick={() => closeAllConsoles()}>
+            すべて閉じる
+          </button>
+        )}
       </div>
       <div className="console-manager__body">
         {sessions.map((s) => (

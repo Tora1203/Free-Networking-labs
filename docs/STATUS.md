@@ -539,6 +539,24 @@
   （`TopologyEditor.tsx`の`editEdge()`、`PendingConnection`に`editingEdgeId`を追加）。
   編集中は自分自身のI/F割り当てを「使用中」と誤検知しないよう`usedInterfaces()`に
   `excludeEdgeId`を追加。`npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【対応済み】「deployしたのに座標が復元されなかった」バグ修正（2026-10-07）**：
+  front-testの実際の保存データ（`*.clab.yml.annotations.json`）を直接確認したところ、
+  `positions`のキー（L2スイッチの古いハッシュ名）と`portAnnotations`のキー（最新の
+  ハッシュ名）が食い違っていた。原因は読み込み時の処理順序：`applyAnnotations()`
+  （座標の復元、node.idをキーに引く）が`restoreSwitchIdentities()`（node.idを
+  元の安定した値に戻す処理）より**先に**実行されていたため、L2スイッチの座標復元だけ
+  常に失敗してグリッド配置に戻ってしまっていた（PC/ルーターはnode.idがハッシュ化されない
+  ため影響なし）。`restoreSwitchIdentities()`→`applyAnnotations()`の順に修正
+  （`TopologyEditor.tsx`の読み込みuseEffect）
+- **【対応済み】エリア名の変更をワンクリックに変更（2026-10-07指摘）**：
+  今までダブルクリックが必要だった（`AreaNode.tsx`の`onDoubleClick`→`onClick`）
+- **【対応済み】統合コンソールに「すべて閉じる」ボタンを追加＋タブの×ボタンを拡大
+  （2026-10-07指摘：「コンソールタブ閉じたい」「×ボタンが機能していない/見つからない」）**：
+  既存の×ボタン自体のロジックは問題なさそうだったが、サイズが小さく見つけにくかった
+  可能性があるため、サイズ・当たり判定・hover時のコントラストを強化。タブが2つ以上ある時は
+  一括で閉じる「すべて閉じる」ボタンも追加（`ConsolePane.tsx`/`Console.css`）
+  - 「取ってこれなかった」については自由記入の内容がこちらに届かなかったため、
+    まだ対応できていない。詳細を次回確認する
 
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの

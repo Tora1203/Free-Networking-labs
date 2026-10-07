@@ -68,8 +68,8 @@ export default function AreaNode({ id, data, selected }: NodeProps) {
           <span
             className="area-node__title"
             style={{ color }}
-            onDoubleClick={() => setEditing(true)}
-            title="ダブルクリックで名前を編集"
+            onClick={() => setEditing(true)}
+            title="クリックで名前を編集"
           >
             {nodeData.text || 'エリア'}
           </span>

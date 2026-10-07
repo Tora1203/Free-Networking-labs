@@ -515,7 +515,6 @@ function TopologyEditorInner() {
         let edges = parsed.edges
         try {
           const annotationsText = await getLabAnnotations(targetLabName)
-          nodes = applyAnnotations(nodes, annotationsText)
           // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
           // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
           // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
@@ -523,8 +522,13 @@ function TopologyEditorInner() {
           // restoreSwitchIdentitiesより先に呼ぶこと
           edges = applyPortAnnotations(edges, annotationsText)
           // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
-          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す
+          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す。
+          // positions（座標）はnode.idをキーに保存されており、保存時点では既にこの変換が
+          // 済んだ状態のidだったため、applyAnnotations（座標の復元）より先にこれを行う必要がある
+          // （順序が逆だとL2スイッチの座標だけ復元できずグリッド配置に戻ってしまう、
+          // 2026-10-07実機確認：バグ報告「deployしたのに座標が復元されなかった」の原因）
           ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
+          nodes = applyAnnotations(nodes, annotationsText)
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
