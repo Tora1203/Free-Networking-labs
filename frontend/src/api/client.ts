@@ -113,7 +113,7 @@ export function getLabs() {
 export interface TopologyContent {
   name: string
   topology: {
-    nodes: Record<string, { kind: string; image?: string }>
+    nodes: Record<string, { kind: string; image?: string; privileged?: boolean; 'cap-add'?: string[] }>
     links: { endpoints: [string, string] }[]
   }
 }

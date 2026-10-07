@@ -165,6 +165,36 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
 - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機でのVLAN投入確認は
   まだ（`backend/ovs-helper/`をsystemdサービス化してから次回確認予定）
 
+## 決定事項（2026-10-07追記）：PC/ルーターのコンテナをprivileged:false + 最小capabilityに縮小
+
+- **発覚の経緯**：「PCコンソールでeth0を触れてしまう」という指摘の対応を検討中、より深刻な
+  問題を発見した。`docker inspect`で確認したところ、containerlabの`linux` kindは**デフォルトで
+  Dockerの`--privileged`相当（全capability付与、AppArmor/seccompともに無効）でコンテナを
+  起動していた**（`Privileged: true`、`CapEff`が全capability、`SecurityOpt`で
+  AppArmor/SELinuxラベルも無効化）。これはPC・ルーター両方（`kind: linux`）に該当。
+  コンソールは単なるroot権限シェルなので、privilegedコンテナ特有のホスト侵害手法
+  （cgroup `release_agent`経由のエスケープ等、広く知られた手法）を理論上試みられる状態だった。
+  マルチユーザー前提のこのプロジェクトでは、1ユーザーのラボからホストやりとり他ユーザーの
+  ラボまで侵害されうる、というのは本来のスコープを超える重大リスクと判断
+- **対応**：containerlabの公式ドキュメント（`privileged: false` + `cap-add`でcapabilityを
+  個別指定可能）を確認し、トポロジ生成時にPC/ルーターへ以下を付与するよう変更
+  （`frontend/src/components/TopologyEditor.tsx`の`CONTAINER_CAPABILITIES`）：
+  - PC（`linux`kind、ip addr/link操作のみ）：`cap-add: [NET_ADMIN]`
+  - ルーター（FRR）：`cap-add: [NET_ADMIN, NET_RAW, SYS_ADMIN]`
+    （実機確認：NET_ADMIN+NET_RAWだけではzebra/ospfdが
+    `privs_init: initial cap_set_proc failed: Operation not permitted`で起動せず、
+    SYS_ADMINもFRR自身が要求していることが判明。SYS_ADMINは軽い権限ではないが、
+    `--privileged`全体（host deviceへの直接アクセス・AppArmor/seccomp無効化等）とは別物で、
+    それらは引き続き防げる）
+  - L2スイッチ（`ovs-bridge`kind）はコンテナを持たないため対象外
+- **実機検証（一時的なテストラボで確認、本番トポロジには影響なし）**：
+  - PC: `privileged:false`でもIPアドレス設定・ping成功、`/dev`への host device直接アクセス不可
+  - ルーター: OSPF隣接形成（2-Way/DROther）・loopback間ping（0% loss）まで成功。
+    既存のvtysh・コンソール機能にも影響なし
+- **残存リスク（意図的に受け入れる範囲）**：SYS_ADMINは依然軽くない権限のため、完全な
+  ホスト分離を保証するものではない（あくまでsoft improvement）。将来さらに絞りたい場合は
+  FRRをdaemon単位で分離する、またはFRR以外のルーティングスタックを検討する必要がある
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**
