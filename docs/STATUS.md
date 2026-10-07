@@ -504,15 +504,23 @@
      **元々の「eth0コマンドをソフトにブロック」は未実装**——host侵害経路を塞いだ分、
      残るリスクは「自分のコンテナのmgmt接続を自分で切る」程度に下がったため、
      追加でやるかは次回確認
-- **次の目標の1（router on a stick）はまだ未着手**
+- **【対応済み】次の目標の1（router on a stick）**：ルーターが、L2スイッチのトランクポートに
+  接続している時だけ、接続ポップアップに「プレーン/VLANサブインターフェース」のモード切替を
+  追加。VLANサブインターフェースモードでは、VLAN ID＋アドレスの行を複数追加できるUIにし、
+  deploy後にclab-api-serverのexec経由で`ip link add ... type vlan`→`ip link set ... up`→
+  `ip addr add`の3段階を順番に実行する（`TopologyEditor.tsx`の`SubInterfaceTask`/
+  `CONTAINER_CAPABILITIES`、execは`&&`等のシェル機能に頼らず1コマンドずつ送る設計）。
+  再読み込み時の復元も既存の`portAnnotations`機構を拡張して対応（`subInterfaces`フィールド追加）
+  - 実機検証（一時テストラボ：ルーター2台をL2スイッチ経由で接続、両方にVLAN10の
+    サブインターフェースを作成）：**トランク越しのVLAN10通信を確認（ping 0% loss）**。
+    物理I/F自体（eth1）にはIPv4が付かず、意図通り「トランクの運び役」のままであることも確認
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
 
 **Blocked / 相手待ち**
-- 上記3の変更をfront-test等で実際にredeployし、PC/ルーターが正常に動くか最終確認してほしい
-  （一時テストラボでは確認済みだが、実運用のラボでの確認はまだ）
-- `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
-  「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
-- 上記「再読み込み時の文字化け」修正の実機確認（redeploy→再読み込みでI/F名・VLAN・アドレスが
-  正しく戻るか）
+- **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
+  privileged:false化はfront-testで実機確認済み（問題なし）
+- router on a stick（上記、新規実装）の実機確認：L2スイッチのトランクポート経由で
+  ルーター同士をVLANサブインターフェースで繋ぎ、ping・再読み込み後の復元を確認してほしい
 
 ---
 

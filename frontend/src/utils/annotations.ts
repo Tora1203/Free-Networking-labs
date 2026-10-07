@@ -14,6 +14,8 @@ interface PortAnnotation {
   iface: string
   vlan?: unknown
   address?: string
+  // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
+  subInterfaces?: unknown
 }
 
 interface AnnotationsFile {
@@ -132,6 +134,8 @@ export function applyPortAnnotations(edges: Edge[], annotationsText: string): Ed
         targetVlan: targetAnnotation?.vlan,
         sourceAddress: sourceAnnotation?.address,
         targetAddress: targetAnnotation?.address,
+        sourceSubInterfaces: sourceAnnotation?.subInterfaces,
+        targetSubInterfaces: targetAnnotation?.subInterfaces,
       },
     }
   })
