@@ -47,6 +47,9 @@ import https from 'node:https'
 const HELPER_PORT = Number(process.env.OVS_HELPER_PORT ?? 8083)
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+// `ip link delete`はCAP_NET_ADMINが要るため、labuser権限のこのプロセスからは直接呼べない。
+// setcapした専用ラッパー（link-delete.sh、要セットアップ）経由で呼ぶ。詳細はそのファイルを参照
+const LINK_DELETE_BIN = process.env.OVS_HELPER_LINK_DELETE_BIN ?? '/usr/local/sbin/ovs-helper-link-delete'
 
 // OVSのVLAN IDとして有効な範囲（802.1Q）
 const MIN_VLAN = 1
@@ -124,6 +127,26 @@ function runOvsVsctl(args) {
   })
 }
 
+// `ovs-vsctl del-port`はOVSブリッジからポートを切り離すだけで、裏にあるvethデバイス自体は
+// カーネルに残り続ける（2026-10-07実機確認：`ip link show`で`del-port`後も
+// `p-xxxxxxxx@p-yyyyyyyy`が見え続けていた）。再deploy時、containerlabが同名のvethを
+// 作り直そうとしてカーネル側で名前衝突し`already exists`になる。`ip link delete`で
+// veth自体も削除する必要があるが、これにはCAP_NET_ADMINが要り、labuser権限のこの
+// プロセスからは直接呼べない（`Operation not permitted`を実機確認）。そのためsetcapした
+// 専用ラッパー（link-delete.sh）経由で呼ぶ（存在しない場合は`Cannot find device`で
+// 失敗するだけなので無視）
+function deleteLinkIfExists(iface) {
+  return new Promise((resolve, reject) => {
+    execFile(LINK_DELETE_BIN, [iface], (error, stdout, stderr) => {
+      if (error && !/Cannot find device/.test(stderr ?? '')) {
+        reject(new Error(stderr?.trim() || error.message))
+        return
+      }
+      resolve()
+    })
+  })
+}
+
 function sendJson(res, status, body) {
   const text = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) })
@@ -181,8 +204,11 @@ async function handlePortReset(req, res, token) {
 
   // 存在しなくてもエラーにしない。ポート名は(username,labName,switchNodeId,iface)から
   // 決定的に決まるため、再deployすると同じ名前になり、前回のOVS側インターフェースが
-  // 残っているとcontainerlabが「already exists」で失敗する（2026-10-06実機確認）
+  // 残っているとcontainerlabが「already exists」で失敗する（2026-10-06実機確認）。
+  // OVSからの切り離し（del-port）だけではvethデバイス自体が残るため、ip linkでも削除する
+  // （2026-10-07実機確認：del-portだけでは再deployのたびに同じエラーが再発していた）
   await runOvsVsctl(['--if-exists', 'del-port', port])
+  await deleteLinkIfExists(port)
   sendJson(res, 200, { message: `port ${port} をリセットしました` })
 }
 

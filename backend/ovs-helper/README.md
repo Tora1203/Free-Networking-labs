@@ -18,8 +18,16 @@ containerlabのトポロジYAMLにはVLAN設定の項目が無く、deploy後に
 ## 認可の仕組み
 
 JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有していないため）。代わりに、
-受け取ったトークンで`GET /api/v1/labs`を`clab-api-server`自身に問い合わせ、返ってきた
-（所有権フィルタ済みの）ラボ一覧に対象の`labName`が含まれているかを確認します。
+受け取ったトークンで`clab-api-server`自身に問い合わせます。
+
+- `/vlan`（VLAN設定の投入）: `GET /api/v1/labs/{labName}/topology/yaml`を叩き、200なら
+  本人所有のラボと判断します（`GET /api/v1/labs`はcontainerlabのinspect結果＝実行中コンテナ
+  一覧がベースのため、コンテナを1台も持たないラボ＝スイッチ同士を直結しただけの構成等が
+  一覧に出てこないことが判明し、2026-10-06にこちらへ切り替えました）
+- `/bridge`・`/port/reset`（ブリッジ作成・ポートリセット）: `GET /api/v1/labs`が401を返さない
+  ことだけを確認します（deployより前の「まだそのラボが存在しない」タイミングでも呼ぶ必要があるため、
+  所有権チェック自体はスキップ。名前自体がusername/labNameから決定的にハッシュ化されているため、
+  他人のラボの名前を当てて壊すことは現実的に困難）
 
 ## 前提：OVSへの非root権限
 
@@ -27,7 +35,45 @@ JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有して
 このサーバーでは`labuser`に対して設定済み（`docs/direction.md`参照：
 `/etc/default/openvswitch-switch`に`--ovs-user=root:clab_admins`等）。
 
+## 前提：veth削除用ラッパーのsetcap（初回のみ）
+
+`POST /port/reset`は再deploy時のポート名衝突を防ぐため、OVSから切り離した後のvethデバイス
+自体も`ip link delete`で削除します。これにはCAP_NET_ADMINが必要で、`labuser`権限で動く
+このプロセスからは直接呼べません（2026-10-07実機確認：`Operation not permitted`）。
+そのため専用の最小権限ラッパー`link-delete.sh`にだけ`setcap`する必要があります：
+
+```sh
+sudo cp backend/ovs-helper/link-delete.sh /usr/local/sbin/ovs-helper-link-delete
+sudo chown root:clab_admins /usr/local/sbin/ovs-helper-link-delete
+sudo chmod 750 /usr/local/sbin/ovs-helper-link-delete
+sudo setcap cap_net_admin+ep /usr/local/sbin/ovs-helper-link-delete
+```
+
+`ip`本体にsetcapしない理由は`link-delete.sh`のコメント参照（`p-xxxxxxxx`形式の名前の
+deleteだけに絞り、実行可能なユーザーも`clab_admins`グループに限定するため）。
+
 ## API
+
+### `POST /bridge`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "bridge": "sw-xxxxxxxx" }  // frontend/src/utils/clabNaming.ts の toClabBridgeName() が生成する実名
+```
+
+`ovs-vsctl --may-exist add-br`を実行します（既に存在してもエラーになりません）。deployより
+前に、トポロジに含まれる全L2スイッチに対して呼ぶ想定です。
+
+### `POST /port/reset`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "port": "p-xxxxxxxx" }  // toClabPortName() が生成する実名
+```
+
+`ovs-vsctl --if-exists del-port`に続けて`ip link delete`相当（setcapしたラッパー経由）で
+vethデバイス自体も削除します。存在しなくてもエラーになりません。deployより前に、
+トポロジに含まれる全L2スイッチ側ポートに対して呼ぶ想定です。
 
 ### `POST /vlan`
 
@@ -35,10 +81,13 @@ JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有して
 // リクエストヘッダ: Authorization: Bearer <jwt>
 {
   "labName": "lab-xxxxxxxx",
-  "port": "p-xxxxxxxx",      // frontend/src/utils/clabNaming.ts の toClabPortName() が生成する実名
+  "port": "p-xxxxxxxx",      // toClabPortName() が生成する実名
   "mode": "access",          // "access" | "trunk"
   "vlan": 10                 // mode: "access" の場合
-  // "vlans": [10, 20, 30]   // mode: "trunk" の場合
+  // "vlans": [10, 20, 30]   // mode: "trunk" かつ「指定VLANのみ許可」の場合
+  //                            （"全VLAN許可"の場合はフロント側がこのエンドポイントを呼ばない。
+  //                            OVSはポートにtag/trunksどちらも設定しないとデフォルトで
+  //                            全VLAN許可のトランクになるため、resetPort後の状態で十分）
 }
 ```
 

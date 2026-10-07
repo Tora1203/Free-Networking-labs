@@ -397,9 +397,22 @@
   所有権チェック済みの200/404を返す。コンテナ数に依存しない）に切り替えて修正。
   再試行も不要になった分500ms×3回に戻した（`backend/ovs-helper/server.js`の`verifyLabOwnership`）。
   実機での再テストは次回
+- **「変更していないのに再Deployでエラーになる」の真因が判明（2026-10-07）**：
+  `front-test`ラボで、1回目deploy成功→何も変更せず2回目deployで
+  `interface "..." is defined via topology but already exists`が再発。
+  `ip -o link show`で確認すると、`resetPort`の`ovs-vsctl --if-exists del-port`を呼んだ後も
+  **vethデバイス自体（`p-xxxxxxxx@p-yyyyyyyy`）がカーネルに残っていた**。
+  `del-port`はOVSブリッジからの切り離しのみで、veth自体の削除ではなかったため。
+  `ip link delete`で削除する対応を追加したが、これにはCAP_NET_ADMINが必要で
+  `labuser`権限のovs-helperプロセスからは`Operation not permitted`になることが判明。
+  `ovsdb-server`の`root:clab_admins`方式と同じ発想で、`p-xxxxxxxx`形式のdeleteだけを許可する
+  専用ラッパー`backend/ovs-helper/link-delete.sh`を追加し、そこだけに`setcap cap_net_admin+ep`
+  する運用に変更（セットアップ手順は`backend/ovs-helper/README.md`参照）。
+  **実機での`sudo`セットアップ・再テストは次回**（kawase3側でsetcap実行後に確認予定）
 
 **Blocked / 相手待ち**
-- （なし）
+- `backend/ovs-helper/link-delete.sh`の`setcap`セットアップ（sudo必要、`README.md`の
+  「前提：veth削除用ラッパーのsetcap」参照）を実行してから再deployテストしてほしい
 
 ---
 
