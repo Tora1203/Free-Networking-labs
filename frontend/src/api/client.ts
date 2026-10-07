@@ -202,3 +202,22 @@ export function wipeNode(topologyContent: TopologyContent, nodeName: string) {
     { method: 'POST', body: JSON.stringify({ topologyContent }) },
   )
 }
+
+// コンテナ内でコマンドを実行する（api-contract.md 2.4、Swagger仕様で存在確認・
+// 2026-10-07、実機での動作確認はTODO(kawase3)）。PC/ルーターの固定IPアドレス設定に使う
+// （L2スイッチはコンテナを持たないためこの経路では届かず、backend/ovs-helper/を使う）。
+// nodeFilterはトポロジYAML上の短いノード名（wipeNode()と同じ）
+export interface ExecResult {
+  cmd: string[]
+  'return-code': number
+  stdout: string
+  stderr: string
+}
+export type ExecResponse = Record<string, ExecResult[]>
+
+export function execInLab(labName: string, nodeName: string, command: string) {
+  return request<ExecResponse>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/exec?nodeFilter=${encodeURIComponent(nodeName)}`,
+    { method: 'POST', body: JSON.stringify({ command }) },
+  )
+}

@@ -412,10 +412,34 @@
   既知の制限。ユーザー実機確認：setcap後も`RTNETLINK answers: Operation not permitted`）ため、
   `/etc/sudoers.d/`での限定NOPASSWD許可（`sudo -n`でこのラッパー1本だけを許可）に方式変更。
   **実機での`sudo`セットアップ・再テストは次回**
+- **VLAN動作テスト中にBさん役（kawase3）から4点の指摘（2026-10-07）**：
+  1. 変更後deployしないとコンソールが開けない → 仕様（コンテナが無いと入れない）。
+     既存ノードは未deployの変更があっても開ける。右クリックメニューはdisabled＋
+     「このノードはまだdeployされていません」のツールチップ表示済みで対応は入っていた
+  2. **バグ：L2スイッチにも「コンソールを開く」の項目が出る** → `contextMenuCanOpenConsole`が
+     ノードのkindをチェックしていなかった。修正し、スイッチの場合はメニュー項目自体を
+     出さないようにした（`TopologyEditor.tsx`）
+  3. PCのアドレシングが面倒 → IPアドレス設定UIが無く、コンソールで`ip addr add`を
+     手打ちするしかなかった。「固定IP設定UIを追加」で対応（本行の次の項目）
+  4. PCで`ip a`すると設定済みのi/fが見える → 実機確認したところcontainerlabの管理用
+     `eth0`（docker管理ネットワークの172.20.20.x/24、clabが自動付与）だった。
+     ラボのトポロジ用リンクは`eth1`以降で、そちらはIPv6 link-localのみの未設定状態
+     （バグではなく仕様。ユーザーに説明済み）
+- **PCの固定IPアドレス設定UIを追加（2026-10-07）**：接続ポップアップに、L2スイッチ以外の
+  ノード側へ「IPv4アドレス（任意）」欄を追加（`10.0.0.1/24`形式、`parseIpv4Cidr()`で検証）。
+  L2スイッチがVLANをovs-helper経由で投入するのと同様、PCはコンテナを持つので
+  clab-api-serverの`POST /api/v1/labs/{labName}/exec`を直接使い、deploy成功後に
+  `ip addr add <addr> dev <iface>`を実行する（`frontend/src/api/client.ts`の`execInLab()`、
+  `TopologyEditor.tsx`の`addressTasks`）。execのリクエスト/レスポンス形は現時点でSwagger仕様から
+  推測しただけで**実機確認はまだ**（`docs/api-contract.md`にTODO(kawase3)として明記）。
+  `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**次回、front-testラボ等で
+  実際にPC同士をIP設定してpingが通るか確認する**
 
 **Blocked / 相手待ち**
 - `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
   「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
+- PCの固定IP設定UI（上記）の実機テスト：ノードを繋いだ時のポップアップでIPv4アドレスを
+  入れてdeploy→コンソールで`ip a`して意図通りか、ping が通るか確認してほしい
 
 ---
 

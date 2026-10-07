@@ -30,6 +30,7 @@ import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
 import {
   ApiError,
   deployLab,
+  execInLab,
   getLabAnnotations,
   getLabTopologyYaml,
   putLabAnnotations,
@@ -57,6 +58,12 @@ interface EdgeIfaceData {
   // 経由でovs-vsctlを叩いて別途投入する（2026-10-06追加、docs/direction.md参照）
   sourceVlan?: VlanConfig
   targetVlan?: VlanConfig
+  // PC/ルーター側にだけ意味がある（L2スイッチ側は常にundefined。スイッチはL2なのでIPは持たない）。
+  // "10.0.0.1/24"形式のCIDR文字列。アドレス設定もトポロジYAMLには無く、deploy後に
+  // clab-api-serverのexec経由で`ip addr add`して別途投入する（2026-10-07追加、
+  // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
+  sourceAddress?: string
+  targetAddress?: string
   [key: string]: unknown
 }
 
@@ -84,6 +91,21 @@ function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; e
     return { error: 'VLAN IDはカンマ区切りで1〜4094の整数を指定してください（例: 10,20,30）' }
   }
   return { config: { mode: 'trunk', vlans } }
+}
+
+// IPv4アドレス入力欄の文字列を検証する。空文字は「未設定」として扱う（PC/ルーター側は
+// 配線だけしてアドレスは後で、という使い方もできるようにするため必須にしない）
+function parseIpv4Cidr(value: string): { address?: string; error?: string } {
+  const trimmed = value.trim()
+  if (trimmed === '') return {}
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(trimmed)
+  if (!m) return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
+  const octets = m.slice(1, 5).map(Number)
+  const prefix = Number(m[5])
+  if (octets.some((n) => n > 255) || prefix > 32) {
+    return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
+  }
+  return { address: trimmed }
 }
 
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
@@ -140,12 +162,18 @@ interface VlanTask {
   config: VlanConfig
 }
 
+interface AddressTask {
+  nodeName: string
+  iface: string
+  address: string
+}
+
 function buildTopologyContent(
   nodes: Node[],
   edges: Edge[],
   username: string,
   labName: string,
-): { topologyContent: TopologyContent; vlanTasks: VlanTask[]; switchPorts: string[] } {
+): { topologyContent: TopologyContent; vlanTasks: VlanTask[]; switchPorts: string[]; addressTasks: AddressTask[] } {
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
@@ -166,6 +194,7 @@ function buildTopologyContent(
 
   const vlanTasks: VlanTask[] = []
   const switchPorts: string[] = []
+  const addressTasks: AddressTask[] = []
 
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
@@ -191,10 +220,19 @@ function buildTopologyContent(
     if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
     if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
 
+    // PC/ルーター側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
+    // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）
+    if (!sourceIsSwitch && iface.sourceAddress) {
+      addressTasks.push({ nodeName: sourceName, iface: iface.sourceIface, address: iface.sourceAddress })
+    }
+    if (!targetIsSwitch && iface.targetAddress) {
+      addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
+    }
+
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
 
-  return { topologyContent: { name: labName, topology: { nodes: nodesMap, links } }, vlanTasks, switchPorts }
+  return { topologyContent: { name: labName, topology: { nodes: nodesMap, links } }, vlanTasks, switchPorts, addressTasks }
 }
 
 type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
@@ -221,6 +259,9 @@ function TopologyEditorInner() {
   const [pendingSourceVlanValue, setPendingSourceVlanValue] = useState('')
   const [pendingTargetVlanMode, setPendingTargetVlanMode] = useState<VlanMode>('none')
   const [pendingTargetVlanValue, setPendingTargetVlanValue] = useState('')
+  // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
+  const [pendingSourceAddress, setPendingSourceAddress] = useState('')
+  const [pendingTargetAddress, setPendingTargetAddress] = useState('')
   // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
   // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
@@ -319,6 +360,8 @@ function TopologyEditorInner() {
       setPendingSourceVlanValue('')
       setPendingTargetVlanMode('none')
       setPendingTargetVlanValue('')
+      setPendingSourceAddress('')
+      setPendingTargetAddress('')
     },
     [edges],
   )
@@ -331,6 +374,8 @@ function TopologyEditorInner() {
     () => parseVlanInput(pendingTargetVlanMode, pendingTargetVlanValue),
     [pendingTargetVlanMode, pendingTargetVlanValue],
   )
+  const sourceAddressResult = useMemo(() => parseIpv4Cidr(pendingSourceAddress), [pendingSourceAddress])
+  const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
@@ -349,11 +394,21 @@ function TopologyEditorInner() {
           targetIface: pendingTargetIface,
           sourceVlan: sourceVlanResult.config,
           targetVlan: targetVlanResult.config,
+          sourceAddress: sourceAddressResult.address,
+          targetAddress: targetAddressResult.address,
         } satisfies EdgeIfaceData,
       }),
     )
     setPendingConnection(null)
-  }, [pendingConnection, pendingSourceIface, pendingTargetIface, sourceVlanResult, targetVlanResult])
+  }, [
+    pendingConnection,
+    pendingSourceIface,
+    pendingTargetIface,
+    sourceVlanResult,
+    targetVlanResult,
+    sourceAddressResult,
+    targetAddressResult,
+  ])
 
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
 
@@ -486,8 +541,8 @@ function TopologyEditorInner() {
       const parallelIndex = pairSeen.get(pairKey) ?? 0
       pairSeen.set(pairKey, parallelIndex + 1)
       const parallelCount = pairCounts.get(pairKey) ?? 1
-      const sourceVlanLabel = vlanLabel(iface?.sourceVlan)
-      const targetVlanLabel = vlanLabel(iface?.targetVlan)
+      const sourceVlanLabel = vlanLabel(iface?.sourceVlan) || iface?.sourceAddress || ''
+      const targetVlanLabel = vlanLabel(iface?.targetVlan) || iface?.targetAddress || ''
       const vlanSuffix = sourceVlanLabel || targetVlanLabel ? ` [${[sourceVlanLabel, targetVlanLabel].filter(Boolean).join('/')}]` : ''
 
       return {
@@ -520,7 +575,7 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts } = buildTopologyContent(nodes, edges, username, safeName)
+      const { topologyContent, vlanTasks, switchPorts, addressTasks } = buildTopologyContent(nodes, edges, username, safeName)
 
       // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
       // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
@@ -555,11 +610,32 @@ function TopologyEditorInner() {
         }
       }
 
+      // PC/ルーターのIPv4アドレスもトポロジYAMLには無いため、deploy成功後にclab-api-serverの
+      // execで`ip addr add`して別途投入する（2026-10-07追加。「PCのアドレシングが面倒」指摘対応）
+      const addressFailures: string[] = []
+      for (const task of addressTasks) {
+        try {
+          const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
+          const [firstResult] = Object.values(result).flat()
+          if (firstResult && firstResult['return-code'] !== 0) {
+            addressFailures.push(`${task.nodeName}:${task.iface} ${firstResult.stderr.trim() || 'アドレス設定に失敗しました'}`)
+          }
+        } catch (e) {
+          const message = e instanceof ApiError || e instanceof Error ? e.message : 'アドレス設定に失敗しました'
+          addressFailures.push(`${task.nodeName}:${task.iface} ${message}`)
+        }
+      }
+
+      const failureSuffixes = [
+        vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
+        addressFailures.length > 0 ? `アドレス設定に失敗: ${addressFailures.join(' / ')}` : '',
+      ].filter(Boolean)
+
       setDeployStatus({
         kind: 'success',
         message:
           (isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`) +
-          (vlanFailures.length > 0 ? `（ただしVLAN設定に失敗: ${vlanFailures.join(' / ')}）` : ''),
+          (failureSuffixes.length > 0 ? `（ただし${failureSuffixes.join(' / ')}）` : ''),
       })
       // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
       const consoleNodeIds = new Set(
@@ -584,8 +660,13 @@ function TopologyEditorInner() {
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
   const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
   const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
+  // L2スイッチ（ovs-bridge kind）はコンテナを持たないためそもそもコンソールが無い（2026-10-07指摘）
+  const contextMenuIsSwitch = (contextMenuNode?.data as Partial<TopoNodeData> | undefined)?.kind === 'l2-switch'
   const contextMenuCanOpenConsole =
-    contextMenu?.kind === 'node' && !contextMenuIsAnnotation && !!deployedLab?.nodeIds.has(contextMenu.nodeId)
+    contextMenu?.kind === 'node' &&
+    !contextMenuIsAnnotation &&
+    !contextMenuIsSwitch &&
+    !!deployedLab?.nodeIds.has(contextMenu.nodeId)
 
   return (
     <div className="topology-editor">
@@ -652,7 +733,7 @@ function TopologyEditorInner() {
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               {!contextMenuIsAnnotation && <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>}
-              {!contextMenuIsAnnotation && (
+              {!contextMenuIsAnnotation && !contextMenuIsSwitch && (
                 <button
                   onClick={() => openNodeConsole(contextMenu.nodeId)}
                   disabled={!contextMenuCanOpenConsole}
@@ -704,6 +785,16 @@ function TopologyEditorInner() {
                       {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
                     </div>
                   )}
+                  {!sourceIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <input
+                        value={pendingSourceAddress}
+                        onChange={(e) => setPendingSourceAddress(e.target.value)}
+                        placeholder="IPv4アドレス（任意、例: 10.0.0.1/24）"
+                      />
+                      {sourceAddressResult.error && <span className="topology-editor__modal-warn">{sourceAddressResult.error}</span>}
+                    </div>
+                  )}
                 </div>
                 <div className="topology-editor__modal-row">
                   <label>
@@ -735,6 +826,16 @@ function TopologyEditorInner() {
                       {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
                     </div>
                   )}
+                  {!targetIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <input
+                        value={pendingTargetAddress}
+                        onChange={(e) => setPendingTargetAddress(e.target.value)}
+                        placeholder="IPv4アドレス（任意、例: 10.0.0.2/24）"
+                      />
+                      {targetAddressResult.error && <span className="topology-editor__modal-warn">{targetAddressResult.error}</span>}
+                    </div>
+                  )}
                 </div>
                 <div className="topology-editor__modal-actions">
                   <button onClick={cancelConnection}>キャンセル</button>
@@ -744,7 +845,9 @@ function TopologyEditorInner() {
                       sourceIfaceConflict ||
                       targetIfaceConflict ||
                       (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
-                      (pendingTargetVlanMode !== 'none' && !targetVlanResult.config)
+                      (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
+                      !!sourceAddressResult.error ||
+                      !!targetAddressResult.error
                     }
                   >
                     接続
