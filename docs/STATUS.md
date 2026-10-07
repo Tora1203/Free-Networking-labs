@@ -529,6 +529,16 @@
     （0% loss）、未定義の宛先への通信は100% lossで外部に漏れないことを確認
   - 詳細は`docs/direction.md`の2026-10-07決定事項（2つ目）参照
   - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【対応済み】既存接続のI/F・VLAN・アドレス・ゲートウェイ・サブインターフェース設定を
+  後から編集できるように（2026-10-07指摘）**：router on a stickの実機テストで、
+  pc-1/pc-2にゲートウェイが設定されておらずVLAN間通信が失敗する問題を調査中に判明。
+  これらの設定項目は**新規接続時のポップアップにしか無く、既存の接続を後から編集する手段が
+  無かった**ため、GUIにゲートウェイ欄があっても実質使えなかった（「IPはGUIで設定できるのに
+  DGWを設定できないのはナンセンス」指摘）。エッジの右クリックメニューに「設定を編集」を追加し、
+  新規接続時と同じポップアップを既存データで埋めて再利用する形で対応
+  （`TopologyEditor.tsx`の`editEdge()`、`PendingConnection`に`editingEdgeId`を追加）。
+  編集中は自分自身のI/F割り当てを「使用中」と誤検知しないよう`usedInterfaces()`に
+  `excludeEdgeId`を追加。`npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
 
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの

@@ -110,6 +110,15 @@ function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; e
   return { config: { mode: 'trunk', vlans } }
 }
 
+// parseVlanInput()の逆変換。既存接続を編集する時、保存済みのVlanConfigから
+// モード選択＋入力欄の文字列を復元するために使う（2026-10-07追加）
+function vlanConfigToModeAndValue(config: VlanConfig | undefined): { mode: VlanMode; value: string } {
+  if (!config) return { mode: 'none', value: '' }
+  if (config.mode === 'access') return { mode: 'access', value: String(config.vlan) }
+  if (config.vlans === 'all') return { mode: 'trunk-all', value: '' }
+  return { mode: 'trunk-list', value: config.vlans.join(',') }
+}
+
 // IPv4アドレス入力欄の文字列を検証する。空文字は「未設定」として扱う（PC/ルーター側は
 // 配線だけしてアドレスは後で、という使い方もできるようにするため必須にしない）
 function parseIpv4Cidr(value: string): { address?: string; error?: string } {
@@ -222,9 +231,12 @@ const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privileged: fals
   router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
 }
 
-function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
+// excludeEdgeIdは「このエッジ自身の既存のI/F割り当て」を使用中として数えないために使う
+// （既存接続を編集する時、自分自身のI/Fを「既に使用中」と誤検知してしまうのを防ぐ、2026-10-07追加）
+function usedInterfaces(nodeId: string, edges: Edge[], excludeEdgeId?: string): Set<string> {
   const used = new Set<string>()
   for (const e of edges) {
+    if (e.id === excludeEdgeId) continue
     const data = e.data as Partial<EdgeIfaceData> | undefined
     if (e.source === nodeId && data?.sourceIface) used.add(data.sourceIface)
     if (e.target === nodeId && data?.targetIface) used.add(data.targetIface)
@@ -423,7 +435,13 @@ type ContextMenu =
   | { x: number; y: number; kind: 'node'; nodeId: string }
   | { x: number; y: number; kind: 'edge'; edgeId: string }
   | null
-type PendingConnection = { source: string; target: string; sourceHandle: string | null; targetHandle: string | null } | null
+// editingEdgeIdが設定されている時は「新規接続」ではなく「既存接続の設定編集」モード
+// （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応：
+// 元々は新規接続時のポップアップにしかI/F・VLAN・アドレス・ゲートウェイの入力欄が無く、
+// 既存の接続を後から変更する手段が無かった）
+type PendingConnection =
+  | { source: string; target: string; sourceHandle: string | null; targetHandle: string | null; editingEdgeId?: string }
+  | null
 
 function TopologyEditorInner() {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -598,31 +616,37 @@ function TopologyEditorInner() {
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
-    const { source, target, sourceHandle, targetHandle } = pendingConnection
-    const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
-    setEdges((eds) =>
-      eds.concat({
-        id,
-        source,
-        target,
-        sourceHandle: sourceHandle ?? undefined,
-        targetHandle: targetHandle ?? undefined,
-        type: 'floating',
-        data: {
-          sourceIface: pendingSourceIface,
-          targetIface: pendingTargetIface,
-          sourceVlan: sourceVlanResult.config,
-          targetVlan: targetVlanResult.config,
-          // router on a stick（'vlan-subif'）の時はプレーンなアドレス/ゲートウェイは設定しない（排他）
-          sourceAddress: pendingSourceMode === 'plain' ? sourceAddressResult.address : undefined,
-          targetAddress: pendingTargetMode === 'plain' ? targetAddressResult.address : undefined,
-          sourceGateway: pendingSourceMode === 'plain' ? sourceGatewayResult.gateway : undefined,
-          targetGateway: pendingTargetMode === 'plain' ? targetGatewayResult.gateway : undefined,
-          sourceSubInterfaces: pendingSourceMode === 'vlan-subif' ? sourceSubIfacesResult.configs : undefined,
-          targetSubInterfaces: pendingTargetMode === 'vlan-subif' ? targetSubIfacesResult.configs : undefined,
-        } satisfies EdgeIfaceData,
-      }),
-    )
+    const { source, target, sourceHandle, targetHandle, editingEdgeId } = pendingConnection
+    const newData: EdgeIfaceData = {
+      sourceIface: pendingSourceIface,
+      targetIface: pendingTargetIface,
+      sourceVlan: sourceVlanResult.config,
+      targetVlan: targetVlanResult.config,
+      // router on a stick（'vlan-subif'）の時はプレーンなアドレス/ゲートウェイは設定しない（排他）
+      sourceAddress: pendingSourceMode === 'plain' ? sourceAddressResult.address : undefined,
+      targetAddress: pendingTargetMode === 'plain' ? targetAddressResult.address : undefined,
+      sourceGateway: pendingSourceMode === 'plain' ? sourceGatewayResult.gateway : undefined,
+      targetGateway: pendingTargetMode === 'plain' ? targetGatewayResult.gateway : undefined,
+      sourceSubInterfaces: pendingSourceMode === 'vlan-subif' ? sourceSubIfacesResult.configs : undefined,
+      targetSubInterfaces: pendingTargetMode === 'vlan-subif' ? targetSubIfacesResult.configs : undefined,
+    }
+    if (editingEdgeId) {
+      // 既存接続の編集：idはそのまま、dataだけ入れ替える（2026-10-07追加）
+      setEdges((eds) => eds.map((e) => (e.id === editingEdgeId ? { ...e, data: newData } : e)))
+    } else {
+      const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
+      setEdges((eds) =>
+        eds.concat({
+          id,
+          source,
+          target,
+          sourceHandle: sourceHandle ?? undefined,
+          targetHandle: targetHandle ?? undefined,
+          type: 'floating',
+          data: newData,
+        }),
+      )
+    }
     setPendingConnection(null)
   }, [
     pendingConnection,
@@ -643,10 +667,10 @@ function TopologyEditorInner() {
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
 
   const sourceIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.source, edges).has(pendingSourceIface)
+    ? usedInterfaces(pendingConnection.source, edges, pendingConnection.editingEdgeId).has(pendingSourceIface)
     : false
   const targetIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.target, edges).has(pendingTargetIface)
+    ? usedInterfaces(pendingConnection.target, edges, pendingConnection.editingEdgeId).has(pendingTargetIface)
     : false
 
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
@@ -723,6 +747,44 @@ function TopologyEditorInner() {
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))
     setContextMenu(null)
   }, [])
+
+  // 既存接続の設定（I/F・VLAN・アドレス・ゲートウェイ・サブインターフェース）を編集する
+  // ポップアップを開く。新規接続時と同じポップアップを、保存済みのデータで埋めて再利用する
+  // （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応）
+  const editEdge = useCallback(
+    (edgeId: string) => {
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      setPendingConnection({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+        editingEdgeId: edge.id,
+      })
+      setPendingSourceIface(data.sourceIface ?? '')
+      setPendingTargetIface(data.targetIface ?? '')
+      const sourceVlan = vlanConfigToModeAndValue(data.sourceVlan)
+      const targetVlan = vlanConfigToModeAndValue(data.targetVlan)
+      setPendingSourceVlanMode(sourceVlan.mode)
+      setPendingSourceVlanValue(sourceVlan.value)
+      setPendingTargetVlanMode(targetVlan.mode)
+      setPendingTargetVlanValue(targetVlan.value)
+      setPendingSourceAddress(data.sourceAddress ?? '')
+      setPendingTargetAddress(data.targetAddress ?? '')
+      setPendingSourceGateway(data.sourceGateway ?? '')
+      setPendingTargetGateway(data.targetGateway ?? '')
+      const sourceHasSubIfaces = !!data.sourceSubInterfaces?.length
+      const targetHasSubIfaces = !!data.targetSubInterfaces?.length
+      setPendingSourceMode(sourceHasSubIfaces ? 'vlan-subif' : 'plain')
+      setPendingTargetMode(targetHasSubIfaces ? 'vlan-subif' : 'plain')
+      setPendingSourceSubIfaces((data.sourceSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
+      setPendingTargetSubIfaces((data.targetSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
+      setContextMenu(null)
+    },
+    [edges],
+  )
 
   // トポロジエディタから直接、統合コンソールをワンタッチで開く（ラボ一覧に行かなくて済むように）。
   // deployedLabに載っているノード＝直近のdeployに含まれていたノードのみ開ける
@@ -1056,6 +1118,7 @@ function TopologyEditorInner() {
           )}
           {contextMenu?.kind === 'edge' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+              <button onClick={() => editEdge(contextMenu.edgeId)}>設定を編集</button>
               <button onClick={() => disconnectEdge(contextMenu.edgeId)}>接続を解除</button>
             </div>
           )}
@@ -1063,7 +1126,7 @@ function TopologyEditorInner() {
           {pendingConnection && (
             <div className="topology-editor__modal-overlay" onClick={cancelConnection}>
               <div className="topology-editor__modal" onClick={(e) => e.stopPropagation()}>
-                <h3>接続するインターフェースを選択</h3>
+                <h3>{pendingConnection.editingEdgeId ? '接続の設定を編集' : '接続するインターフェースを選択'}</h3>
                 <div className="topology-editor__modal-row">
                   <label>
                     {nodeLabel(pendingConnection.source)} 側
@@ -1245,7 +1308,7 @@ function TopologyEditorInner() {
                         : !!targetSubIfacesResult.error)
                     }
                   >
-                    接続
+                    {pendingConnection.editingEdgeId ? '保存' : '接続'}
                   </button>
                 </div>
               </div>
