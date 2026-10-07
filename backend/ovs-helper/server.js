@@ -48,7 +48,8 @@ const HELPER_PORT = Number(process.env.OVS_HELPER_PORT ?? 8083)
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 // `ip link delete`はCAP_NET_ADMINが要るため、labuser権限のこのプロセスからは直接呼べない。
-// setcapした専用ラッパー（link-delete.sh、要セットアップ）経由で呼ぶ。詳細はそのファイルを参照
+// sudoersで限定許可した専用ラッパー（link-delete.sh、要セットアップ）を`sudo -n`経由で呼ぶ。
+// 詳細はそのファイルを参照
 const LINK_DELETE_BIN = process.env.OVS_HELPER_LINK_DELETE_BIN ?? '/usr/local/sbin/ovs-helper-link-delete'
 
 // OVSのVLAN IDとして有効な範囲（802.1Q）
@@ -132,12 +133,13 @@ function runOvsVsctl(args) {
 // `p-xxxxxxxx@p-yyyyyyyy`が見え続けていた）。再deploy時、containerlabが同名のvethを
 // 作り直そうとしてカーネル側で名前衝突し`already exists`になる。`ip link delete`で
 // veth自体も削除する必要があるが、これにはCAP_NET_ADMINが要り、labuser権限のこの
-// プロセスからは直接呼べない（`Operation not permitted`を実機確認）。そのためsetcapした
-// 専用ラッパー（link-delete.sh）経由で呼ぶ（存在しない場合は`Cannot find device`で
-// 失敗するだけなので無視）
+// プロセスからは直接呼べない（`Operation not permitted`を実機確認）。setcapも試したが
+// シェルスクリプトには効かない（2026-10-07実機確認：link-delete.sh参照）ため、
+// `/etc/sudoers.d/`での限定NOPASSWD許可経由でラッパーを呼ぶ（存在しない場合は
+// `Cannot find device`で失敗するだけなので無視）
 function deleteLinkIfExists(iface) {
   return new Promise((resolve, reject) => {
-    execFile(LINK_DELETE_BIN, [iface], (error, stdout, stderr) => {
+    execFile('sudo', ['-n', LINK_DELETE_BIN, iface], (error, stdout, stderr) => {
       if (error && !/Cannot find device/.test(stderr ?? '')) {
         reject(new Error(stderr?.trim() || error.message))
         return

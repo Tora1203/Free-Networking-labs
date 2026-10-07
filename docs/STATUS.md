@@ -405,14 +405,17 @@
   `del-port`はOVSブリッジからの切り離しのみで、veth自体の削除ではなかったため。
   `ip link delete`で削除する対応を追加したが、これにはCAP_NET_ADMINが必要で
   `labuser`権限のovs-helperプロセスからは`Operation not permitted`になることが判明。
-  `ovsdb-server`の`root:clab_admins`方式と同じ発想で、`p-xxxxxxxx`形式のdeleteだけを許可する
-  専用ラッパー`backend/ovs-helper/link-delete.sh`を追加し、そこだけに`setcap cap_net_admin+ep`
-  する運用に変更（セットアップ手順は`backend/ovs-helper/README.md`参照）。
-  **実機での`sudo`セットアップ・再テストは次回**（kawase3側でsetcap実行後に確認予定）
+  `ovsdb-server`の`root:clab_admins`方式を参考に、`p-xxxxxxxx`形式のdeleteだけを許可する
+  専用ラッパー`backend/ovs-helper/link-delete.sh`を追加し、まず`setcap cap_net_admin+ep`で
+  試したが**シェルスクリプトにはファイルcapabilityが効かない**（カーネルが実際にexecveするのは
+  `/bin/sh`であり、capabilityはスクリプトのinodeに付けてもインタプリタ本体には引き継がれない
+  既知の制限。ユーザー実機確認：setcap後も`RTNETLINK answers: Operation not permitted`）ため、
+  `/etc/sudoers.d/`での限定NOPASSWD許可（`sudo -n`でこのラッパー1本だけを許可）に方式変更。
+  **実機での`sudo`セットアップ・再テストは次回**
 
 **Blocked / 相手待ち**
-- `backend/ovs-helper/link-delete.sh`の`setcap`セットアップ（sudo必要、`README.md`の
-  「前提：veth削除用ラッパーのsetcap」参照）を実行してから再deployテストしてほしい
+- `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
+  「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
 
 ---
 

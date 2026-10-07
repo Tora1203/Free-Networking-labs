@@ -35,22 +35,27 @@ JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有して
 このサーバーでは`labuser`に対して設定済み（`docs/direction.md`参照：
 `/etc/default/openvswitch-switch`に`--ovs-user=root:clab_admins`等）。
 
-## 前提：veth削除用ラッパーのsetcap（初回のみ）
+## 前提：veth削除用ラッパーのsudoers設定（初回のみ）
 
 `POST /port/reset`は再deploy時のポート名衝突を防ぐため、OVSから切り離した後のvethデバイス
 自体も`ip link delete`で削除します。これにはCAP_NET_ADMINが必要で、`labuser`権限で動く
 このプロセスからは直接呼べません（2026-10-07実機確認：`Operation not permitted`）。
-そのため専用の最小権限ラッパー`link-delete.sh`にだけ`setcap`する必要があります：
+`setcap`も試したがシェルスクリプトには効かない（Linuxのファイルcapabilityはshebang経由で
+実行されるインタプリタには引き継がれない既知の制限。2026-10-07実機確認：
+`setcap`してもなお`Operation not permitted`）ため、`/etc/sudoers.d/`での限定NOPASSWD許可に
+切り替えました：
 
 ```sh
 sudo cp backend/ovs-helper/link-delete.sh /usr/local/sbin/ovs-helper-link-delete
 sudo chown root:clab_admins /usr/local/sbin/ovs-helper-link-delete
 sudo chmod 750 /usr/local/sbin/ovs-helper-link-delete
-sudo setcap cap_net_admin+ep /usr/local/sbin/ovs-helper-link-delete
+echo 'labuser ALL=(root) NOPASSWD: /usr/local/sbin/ovs-helper-link-delete' | sudo tee /etc/sudoers.d/ovs-helper-link-delete
+sudo chmod 440 /etc/sudoers.d/ovs-helper-link-delete
+sudo visudo -c
 ```
 
-`ip`本体にsetcapしない理由は`link-delete.sh`のコメント参照（`p-xxxxxxxx`形式の名前の
-deleteだけに絞り、実行可能なユーザーも`clab_admins`グループに限定するため）。
+`ip`本体をsudoersで丸ごと許可しない理由は`link-delete.sh`のコメント参照（`p-xxxxxxxx`形式の
+名前のdeleteだけに絞っているので、このスクリプト1本だけを許可すれば操作範囲を絞れる）。
 
 ## API
 
@@ -71,8 +76,8 @@ deleteだけに絞り、実行可能なユーザーも`clab_admins`グループ�
 { "port": "p-xxxxxxxx" }  // toClabPortName() が生成する実名
 ```
 
-`ovs-vsctl --if-exists del-port`に続けて`ip link delete`相当（setcapしたラッパー経由）で
-vethデバイス自体も削除します。存在しなくてもエラーになりません。deployより前に、
+`ovs-vsctl --if-exists del-port`に続けて`ip link delete`相当（sudoersで限定許可した
+ラッパー経由）でvethデバイス自体も削除します。存在しなくてもエラーになりません。deployより前に、
 トポロジに含まれる全L2スイッチ側ポートに対して呼ぶ想定です。
 
 ### `POST /vlan`
