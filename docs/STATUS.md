@@ -477,15 +477,38 @@
     想定外のsudoエラー等を誤って握りつぶさないためにそのまま残した（sudoers未設定問題は
     実際にこの仕組みで発見できた）
   - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
-- **次の目標（2026-10-07、ユーザーより）**：
+- **次の目標（2026-10-07、ユーザーより。2→3→1の順で対応中）**：
   1. VLANを使ったrouter on a stick（FRRのVLANサブインターフェースでルーター1台が複数VLANを
-     ルーティングできるか）の検証
-  2. ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに落ちてしまう
-     （脆弱性として指摘）
-  3. PCコンソールで`eth0`（containerlabの管理用interface）等を触れてしまう（脆弱性として指摘）
-  → まだ着手していない。スコープ・対応方針は次回相談
+     ルーティングできるか）の検証：**未着手**。FRRコンテナで`ip link add link eth1 name
+     eth1.10 type vlan id 10`が実機で通ることは確認済み（CAP_NET_ADMINあり）、技術的には可能
+  2. **【対応済み】** ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに
+     落ちてしまう（脆弱性として指摘）：clab-api-serverのterminal-sessions APIには
+     shell以外の起動コマンドを指定する手段が無く（protocolはssh/shell/telnetのみ）、
+     サーバー側では止められない。接続直後に自動実行するコマンドを`vtysh`単発から
+     `while true; do vtysh; done`（vtysh終了時に即座に再起動するループ）に変更
+     （`TopologyEditor.tsx`の`ROUTER_CONSOLE_AUTO_COMMAND`）。実機確認済み：`exit`直後に
+     vtyshが再起動し、シェルコマンド（`id`等）はvtyshに「Unknown command」として拒否される。
+     Ctrl-C/Ctrl-D等の未検証な入力経路もあるため、ハードなセキュリティ境界ではなく
+     「誤って/意図的にシェルに落ちるのを防ぐソフトな対策」である点に注意
+  3. **【対応済み・想定より大きい問題だった】** PCコンソールで`eth0`を触れてしまう指摘の
+     対応を検討中、containerlabの`linux` kind（PC/ルーター両方）が**デフォルトで
+     Dockerの`--privileged`相当（全capability・AppArmor/seccomp無効）**で動いていることが
+     判明。コンソールはroot shellなので、privilegedコンテナ特有のホスト侵害手法を
+     理論上試みられる状態だった（ユーザーの「ホストの権限を取られないか」という懸念が
+     まさに正しかった）。`eth0`個別のコマンドブロックではなく、根本原因である特権を
+     `privileged: false` + 必要最小限の`cap-add`（PC: `NET_ADMIN`、ルーター: FRRが
+     要求する`NET_ADMIN`+`NET_RAW`+`SYS_ADMIN`）に縮小する対応に変更。詳細・実機検証結果は
+     `docs/direction.md`の2026-10-07決定事項参照。OSPF隣接形成・ping・コンソール・
+     IPアドレス設定機能への影響なしを確認済み
+     （`TopologyEditor.tsx`の`CONTAINER_CAPABILITIES`、`api/client.ts`の`TopologyContent`型）。
+     **元々の「eth0コマンドをソフトにブロック」は未実装**——host侵害経路を塞いだ分、
+     残るリスクは「自分のコンテナのmgmt接続を自分で切る」程度に下がったため、
+     追加でやるかは次回確認
+- **次の目標の1（router on a stick）はまだ未着手**
 
 **Blocked / 相手待ち**
+- 上記3の変更をfront-test等で実際にredeployし、PC/ルーターが正常に動くか最終確認してほしい
+  （一時テストラボでは確認済みだが、実運用のラボでの確認はまだ）
 - `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
   「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
 - 上記「再読み込み時の文字化け」修正の実機確認（redeploy→再読み込みでI/F名・VLAN・アドレスが

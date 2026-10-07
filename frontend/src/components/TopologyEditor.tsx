@@ -139,6 +139,36 @@ function defaultLabName(): string {
 
 const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
 
+// ルーターのコンソールで最初に自動実行するコマンド。単に`vtysh`を1回打つだけだと、
+// vtyshのトップレベルで`exit`/`quit`やCtrl-Dを入力すると裏のコンテナのLinuxシェルに
+// 落ちてしまい、ルーターの抽象化を破って任意のシェル操作ができてしまう（2026-10-07指摘、
+// 脆弱性として報告）。clab-api-serverのterminal-sessions APIにはshell以外の起動コマンドを
+// 指定する手段が無いため（protocolはssh/shell/telnetのみ）、サーバー側では止められない。
+// 代わりに「vtyshが終了したら即座に再起動するループ」をシェルに打ち込むことで、
+// 生シェルのプロンプトが実質出てこないようにする（実機確認済み：exit直後にvtyshが
+// 再起動し、シェルコマンドはvtyshに「Unknown command」として拒否される）
+const ROUTER_CONSOLE_AUTO_COMMAND = 'while true; do vtysh; done'
+
+// containerlabの`linux` kindはデフォルトでDockerの`--privileged`相当（全capability付与・
+// AppArmor/seccomp無効）でコンテナを起動することが判明（2026-10-07実機確認：
+// `docker inspect`で`Privileged: true`、`CapEff`が全capability）。PC/ルーターのコンソールは
+// 単なるroot権限のシェルなので、このままだとコンソールから特権コンテナ由来のホスト侵害
+// （release_agent等のcgroup経由のコンテナエスケープ手法等）を試みられてしまう
+// （「PCでeth0を触れる」指摘から発覚した、より深刻な問題）。
+// `privileged: false` + 必要最小限の`cap-add`に絞ることで、host deviceへのアクセスや
+// AppArmor/seccomp無効化は解消される。実機検証の結果：
+// - PC（ip addr/link操作のみ）: NET_ADMINのみで十分（ping含め動作確認済み）
+// - ルーター（FRR）: zebra/ospfdがNET_ADMIN+NET_RAWだけでは
+//   `privs_init: initial cap_set_proc failed: Operation not permitted`で起動せず、
+//   SYS_ADMINも追加して初めて起動した（FRR自体が要求するcapability）。
+//   SYS_ADMIN自体は軽くはないが、`--privileged`全体（host device直接アクセス・
+//   AppArmor/seccomp無効化等）とは別物で、それらは引き続き防げる。
+//   OSPF隣接形成・loopback間pingまで実機確認済み
+const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privileged: false; capAdd: string[] }>> = {
+  pc: { privileged: false, capAdd: ['NET_ADMIN'] },
+  router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
+}
+
 function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
   const used = new Set<string>()
   for (const e of edges) {
@@ -214,7 +244,12 @@ function buildTopologyContent(
     const clabName = data.kind === 'l2-switch' ? toClabBridgeName(username, labName, node.id) : node.id
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
-    nodesMap[clabName] = data.image ? { kind: data.clabKind, image: data.image } : { kind: data.clabKind }
+    const caps = CONTAINER_CAPABILITIES[data.kind]
+    nodesMap[clabName] = {
+      kind: data.clabKind,
+      ...(data.image ? { image: data.image } : {}),
+      ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
+    }
     if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
 
@@ -370,7 +405,7 @@ function TopologyEditorInner() {
         if (autoOpenConsoleNode && consoleNodeIds.has(autoOpenConsoleNode)) {
           const targetNode = nodes.find((n) => n.id === autoOpenConsoleNode)
           const kind = (targetNode?.data as Partial<TopoNodeData> | undefined)?.kind
-          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? 'vtysh' : undefined)
+          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
           setConsolePanelDocked(true)
         }
       })
@@ -544,7 +579,7 @@ function TopologyEditorInner() {
       if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
       // ルーターはCMLのように最初からvtyshを開いた状態にしておく
       const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
-      openConsole(deployedLab.labName, nodeId, kind === 'router' ? 'vtysh' : undefined)
+      openConsole(deployedLab.labName, nodeId, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
       setConsolePanelDocked(true)
       setContextMenu(null)
     },
