@@ -477,13 +477,21 @@
     想定外のsudoエラー等を誤って握りつぶさないためにそのまま残した（sudoers未設定問題は
     実際にこの仕組みで発見できた）
   - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
-- **次の目標（2026-10-07、ユーザーより）**：
+- **次の目標（2026-10-07、ユーザーより。2→3→1の順で対応中）**：
   1. VLANを使ったrouter on a stick（FRRのVLANサブインターフェースでルーター1台が複数VLANを
-     ルーティングできるか）の検証
-  2. ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに落ちてしまう
-     （脆弱性として指摘）
-  3. PCコンソールで`eth0`（containerlabの管理用interface）等を触れてしまう（脆弱性として指摘）
-  → まだ着手していない。スコープ・対応方針は次回相談
+     ルーティングできるか）の検証：**未着手**。FRRコンテナで`ip link add link eth1 name
+     eth1.10 type vlan id 10`が実機で通ることは確認済み（CAP_NET_ADMINあり）、技術的には可能
+  2. **【対応済み】** ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに
+     落ちてしまう（脆弱性として指摘）：clab-api-serverのterminal-sessions APIには
+     shell以外の起動コマンドを指定する手段が無く（protocolはssh/shell/telnetのみ）、
+     サーバー側では止められない。接続直後に自動実行するコマンドを`vtysh`単発から
+     `while true; do vtysh; done`（vtysh終了時に即座に再起動するループ）に変更
+     （`TopologyEditor.tsx`の`ROUTER_CONSOLE_AUTO_COMMAND`）。実機確認済み：`exit`直後に
+     vtyshが再起動し、シェルコマンド（`id`等）はvtyshに「Unknown command」として拒否される。
+     Ctrl-C/Ctrl-D等の未検証な入力経路もあるため、ハードなセキュリティ境界ではなく
+     「誤って/意図的にシェルに落ちるのを防ぐソフトな対策」である点に注意
+  3. PCコンソールで`eth0`（containerlabの管理用interface）等を触れてしまう（脆弱性として指摘）：
+     **未着手**。こちらもサーバー側で止める手段が無く、フロントでの入力制限が必要になる想定
 
 **Blocked / 相手待ち**
 - `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の

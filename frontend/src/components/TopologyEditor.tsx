@@ -139,6 +139,16 @@ function defaultLabName(): string {
 
 const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
 
+// ルーターのコンソールで最初に自動実行するコマンド。単に`vtysh`を1回打つだけだと、
+// vtyshのトップレベルで`exit`/`quit`やCtrl-Dを入力すると裏のコンテナのLinuxシェルに
+// 落ちてしまい、ルーターの抽象化を破って任意のシェル操作ができてしまう（2026-10-07指摘、
+// 脆弱性として報告）。clab-api-serverのterminal-sessions APIにはshell以外の起動コマンドを
+// 指定する手段が無いため（protocolはssh/shell/telnetのみ）、サーバー側では止められない。
+// 代わりに「vtyshが終了したら即座に再起動するループ」をシェルに打ち込むことで、
+// 生シェルのプロンプトが実質出てこないようにする（実機確認済み：exit直後にvtyshが
+// 再起動し、シェルコマンドはvtyshに「Unknown command」として拒否される）
+const ROUTER_CONSOLE_AUTO_COMMAND = 'while true; do vtysh; done'
+
 function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
   const used = new Set<string>()
   for (const e of edges) {
@@ -370,7 +380,7 @@ function TopologyEditorInner() {
         if (autoOpenConsoleNode && consoleNodeIds.has(autoOpenConsoleNode)) {
           const targetNode = nodes.find((n) => n.id === autoOpenConsoleNode)
           const kind = (targetNode?.data as Partial<TopoNodeData> | undefined)?.kind
-          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? 'vtysh' : undefined)
+          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
           setConsolePanelDocked(true)
         }
       })
@@ -544,7 +554,7 @@ function TopologyEditorInner() {
       if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
       // ルーターはCMLのように最初からvtyshを開いた状態にしておく
       const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
-      openConsole(deployedLab.labName, nodeId, kind === 'router' ? 'vtysh' : undefined)
+      openConsole(deployedLab.labName, nodeId, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
       setConsolePanelDocked(true)
       setContextMenu(null)
     },
