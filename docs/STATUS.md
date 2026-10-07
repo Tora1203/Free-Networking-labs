@@ -438,13 +438,34 @@
   `terminal-sessions`と同じ`clab-<labName>-<nodeName>`のフルネームが要る。
   `execInLab()`内でフルネームに変換するよう修正。`docs/api-contract.md`も修正
   （フルネーム変換後の成功レスポンス自体の確認は次回）。
-  `npx tsc --noEmit`はクリア。**次回、front-testラボで再度IP設定してpingが通るか確認する**
+  `npx tsc --noEmit`はクリア。**実機テスト済み（2026-10-07）：動作良好**
+- **再読み込み時にL2スイッチ接続のI/F名が文字化け・VLAN/アドレス設定が消える、を修正
+  （2026-10-07指摘）**：`parseTopologyYaml()`はYAMLに書かれた実名（ハッシュ化されたポート名
+  `p-xxxxxxxx`等）をそのまま`sourceIface`/`targetIface`に入れていたため、再読み込み後は
+  UIの表示が実名のまま（ユーザーには文字化けのように見える）になっていた。さらにVLAN/IPアドレス
+  設定はそもそもトポロジYAMLに書けないため、再読み込みで編集状態から完全に消えていた
+  （再deployするとovs-helperの`resetPort`でVLANが初期化され、設定が戻らないまま
+  上書きされる潜在バグでもあった）。
+  `buildTopologyContent()`が返す`portAnnotations`（`${実名clabName}:${実名ポート}`をキーに
+  した「分かりやすい名前・VLAN・アドレス」のマップ）を既存のannotations保存先
+  （`topology/annotations`、version 1→2に拡張）に一緒に保存し、再読み込み時に
+  `applyPortAnnotations()`で引き戻すようにした（`utils/annotations.ts`）。
+  `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。
+  **旧versionのannotations（port情報無し）は無視されるだけで壊れない。次回、front-testで
+  一度redeploy→再読み込みして文字化けが直るか確認する**
+- **次の目標（2026-10-07、ユーザーより）**：
+  1. VLANを使ったrouter on a stick（FRRのVLANサブインターフェースでルーター1台が複数VLANを
+     ルーティングできるか）の検証
+  2. ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに落ちてしまう
+     （脆弱性として指摘）
+  3. PCコンソールで`eth0`（containerlabの管理用interface）等を触れてしまう（脆弱性として指摘）
+  → まだ着手していない。スコープ・対応方針は次回相談
 
 **Blocked / 相手待ち**
 - `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
   「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
-- PCの固定IP設定UI（上記）の実機テスト：ノードを繋いだ時のポップアップでIPv4アドレスを
-  入れてdeploy→コンソールで`ip a`して意図通りか、ping が通るか確認してほしい
+- 上記「再読み込み時の文字化け」修正の実機確認（redeploy→再読み込みでI/F名・VLAN・アドレスが
+  正しく戻るか）
 
 ---
 

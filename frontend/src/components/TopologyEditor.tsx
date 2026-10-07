@@ -26,7 +26,7 @@ import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
 import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
-import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
+import { applyAnnotations, applyPortAnnotations, serializeAnnotations } from '../utils/annotations'
 import {
   ApiError,
   deployLab,
@@ -168,12 +168,31 @@ interface AddressTask {
   address: string
 }
 
+// デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
+// ブリッジ名・ポート名）から、UI上で使っていた分かりやすい名前・VLAN・アドレス設定を
+// 引き戻すためのマップ。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
+// （endpointsの文字列そのものと同じ形なので、再読み込み時にそのまま突き合わせられる）。
+// containerlabのトポロジYAML自体にはこれらの情報を置けないため、annotations.tsの保存先に
+// 載せて一緒に永続化する（2026-10-07追加。再読み込み後にL2スイッチ接続のI/F名が
+// 文字化けのように見える・VLAN/アドレス設定が消える、の両方の修正）
+interface PortAnnotation {
+  iface: string
+  vlan?: VlanConfig
+  address?: string
+}
+
 function buildTopologyContent(
   nodes: Node[],
   edges: Edge[],
   username: string,
   labName: string,
-): { topologyContent: TopologyContent; vlanTasks: VlanTask[]; switchPorts: string[]; addressTasks: AddressTask[] } {
+): {
+  topologyContent: TopologyContent
+  vlanTasks: VlanTask[]
+  switchPorts: string[]
+  addressTasks: AddressTask[]
+  portAnnotations: Record<string, PortAnnotation>
+} {
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
@@ -195,6 +214,7 @@ function buildTopologyContent(
   const vlanTasks: VlanTask[] = []
   const switchPorts: string[] = []
   const addressTasks: AddressTask[] = []
+  const portAnnotations: Record<string, PortAnnotation> = {}
 
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
@@ -229,10 +249,19 @@ function buildTopologyContent(
       addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
     }
 
+    portAnnotations[`${sourceName}:${sourcePort}`] = { iface: iface.sourceIface, vlan: iface.sourceVlan, address: iface.sourceAddress }
+    portAnnotations[`${targetName}:${targetPort}`] = { iface: iface.targetIface, vlan: iface.targetVlan, address: iface.targetAddress }
+
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
 
-  return { topologyContent: { name: labName, topology: { nodes: nodesMap, links } }, vlanTasks, switchPorts, addressTasks }
+  return {
+    topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
+    vlanTasks,
+    switchPorts,
+    addressTasks,
+    portAnnotations,
+  }
 }
 
 type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
@@ -301,14 +330,19 @@ function TopologyEditorInner() {
         // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
         // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
         let nodes = parsed.nodes
+        let edges = parsed.edges
         try {
           const annotationsText = await getLabAnnotations(targetLabName)
           nodes = applyAnnotations(nodes, annotationsText)
+          // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
+          // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
+          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）
+          edges = applyPortAnnotations(edges, annotationsText)
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
         setNodes(nodes)
-        setEdges(parsed.edges)
+        setEdges(edges)
         counters.current = parsed.counters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
@@ -575,7 +609,12 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts, addressTasks } = buildTopologyContent(nodes, edges, username, safeName)
+      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations } = buildTopologyContent(
+        nodes,
+        edges,
+        username,
+        safeName,
+      )
 
       // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
       // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
@@ -646,7 +685,7 @@ function TopologyEditorInner() {
       setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
       // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
       // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
-      putLabAnnotations(safeName, serializeAnnotations(nodes)).catch((err: unknown) => {
+      putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations)).catch((err: unknown) => {
         console.warn('ノード配置の保存に失敗しました', err)
       })
     } catch (e) {
