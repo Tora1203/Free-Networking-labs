@@ -32,9 +32,21 @@ interface AnnotationsFile {
   // version 2から追加。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
   // （TopologyEditor.tsxのbuildTopologyContent()が返すportAnnotationsと同じ形）
   portAnnotations?: Record<string, PortAnnotation>
+  // version 2から追加。L2スイッチのブリッジ名（clabName）→ 元のUI上のnode.idの対応
+  // （2026-10-07レビュー指摘で追加）。
+  // L2スイッチのブリッジ名はnode.idをハッシュ化して作るため、再読み込み後にnode.idが
+  // ハッシュ化済みの実名（clabName）に置き換わったままだと、次回のdeployでそれをさらに
+  // ハッシュしてしまい、redeployするたびにブリッジ名・ポート名がズレて別物になっていく
+  // （古いブリッジ/vethがホストに残骸として残り続け、VLAN設定も失われる）。
+  // ここに元のnode.idを保存しておき、再読み込み時に戻す
+  switchOriginalIds?: Record<string, string>
 }
 
-export function serializeAnnotations(nodes: Node[], portAnnotations?: Record<string, PortAnnotation>): string {
+export function serializeAnnotations(
+  nodes: Node[],
+  portAnnotations?: Record<string, PortAnnotation>,
+  switchOriginalIds?: Record<string, string>,
+): string {
   const positions: AnnotationsFile['positions'] = {}
   const extraNodes: AnnotationsFile['extraNodes'] = []
 
@@ -55,7 +67,7 @@ export function serializeAnnotations(nodes: Node[], portAnnotations?: Record<str
     }
   }
 
-  const file: AnnotationsFile = { version: 2, positions, extraNodes, portAnnotations }
+  const file: AnnotationsFile = { version: 2, positions, extraNodes, portAnnotations, switchOriginalIds }
   return JSON.stringify(file)
 }
 
@@ -123,4 +135,27 @@ export function applyPortAnnotations(edges: Edge[], annotationsText: string): Ed
       },
     }
   })
+}
+
+// L2スイッチのnode.id（YAML読み込み直後はハッシュ化されたブリッジ名そのもの）を、
+// 元のUI上のidに戻す。**`applyPortAnnotations`を先に呼んだ後に呼ぶこと**
+// （portAnnotationsのキーはハッシュ化されたclabName基準で保存されているため、
+// 先にnode.idを戻してしまうと参照が合わなくなる。2026-10-07レビュー指摘で追加）
+export function restoreSwitchIdentities(nodes: Node[], edges: Edge[], annotationsText: string): { nodes: Node[]; edges: Edge[] } {
+  const parsed = parseAnnotationsFile(annotationsText)
+  const switchOriginalIds = parsed?.switchOriginalIds
+  if (!switchOriginalIds) return { nodes, edges }
+
+  const idMap = new Map(Object.entries(switchOriginalIds))
+  const remappedNodes = nodes.map((n) => {
+    const originalId = idMap.get(n.id)
+    return originalId ? { ...n, id: originalId } : n
+  })
+  const remappedEdges = edges.map((e) => {
+    const source = idMap.get(e.source) ?? e.source
+    const target = idMap.get(e.target) ?? e.target
+    return source === e.source && target === e.target ? e : { ...e, source, target }
+  })
+
+  return { nodes: remappedNodes, edges: remappedEdges }
 }

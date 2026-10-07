@@ -26,7 +26,7 @@ import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
 import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
-import { applyAnnotations, applyPortAnnotations, serializeAnnotations } from '../utils/annotations'
+import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serializeAnnotations } from '../utils/annotations'
 import {
   ApiError,
   deployLab,
@@ -192,10 +192,16 @@ function buildTopologyContent(
   switchPorts: string[]
   addressTasks: AddressTask[]
   portAnnotations: Record<string, PortAnnotation>
+  switchOriginalIds: Record<string, string>
 } {
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
+  // L2スイッチのブリッジ名は node.id をハッシュ化して作る。再読み込み後にnode.idが元の値に
+  // 戻せていないと、ハッシュ済みの名前をさらにハッシュしてしまい、再deployのたびにブリッジ名・
+  // ポート名がズレていく（2026-10-07レビュー指摘）。ここでnode.id→ブリッジ名の対応を記録して
+  // annotationsに保存し、再読み込み時に元のnode.idへ戻せるようにする
+  const switchOriginalIds: Record<string, string> = {}
 
   // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
   const deviceNodes = nodes.filter((n) => n.type === 'topoNode')
@@ -209,6 +215,7 @@ function buildTopologyContent(
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
     nodesMap[clabName] = data.image ? { kind: data.clabKind, image: data.image } : { kind: data.clabKind }
+    if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
 
   const vlanTasks: VlanTask[] = []
@@ -261,6 +268,7 @@ function buildTopologyContent(
     switchPorts,
     addressTasks,
     portAnnotations,
+    switchOriginalIds,
   }
 }
 
@@ -336,8 +344,13 @@ function TopologyEditorInner() {
           nodes = applyAnnotations(nodes, annotationsText)
           // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
           // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
-          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）
+          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
+          // portAnnotationsのキーはハッシュ化されたclabName基準なので、これを
+          // restoreSwitchIdentitiesより先に呼ぶこと
           edges = applyPortAnnotations(edges, annotationsText)
+          // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
+          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す
+          ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
@@ -609,7 +622,7 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations } = buildTopologyContent(
+      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations, switchOriginalIds } = buildTopologyContent(
         nodes,
         edges,
         username,
@@ -639,31 +652,32 @@ function TopologyEditorInner() {
 
       // VLAN設定（アクセス/トランク）はcontainerlabのトポロジYAMLには無いため、
       // deploy成功後にbackend/ovs-helper/経由でovs-vsctlを実行して別途投入する
-      // （2026-10-06追加）。1件でも失敗したら成功メッセージにその旨を添える
-      const vlanFailures: string[] = []
-      for (const task of vlanTasks) {
-        try {
-          await applyVlanConfig(safeName, task.port, task.config)
-        } catch (e) {
-          vlanFailures.push(e instanceof ApiError || e instanceof Error ? e.message : 'VLAN設定に失敗しました')
-        }
-      }
+      // （2026-10-06追加）。1件でも失敗したら成功メッセージにその旨を添える。
+      // ensureBridge/resetPortと同じくPromise.allで並列実行する（2026-10-07レビュー指摘：
+      // 直列だとポート数が増えるほどdeployが線形に遅くなっていた）
+      const vlanResults = await Promise.allSettled(vlanTasks.map((task) => applyVlanConfig(safeName, task.port, task.config)))
+      const vlanFailures = vlanResults
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => (r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'VLAN設定に失敗しました'))
 
       // PC/ルーターのIPv4アドレスもトポロジYAMLには無いため、deploy成功後にclab-api-serverの
       // execで`ip addr add`して別途投入する（2026-10-07追加。「PCのアドレシングが面倒」指摘対応）
-      const addressFailures: string[] = []
-      for (const task of addressTasks) {
-        try {
+      const addressResults = await Promise.allSettled(
+        addressTasks.map(async (task) => {
           const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
           const [firstResult] = Object.values(result).flat()
           if (firstResult && firstResult['return-code'] !== 0) {
-            addressFailures.push(`${task.nodeName}:${task.iface} ${firstResult.stderr.trim() || 'アドレス設定に失敗しました'}`)
+            throw new Error((firstResult.stderr ?? '').trim() || 'アドレス設定に失敗しました')
           }
-        } catch (e) {
-          const message = e instanceof ApiError || e instanceof Error ? e.message : 'アドレス設定に失敗しました'
-          addressFailures.push(`${task.nodeName}:${task.iface} ${message}`)
-        }
-      }
+          return task
+        }),
+      )
+      const addressFailures = addressResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const task = addressTasks[i]
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'アドレス設定に失敗しました'
+        return [`${task.nodeName}:${task.iface} ${message}`]
+      })
 
       const failureSuffixes = [
         vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
@@ -685,7 +699,7 @@ function TopologyEditorInner() {
       setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
       // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
       // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
-      putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations)).catch((err: unknown) => {
+      putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations, switchOriginalIds)).catch((err: unknown) => {
         console.warn('ノード配置の保存に失敗しました', err)
       })
     } catch (e) {

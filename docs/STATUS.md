@@ -453,6 +453,30 @@
   `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。
   **旧versionのannotations（port情報無し）は無視されるだけで壊れない。次回、front-testで
   一度redeploy→再読み込みして文字化けが直るか確認する**
+- **マージ前に`/code-review high`で自己レビュー（2026-10-07）**：最重要の指摘1件を確認・修正、
+  他2件も合わせて修正：
+  1. **【重要・修正】L2スイッチのブリッジ名/ポート名が再読み込み後の再deployでズレ続ける
+     潜在バグ**：`toClabBridgeName(username, labName, node.id)`はnode.idをハッシュ化するが、
+     再読み込み直後のnode.idは既にハッシュ化済みの実名（`sw-xxxxxxxx`）になっている
+     （元のUI上のidはYAMLに保存されないため）。これをさらにハッシュしてしまうため、
+     「開く→redeploy」を繰り返すたびに別のブリッジ名になり、古いブリッジ/vethがホストに
+     残骸として残り、VLAN設定も失われる。上の「文字化け」修正で追加した`portAnnotations`の
+     仕組みを拡張し、L2スイッチの`clabName→元のnode.id`の対応も`switchOriginalIds`として
+     annotationsに保存。再読み込み時、`applyPortAnnotations`の後に
+     `restoreSwitchIdentities()`でnode.id・edgeのsource/targetを元のidへ戻すようにした
+     （順序が重要：`portAnnotations`のキーはハッシュ化済みclabName基準のため、
+     id復元より先にport復元を行う必要がある）
+  2. VLAN/アドレス設定の投入が直列await（ポート数が増えるほどdeployが線形に遅くなる）だった
+     のを、ブリッジ作成/ポートリセットと同じく`Promise.allSettled`で並列化
+  3. アドレス設定失敗時に`firstResult.stderr`が無い場合に`.trim()`が例外を投げる可能性を修正
+     （`?? ''`でガード）
+  - 指摘のうち2件は意図的に見送り：ブリッジ作成/ポートリセット失敗時にdeploy全体を
+    中断する挙動（VLAN/アドレス失敗時は中断しないのと非対称、との指摘）は、
+    ブリッジ/ポートが無いとdeploy自体が確実に失敗するので早期中断の方が分かりやすいと判断。
+    `deleteLinkIfExists`の`Cannot find device`文字列マッチ（英語決め打ち）も、
+    想定外のsudoエラー等を誤って握りつぶさないためにそのまま残した（sudoers未設定問題は
+    実際にこの仕組みで発見できた）
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
 - **次の目標（2026-10-07、ユーザーより）**：
   1. VLANを使ったrouter on a stick（FRRのVLANサブインターフェースでルーター1台が複数VLANを
      ルーティングできるか）の検証
