@@ -14,6 +14,8 @@ interface PortAnnotation {
   iface: string
   vlan?: unknown
   address?: string
+  // デフォルトゲートウェイ（2026-10-07追加）
+  gateway?: string
   // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
   subInterfaces?: unknown
 }
@@ -134,6 +136,8 @@ export function applyPortAnnotations(edges: Edge[], annotationsText: string): Ed
         targetVlan: targetAnnotation?.vlan,
         sourceAddress: sourceAnnotation?.address,
         targetAddress: targetAnnotation?.address,
+        sourceGateway: sourceAnnotation?.gateway,
+        targetGateway: targetAnnotation?.gateway,
         sourceSubInterfaces: sourceAnnotation?.subInterfaces,
         targetSubInterfaces: targetAnnotation?.subInterfaces,
       },

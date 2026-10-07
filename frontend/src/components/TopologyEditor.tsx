@@ -64,6 +64,12 @@ interface EdgeIfaceData {
   // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
   sourceAddress?: string
   targetAddress?: string
+  // PC/ルーターがプレーンなアドレス設定（router on a stickではない）の時だけ意味がある。
+  // デフォルトゲートウェイ（単純なIPv4アドレス、プレフィックス無し）。設定するとdeploy後に
+  // `ip route add default via <gateway>`を実行する（2026-10-07追加。「ラボ内の宛先が
+  // 自動的に外部に飛んでしまう」指摘対応。docs/direction.md参照）
+  sourceGateway?: string
+  targetGateway?: string
   // ルーター側がL2スイッチのトランクポートに接続している時だけ意味がある（router on a stick、
   // 2026-10-07追加）。物理I/F自体にはアドレスを持たせず、VLANごとのサブインターフェース
   // （例: eth1.10）を作ってそれぞれにアドレスを振る。sourceAddress/targetAddressとは
@@ -137,6 +143,22 @@ function parseSubInterfaceRows(rows: { vlan: string; address: string }[]): { con
     configs.push({ vlan, address })
   }
   return { configs }
+}
+
+// デフォルトゲートウェイ入力欄の検証。プレフィックス無しの単純なIPv4アドレスのみ
+// （2026-10-07追加。「ラボ内の宛先が自動的に外部に飛んでしまう」指摘対応：
+// containerlabはmgmt用のeth0に`default via <docker bridge gw>`を自動設定するため、
+// ラボ内で意図していない宛先向けの経路が無いと、そのままeth0経由で実際の外部ネットワークに
+// 出てしまうことが実機で確認された。デフォルトゲートウェイを明示設定できるようにし、
+// 併せてeth0の自動デフォルトルートはdeploy後に削除する）
+function parseIpv4Gateway(value: string): { gateway?: string; error?: string } {
+  const trimmed = value.trim()
+  if (trimmed === '') return {}
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(trimmed)
+  if (!m || m.slice(1, 5).map(Number).some((n) => n > 255)) {
+    return { error: 'ゲートウェイは「10.0.0.254」のようなIPv4アドレスで指定してください' }
+  }
+  return { gateway: trimmed }
 }
 
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
@@ -250,6 +272,8 @@ interface PortAnnotation {
   iface: string
   vlan?: VlanConfig
   address?: string
+  // デフォルトゲートウェイ（2026-10-07追加）
+  gateway?: string
   // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
   subInterfaces?: SubInterfaceConfig[]
 }
@@ -265,6 +289,14 @@ function buildTopologyContent(
   switchPorts: string[]
   addressTasks: AddressTask[]
   subInterfaceTasks: SubInterfaceTask[]
+  // PC/ルーター（L2スイッチ以外）の全clabName。containerlabが自動設定するeth0の
+  // デフォルトルートはmgmtネットワークのゲートウェイを指しており、ラボ内に存在しない
+  // 宛先への経路が無いとそのまま実際の外部ネットワークに出てしまう（2026-10-07実機確認）。
+  // deploy後に全ノードでこのデフォルトルートを削除する
+  linuxNodeNames: string[]
+  // ノードごとに設定されたデフォルトゲートウェイ。削除後、該当ノードだけ
+  // `ip route add default via <gateway>`で明示的に設定し直す
+  gatewayByNode: Map<string, string>
   portAnnotations: Record<string, PortAnnotation>
   switchOriginalIds: Record<string, string>
 } {
@@ -297,10 +329,18 @@ function buildTopologyContent(
     if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
 
+  // PC/ルーター（コンテナを持つノード）の全clabName。deploy後、全ノードで
+  // containerlab自動設定のeth0デフォルトルートを削除する対象（2026-10-07追加）
+  const linuxNodeNames = deviceNodes
+    .filter((n) => (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+    .map((n) => clabNodeNames.get(n.id))
+    .filter((name): name is string => !!name)
+
   const vlanTasks: VlanTask[] = []
   const switchPorts: string[] = []
   const addressTasks: AddressTask[] = []
   const subInterfaceTasks: SubInterfaceTask[] = []
+  const gatewayByNode = new Map<string, string>()
   const portAnnotations: Record<string, PortAnnotation> = {}
 
   const links = edges.map((edge) => {
@@ -337,6 +377,9 @@ function buildTopologyContent(
     if (!targetIsSwitch && iface.targetAddress) {
       addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
     }
+    // デフォルトゲートウェイ（2026-10-07追加）。プレーンなアドレス設定の時だけ意味がある
+    if (!sourceIsSwitch && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
+    if (!targetIsSwitch && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
     for (const sub of iface.sourceSubInterfaces ?? []) {
       subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan, address: sub.address })
     }
@@ -348,12 +391,14 @@ function buildTopologyContent(
       iface: iface.sourceIface,
       vlan: iface.sourceVlan,
       address: iface.sourceAddress,
+      gateway: iface.sourceGateway,
       subInterfaces: iface.sourceSubInterfaces,
     }
     portAnnotations[`${targetName}:${targetPort}`] = {
       iface: iface.targetIface,
       vlan: iface.targetVlan,
       address: iface.targetAddress,
+      gateway: iface.targetGateway,
       subInterfaces: iface.targetSubInterfaces,
     }
 
@@ -366,6 +411,8 @@ function buildTopologyContent(
     switchPorts,
     addressTasks,
     subInterfaceTasks,
+    linuxNodeNames,
+    gatewayByNode,
     portAnnotations,
     switchOriginalIds,
   }
@@ -398,6 +445,9 @@ function TopologyEditorInner() {
   // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
   const [pendingSourceAddress, setPendingSourceAddress] = useState('')
   const [pendingTargetAddress, setPendingTargetAddress] = useState('')
+  // プレーンなアドレス設定の時だけ表示するデフォルトゲートウェイの入力欄（2026-10-07追加）
+  const [pendingSourceGateway, setPendingSourceGateway] = useState('')
+  const [pendingTargetGateway, setPendingTargetGateway] = useState('')
   // ルーターがL2スイッチのトランクポートに接続している時だけ表示するrouter on a stick設定
   // （2026-10-07追加）。'plain'ならpendingSource/targetAddressのプレーンなアドレス設定、
   // 'vlan-subif'ならVLANごとのサブインターフェース一覧を使う（排他）
@@ -515,6 +565,8 @@ function TopologyEditorInner() {
       setPendingTargetVlanValue('')
       setPendingSourceAddress('')
       setPendingTargetAddress('')
+      setPendingSourceGateway('')
+      setPendingTargetGateway('')
       setPendingSourceMode('plain')
       setPendingTargetMode('plain')
       setPendingSourceSubIfaces([])
@@ -533,6 +585,8 @@ function TopologyEditorInner() {
   )
   const sourceAddressResult = useMemo(() => parseIpv4Cidr(pendingSourceAddress), [pendingSourceAddress])
   const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
+  const sourceGatewayResult = useMemo(() => parseIpv4Gateway(pendingSourceGateway), [pendingSourceGateway])
+  const targetGatewayResult = useMemo(() => parseIpv4Gateway(pendingTargetGateway), [pendingTargetGateway])
   const sourceSubIfacesResult = useMemo(
     () => (pendingSourceMode === 'vlan-subif' ? parseSubInterfaceRows(pendingSourceSubIfaces) : {}),
     [pendingSourceMode, pendingSourceSubIfaces],
@@ -559,9 +613,11 @@ function TopologyEditorInner() {
           targetIface: pendingTargetIface,
           sourceVlan: sourceVlanResult.config,
           targetVlan: targetVlanResult.config,
-          // router on a stick（'vlan-subif'）の時はプレーンなアドレスは設定しない（排他）
+          // router on a stick（'vlan-subif'）の時はプレーンなアドレス/ゲートウェイは設定しない（排他）
           sourceAddress: pendingSourceMode === 'plain' ? sourceAddressResult.address : undefined,
           targetAddress: pendingTargetMode === 'plain' ? targetAddressResult.address : undefined,
+          sourceGateway: pendingSourceMode === 'plain' ? sourceGatewayResult.gateway : undefined,
+          targetGateway: pendingTargetMode === 'plain' ? targetGatewayResult.gateway : undefined,
           sourceSubInterfaces: pendingSourceMode === 'vlan-subif' ? sourceSubIfacesResult.configs : undefined,
           targetSubInterfaces: pendingTargetMode === 'vlan-subif' ? targetSubIfacesResult.configs : undefined,
         } satisfies EdgeIfaceData,
@@ -576,6 +632,8 @@ function TopologyEditorInner() {
     targetVlanResult,
     sourceAddressResult,
     targetAddressResult,
+    sourceGatewayResult,
+    targetGatewayResult,
     pendingSourceMode,
     pendingTargetMode,
     sourceSubIfacesResult,
@@ -751,8 +809,17 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts, addressTasks, subInterfaceTasks, portAnnotations, switchOriginalIds } =
-        buildTopologyContent(nodes, edges, username, safeName)
+      const {
+        topologyContent,
+        vlanTasks,
+        switchPorts,
+        addressTasks,
+        subInterfaceTasks,
+        linuxNodeNames,
+        gatewayByNode,
+        portAnnotations,
+        switchOriginalIds,
+      } = buildTopologyContent(nodes, edges, username, safeName)
 
       // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
       // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
@@ -831,10 +898,46 @@ function TopologyEditorInner() {
         return [`${task.nodeName}:${task.parentIface}.${task.vlan} ${message}`]
       })
 
+      // containerlabはmgmt用のeth0に`default via <docker bridge gw>`を自動設定するため、
+      // ラボ内に意図した宛先への経路が無いと、そのままeth0経由で実際の外部ネットワークに
+      // 出てしまう（2026-10-07実機確認：`traceroute`が本物のISPまで到達した）。
+      // deploy後に全PC/ルーターでこのデフォルトルートを削除し、ゲートウェイが設定されている
+      // ノードだけ明示的に`ip route add default via <gateway>`で設定し直す。
+      // アドレス設定（上のaddressTasks/subInterfaceTasks）が先に終わっている必要がある
+      // （ゲートウェイの接続先サブネットがまだ無いとadd defaultが失敗するため）
+      const routeResults = await Promise.allSettled(
+        linuxNodeNames.map(async (name) => {
+          // execは失敗してもHTTPとしては200で返ってくる（`return-code`で判定する必要がある、
+          // addressTasks/subInterfaceTasksと同じ仕組み）。「既にデフォルトルートが無い」場合は
+          // `ip route del default`が`No such process`で失敗するのが正常なので無視する
+          const delResult = await execInLab(safeName, name, 'ip route del default')
+          const [delFirst] = Object.values(delResult).flat()
+          if (delFirst && delFirst['return-code'] !== 0 && !(delFirst.stderr ?? '').includes('No such process')) {
+            throw new Error((delFirst.stderr ?? '').trim() || 'デフォルトルートの削除に失敗しました')
+          }
+          const gateway = gatewayByNode.get(name)
+          if (gateway) {
+            const addResult = await execInLab(safeName, name, `ip route add default via ${gateway}`)
+            const [addFirst] = Object.values(addResult).flat()
+            if (addFirst && addFirst['return-code'] !== 0) {
+              throw new Error((addFirst.stderr ?? '').trim() || 'ゲートウェイ設定に失敗しました')
+            }
+          }
+          return name
+        }),
+      )
+      const routeFailures = routeResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const name = linuxNodeNames[i]
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'ルート設定に失敗しました'
+        return [`${name}: ${message}`]
+      })
+
       const failureSuffixes = [
         vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
         addressFailures.length > 0 ? `アドレス設定に失敗: ${addressFailures.join(' / ')}` : '',
         subIfaceFailures.length > 0 ? `サブインターフェース設定に失敗: ${subIfaceFailures.join(' / ')}` : '',
+        routeFailures.length > 0 ? `ルート設定に失敗: ${routeFailures.join(' / ')}` : '',
       ].filter(Boolean)
 
       setDeployStatus({
@@ -1007,6 +1110,12 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.1/24）"
                       />
                       {sourceAddressResult.error && <span className="topology-editor__modal-warn">{sourceAddressResult.error}</span>}
+                      <input
+                        value={pendingSourceGateway}
+                        onChange={(e) => setPendingSourceGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.254）"
+                      />
+                      {sourceGatewayResult.error && <span className="topology-editor__modal-warn">{sourceGatewayResult.error}</span>}
                     </div>
                   )}
                   {!sourceIsSwitch && sourceIsRouterOnStick && pendingSourceMode === 'vlan-subif' && (
@@ -1083,6 +1192,12 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.2/24）"
                       />
                       {targetAddressResult.error && <span className="topology-editor__modal-warn">{targetAddressResult.error}</span>}
+                      <input
+                        value={pendingTargetGateway}
+                        onChange={(e) => setPendingTargetGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.1）"
+                      />
+                      {targetGatewayResult.error && <span className="topology-editor__modal-warn">{targetGatewayResult.error}</span>}
                     </div>
                   )}
                   {!targetIsSwitch && targetIsRouterOnStick && pendingTargetMode === 'vlan-subif' && (
@@ -1122,8 +1237,12 @@ function TopologyEditorInner() {
                       targetIfaceConflict ||
                       (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
                       (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
-                      (pendingSourceMode === 'plain' ? !!sourceAddressResult.error : !!sourceSubIfacesResult.error) ||
-                      (pendingTargetMode === 'plain' ? !!targetAddressResult.error : !!targetSubIfacesResult.error)
+                      (pendingSourceMode === 'plain'
+                        ? !!sourceAddressResult.error || !!sourceGatewayResult.error
+                        : !!sourceSubIfacesResult.error) ||
+                      (pendingTargetMode === 'plain'
+                        ? !!targetAddressResult.error || !!targetGatewayResult.error
+                        : !!targetSubIfacesResult.error)
                     }
                   >
                     接続
