@@ -563,14 +563,39 @@
   「✕ パネルを閉じる」ボタンを追加。全セッションを終了してからパネルも隠す動作にした
   （`closeAllConsoles()` + `setConsolePanelDocked(false)`）。トップバーのトグルとは異なり、
   こちらは明示的にセッションも終了する。`npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【大きな方針変更】ルーターの設定をGUIからCLI（vtysh）主体に変更（2026-10-07）**：
+  test2での実機テストで「GUIで設定し忘れるとping が通らない」ことをきっかけに、
+  「学習ツールとしてGUIが代わりに設定してしまうのはおかしい、ルーターはCLIで設定しないと
+  意味がない」という指摘を受けた。vtyshにVLANサブインターフェースの"デバイス作成"自体は
+  できない（カーネルのip link操作はFRRのスコープ外、実機確認済み）ことを前提に、役割分担を
+  変更：
+  - ルーターのIPアドレス/ルーティング設定は100%CLI（vtysh）。GUIのプレーンな
+    「IPv4アドレス/デフォルトゲートウェイ」入力欄はルーターからは廃止（PCのみ残す）
+  - router on a stickのVLANサブインターフェースは、GUIが用意するのはVLAN IDに基づく
+    「空のデバイス」のみ（`ip link add`+`up`、アドレス設定はしない）
+  - FRR設定ファイル（daemons/frr.conf/vtysh.conf）を`frr-config/<router>/`に
+    bind mountして永続化。`backend/ovs-helper/`に新エンドポイント`POST /frr-config`を追加
+    （既存ファイルは上書きしない＝学生の`write memory`を保護）。daemonsは学生が編集できない
+    （コンソールはvtysh専用）ため、主要プロトコル（zebra/staticd/ospfd/ospf6d/ripd/isisd/bgpd）
+    を最初から有効化
+  - 実機検証：`write memory`で保存したCLI設定が、コンテナを完全に破棄・再作成する
+    redeployを越えて残ることを一時テストラボで確認済み。`/frr-config`エンドポイント自体の
+    配線（偽トークンでの401応答）も確認済み
+  - 詳細は`docs/direction.md`の2026-10-07決定事項（3つ目）、`backend/ovs-helper/README.md`参照
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**実機での一連の流れ
+    （ルーター配置→VLANサブインターフェース作成→vtyshでアドレス設定→write memory→
+    再deployでの保持）の確認は次回**
 
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化はfront-testで実機確認済み（問題なし）
 - router on a stick（上記、新規実装）の実機確認：L2スイッチのトランクポート経由で
-  ルーター同士をVLANサブインターフェースで繋ぎ、ping・再読み込み後の復元を確認してほしい
-- デフォルトゲートウェイ設定＋eth0ルート削除（上記、新規実装）の実機確認：PC/ルーターに
+  ルーター同士をVLANサブインターフェースで繋ぎ、vtyshでアドレス設定してpingが通るか、
+  再読み込み後の復元を確認してほしい
+- デフォルトゲートウェイ設定＋eth0ルート削除（上記、新規実装）の実機確認：PCに
   ゲートウェイを設定してdeployし、ラボ内の通信とラボ外への遮断の両方を確認してほしい
+- **ルーターのCLI主体化（上記、新規実装）の実機確認**：ルーターのアドレス設定をvtyshで行い、
+  `write memory`→再deployを越えて設定が残るか確認してほしい
 
 ---
 

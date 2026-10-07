@@ -189,7 +189,7 @@
   color: var(--ink);
 }
 
-/* router on a stick：VLANサブインターフェース1行分（VLAN ID / アドレス / 削除ボタン） */
+/* router on a stick：VLANサブインターフェース1行分（VLAN ID / 削除ボタン） */
 .topology-editor__modal-subif-row {
   display: flex;
   gap: 4px;
@@ -197,6 +197,13 @@
 
 .topology-editor__modal-subif-row input:first-child {
   width: 64px;
+}
+
+.topology-editor__modal-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--ink-soft);
+  line-height: 1.4;
 }
 
 .topology-editor__modal-actions {

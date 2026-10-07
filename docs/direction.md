@@ -226,6 +226,50 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   - PCから未定義の宛先（203.0.113.99）への通信は100% lossで外部に漏れないことを確認
   - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
 
+## 決定事項（2026-10-07追記）：ルーターの設定はGUIではなくCLI（vtysh）で行う方針に変更
+
+- **発覚の経緯**：test2ラボでの実機テストで、PC側にゲートウェイを設定してもGUIでルーター側の
+  アドレス設定を忘れていたためping が通らず、ユーザーから「学習ツールとしては不適かも」という
+  指摘があった。根本的な懸念は「GUIが代わりに設定してしまうと、本来CLIで学ぶべき操作が
+  身につかない」という点。これを受けて、ユーザーから「FRRの機能としてVLANサブインターフェースを
+  CLIで設定できないか？ルーターはCLIで設定しないと意味がない」という要望が出た
+- **技術的な制約の確認（実機確認済み）**：vtyshで`interface eth1.10`→`ip address ...`と打つと
+  `running-config`には記録されるが、**カーネル上には実際のVLANデバイスが作られない**。
+  VLANタグ付きインターフェースの作成はLinuxカーネルの操作（`ip link add ... type vlan`）であり、
+  FRR/zebraはルーティング・既存インターフェースへのアドレス設定等を行うソフトウェアで、
+  リンクレイヤーのデバイス作成自体はスコープ外（vtysh自身が実装していない）。
+  つまり「VLANサブインターフェースの存在」はGUI/バックエンド側で用意するしかないが、
+  **一度デバイスが存在すれば、そこへのアドレス設定はvtyshのCLIで問題なく行える**
+  （zebraはカーネルのnetlinkイベントを監視しており、どうやって作られたデバイスかに関係なく
+  自動で認識してルーティングに使う）
+- **FRR設定の永続化を実機検証**：vtyshで設定して`write memory`すると`/etc/frr/frr.conf`に
+  書き込まれる。このファイルをホスト側にbind mountして永続化すれば、**コンテナを完全に
+  破棄・再作成する再deployを越えてCLI設定が残る**ことを一時テストラボで確認した
+  （書き込み直後はホスト側のファイル所有者がコンテナ内部のFRRデーモンのUIDに変わり
+  `labuser`では読めなくなるが、`existsSync`/`statSync`による存在確認は引き続き可能なことを確認。
+  containerlab自体はbind mount元のファイルが事前に存在しないとdeploy自体を
+  `Failed to verify bind path`で拒否するため、初回だけ最小構成のファイルを用意する必要がある）
+- **決定した役割分担**：
+  - **ルーター（FRR）**：IPアドレス設定・ルーティング設定は**100%CLI（vtysh）で行う**。
+    GUIからのプレーンな「IPv4アドレス/デフォルトゲートウェイ」入力欄は廃止（PCのみ残す）。
+    router on a stickのVLANサブインターフェースも、GUIが用意するのは**VLAN IDに基づく
+    「空のデバイス」のみ**（`ip link add ... type vlan` + `ip link set ... up`、アドレスは
+    設定しない）。アドレス設定は学生がデプロイ後にコンソールのvtyshで行う
+  - **PC（alpine）**：元々CLI学習の対象ではない（単純なエンドホスト役）ため、GUIでの
+    アドレス/ゲートウェイ設定はそのまま維持
+  - **FRR設定の永続化**：全ルーターに`frr-config/<routerClabName>/{daemons,frr.conf,vtysh.conf}`
+    をbind mount。初回のみ`backend/ovs-helper/`の新エンドポイント`POST /frr-config`で
+    最小構成を用意する（既存ファイルは上書きしない＝学生の設定を保護）。daemonsは学生が
+    自分で編集できない（コンソールはvtysh専用に制限済み）ため、大学の講義で扱う主要な
+    ルーティングプロトコル（zebra/staticd/ospfd/ospf6d/ripd/isisd/bgpd）を最初から
+    有効にしておく
+- **影響**：この変更により、deployは「トポロジの配線（物理リンク・VLANデバイスの存在）を
+  整える1回限りの操作」に近づき、実際のルーター設定作業はCLIで継続的に行える
+  （以前は`ip addr add`等をGUI側がexecで毎回再投入していたため、設定を変える度に
+  deployが必要だった）
+- 実機での最終確認（ルーターのVLANサブインターフェース作成→vtyshでのアドレス設定→
+  write memory→再deployでの設定保持の一連の流れ）は次回
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

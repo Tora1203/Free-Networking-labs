@@ -43,6 +43,8 @@
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import https from 'node:https'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const HELPER_PORT = Number(process.env.OVS_HELPER_PORT ?? 8083)
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
@@ -51,6 +53,10 @@ const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '').split(',').map(
 // sudoersで限定許可した専用ラッパー（link-delete.sh、要セットアップ）を`sudo -n`経由で呼ぶ。
 // 詳細はそのファイルを参照
 const LINK_DELETE_BIN = process.env.OVS_HELPER_LINK_DELETE_BIN ?? '/usr/local/sbin/ovs-helper-link-delete'
+// ルーターのFRR設定（daemons/frr.conf/vtysh.conf）の永続化先ルート。
+// このプロセス（labuser等、各ユーザー自身の権限で動く）がそのまま書き込める、
+// 各ユーザー自身のラボディレクトリのルート（2026-10-07追加）
+const CLAB_LABS_ROOT = process.env.CLAB_LABS_ROOT ?? '/var/lib/containerlab/labs'
 
 // OVSのVLAN IDとして有効な範囲（802.1Q）
 const MIN_VLAN = 1
@@ -60,6 +66,56 @@ const MAX_VLAN = 4094
 // 想定外の名前を受け付けないよう形式を絞っておく）
 const BRIDGE_NAME_PATTERN = /^sw-[0-9a-f]{8}$/
 const PORT_NAME_PATTERN = /^p-[0-9a-f]{8}$/
+// ラボ名・ルーター名はファイルパスの一部に使うため、パストラバーサル等を防ぐために
+// 英数字・ハイフン・アンダースコアのみに制限する（2026-10-07追加。
+// ラボ名はtoSafeLabName()が生成する形式、ルーター名はユーザーがUIで付けたノードidそのもの）
+const SAFE_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+// ルーター新規作成時のdaemonsファイルの初期値。学生がvtyshのコンソールから直接
+// daemonsファイルを編集する手段が無い（コンソールはvtyshのみに制限済み、docs/direction.md
+// 参照）ため、一般的な大学の講義で扱う範囲のプロトコルを一通り有効にしておく
+const FRR_DEFAULT_DAEMONS = `zebra=yes
+bgpd=yes
+ospfd=yes
+ospf6d=yes
+ripd=yes
+ripngd=no
+isisd=yes
+pimd=no
+pim6d=no
+ldpd=no
+nhrpd=no
+eigrpd=no
+babeld=no
+sharpd=no
+pbrd=no
+staticd=yes
+bfdd=no
+fabricd=no
+vrrpd=no
+pathd=no
+vtysh_enable=yes
+zebra_options="  -A 127.0.0.1 -s 90000000"
+bgpd_options="   -A 127.0.0.1"
+ospfd_options="  -A 127.0.0.1"
+ospf6d_options=" -A ::1"
+ripd_options="   -A 127.0.0.1"
+ripngd_options=" -A ::1"
+isisd_options="  -A 127.0.0.1"
+pimd_options="   -A 127.0.0.1"
+pim6d_options="  -A ::1"
+ldpd_options="   -A 127.0.0.1"
+nhrpd_options="  -A 127.0.0.1"
+eigrpd_options=" -A 127.0.0.1"
+babeld_options=" -A 127.0.0.1"
+sharpd_options=" -A 127.0.0.1"
+pbrd_options="   -A 127.0.0.1"
+staticd_options="-A 127.0.0.1"
+bfdd_options="   -A 127.0.0.1"
+fabricd_options="-A 127.0.0.1"
+vrrpd_options="  -A 127.0.0.1"
+pathd_options="  -A 127.0.0.1"
+`
 
 function isValidVlanId(n) {
   return Number.isInteger(n) && n >= MIN_VLAN && n <= MAX_VLAN
@@ -114,6 +170,20 @@ async function verifyTokenOnly(token) {
     req.on('error', reject)
     req.end()
   })
+}
+
+// JWTのペイロードから`username`を読む（署名検証はしない）。ファイルパスの構築にしか使わず、
+// 認可そのものは別途verifyTokenOnly/verifyLabOwnershipがclab-api-server自身に問い合わせて
+// 行っている（偽装トークンならその問い合わせ自体が401になるため、ここでの読み取りが
+// 偽装されていても実害が無い。2026-10-07追加）
+function decodeJwtUsername(token) {
+  try {
+    const payloadB64 = token.split('.')[1]
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'))
+    return typeof payload.username === 'string' ? payload.username : null
+  } catch {
+    return null
+  }
 }
 
 function runOvsVsctl(args) {
@@ -214,6 +284,55 @@ async function handlePortReset(req, res, token) {
   sendJson(res, 200, { message: `port ${port} をリセットしました` })
 }
 
+// ルーターのCLI設定（vtyshでの`write memory`）を再deployを越えて永続化するための
+// FRR設定ファイル（daemons/frr.conf/vtysh.conf）を用意する（2026-10-07追加）。
+// 「ルーターはCLIで設定しないと意味がない」という指摘を受けて追加：
+// GUIが直接execで`ip addr add`していた時はdeployのたびに再投入が必要だったが、
+// frr.confをbind mountで永続化しておけば、学生がvtyshで設定して`write memory`した内容が
+// そのままファイルに残り、次回deploy時にFRR自身が読み込んで復元する（実機確認済み：
+// 完全なコンテナ再作成を挟んでも設定が残ることを確認した）。
+//
+// 既に存在するファイルは絶対に上書きしない（学生が書いた設定を消してしまうため）。
+// 無い時だけ、主要なルーティングプロトコルを一通り有効化した最小構成で新規作成する
+async function handleFrrConfig(req, res, token) {
+  const payload = await readJsonBody(req)
+  const { labName, routerName } = payload ?? {}
+  if (typeof labName !== 'string' || !SAFE_PATH_SEGMENT_PATTERN.test(labName)) {
+    sendJson(res, 400, { error: 'labNameの形式が不正です' })
+    return
+  }
+  if (typeof routerName !== 'string' || !SAFE_PATH_SEGMENT_PATTERN.test(routerName)) {
+    sendJson(res, 400, { error: 'routerNameの形式が不正です' })
+    return
+  }
+
+  const tokenOk = await verifyTokenOnly(token)
+  if (!tokenOk) {
+    sendJson(res, 401, { error: '認証に失敗しました' })
+    return
+  }
+  const username = decodeJwtUsername(token)
+  if (!username || !SAFE_PATH_SEGMENT_PATTERN.test(username)) {
+    sendJson(res, 400, { error: 'トークンからユーザー名を取得できませんでした' })
+    return
+  }
+
+  const dir = path.join(CLAB_LABS_ROOT, username, labName, 'frr-config', routerName)
+  fs.mkdirSync(dir, { recursive: true })
+
+  const files = {
+    daemons: FRR_DEFAULT_DAEMONS,
+    'frr.conf': `frr version 10.2.1\nfrr defaults traditional\nhostname ${routerName}\n!\nline vty\n!\n`,
+    'vtysh.conf': 'service integrated-vtysh-config\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    const filePath = path.join(dir, name)
+    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, content)
+  }
+
+  sendJson(res, 200, { message: `router ${routerName} のFRR設定を用意しました` })
+}
+
 async function handleVlan(req, res, token) {
   const payload = await readJsonBody(req)
   const { labName, port, mode, vlan, vlans } = payload ?? {}
@@ -259,7 +378,12 @@ async function handleVlan(req, res, token) {
   sendJson(res, 200, { message: `port ${port} に ${mode} 設定を適用しました` })
 }
 
-const ROUTES = { '/bridge': handleBridge, '/port/reset': handlePortReset, '/vlan': handleVlan }
+const ROUTES = {
+  '/bridge': handleBridge,
+  '/port/reset': handlePortReset,
+  '/vlan': handleVlan,
+  '/frr-config': handleFrrConfig,
+}
 
 const server = createServer((req, res) => {
   applyCors(req, res)

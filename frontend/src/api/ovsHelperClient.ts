@@ -50,3 +50,13 @@ export function applyVlanConfig(labName: string, port: string, config: VlanConfi
 export function resetPort(port: string): Promise<void> {
   return postToHelper('/port/reset', { port })
 }
+
+// ルーターのFRR設定（daemons/frr.conf/vtysh.conf）をdeployより前に用意する（2026-10-07追加）。
+// 「ルーターはCLIで設定しないと意味がない」指摘対応：元々はGUIがexec経由で直接
+// `ip addr add`していたが、deployのたびに再投入が必要だった。この仕組みでは、
+// ホスト側にbind mountするFRR設定ファイルを用意するだけで、実際のアドレス設定等は
+// 学生がvtyshで行い`write memory`すれば再deployを越えて残るようにする（実機確認済み）。
+// 既に存在するファイルは上書きしない（学生の設定を消さないため）ので、再deploy時も毎回呼んで安全
+export function ensureFrrConfig(labName: string, routerName: string): Promise<void> {
+  return postToHelper('/frr-config', { labName, routerName })
+}
