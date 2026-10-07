@@ -136,6 +136,23 @@
     `POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>` に**同じ**`topologyContent`を渡すことで、
     指定ノードだけコンテナを破棄→再作成できる（`container_id`が変わり、コンテナ内の状態は消える。
     他ノードは触られない）。FEの「wipeボタン」はこの呼び出しで実現できる
+- **`POST /api/v1/labs/{labName}/exec`（コマンド実行）・`GET /api/v1/labs/{labName}/interfaces`
+  （2026-10-06、Swagger仕様で存在確認）**：どちらもコンテナ単位（`nodeFilter`/`node`クエリで
+  指定）。`ovs-bridge` kindのノードはコンテナを持たないため、この2つではホスト側のOVS
+  データベースには届かない（VLAN設定を検討した際に確認。詳細は`docs/direction.md`参照）
+- **`POST /api/v1/labs/{labName}/exec`の詳細（2026-10-07）**：
+  - クエリ: `nodeFilter=<コンテナのフルネーム>`（例: `clab-front-test-pc-1`）。**短いノード名
+    （`pc-1`）では`500 {"error":"... exec failed: filter did not match any containers"}`になる
+    ことを実機確認済み**。execはデプロイ済みコンテナが対象のため、`terminal-sessions`
+    （`ConsoleSession.tsx`の`clab-${labName}-${nodeName}`）と同じフルネームが必要。
+    `wipeNode()`の`nodeFilter`（トポロジ定義＝デプロイ前の層が対象なので短い名前のまま）とは
+    対象の層が違うため、同じ引数名でも挙動が異なるので注意
+  - ボディ: `{"command": "ip addr show eth1"}`（コマンドは1本の文字列）
+  - レスポンススキーマ: `{"<フルコンテナ名>": [{"cmd":[...],"return-code":0,"stdout":"...",
+    "stderr":"..."}]}`のはず（`models.ExecResponse`定義より。フルネームに直した後の
+    成功レスポンス自体の実機確認はTODO(kawase3)、次回のdeployテストで確認する）
+  - PC/ルーターの固定IPアドレス設定（`ip addr add`）に使用（`frontend/src/api/client.ts`の
+    `execInLab()`が内部でフルネームに変換する、`TopologyEditor.tsx`参照）
 
 ### 2.5 統合コンソール（WebSocket / ターミナル）— **実機確認済み（2026-09-17）**
 - 手順:

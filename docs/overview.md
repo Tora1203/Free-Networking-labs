@@ -43,16 +43,17 @@ CMLのようなGUI操作感（ドラッグ&ドロップでのトポロジ編集�
 
 ```
 ［ブラウザ：React + React Flow(トポロジ編集) / xterm.js(統合コンソール)］
-        │  REST（ラボ操作）                  │ WebSocket（ターミナル）
-        ▼                                    ▼
-［clab-api-server：PAM認証で              ［console-proxy：WebSocket中継］
- ユーザー・ラボ所有権を管理］                    │ Authorizationヘッダー付きで接続
-        │                                    │（ブラウザはヘッダーを送れないため）
-        ▼                                    ▼
-［containerlab CLI］  ←───────────  clab-api-serverの統合コンソール用WebSocket
-        │
-        ▼
-［Docker：FRR / ovs-bridge / linuxコンテナ群］
+        │  REST（ラボ操作）    │ WebSocket（ターミナル）   │ REST（VLAN設定）
+        ▼                      ▼                           ▼
+［clab-api-server：      ［console-proxy：            ［ovs-helper：
+ PAM認証でユーザー・       WebSocket中継］                JWTでラボ所有権を
+ ラボ所有権を管理］             │ Authorizationヘッダー付き    clab-api-serverに確認後
+        │                      │ で接続（ブラウザはヘッダー   ovs-vsctlを代行実行］
+        ▼                      │ を送れないため）                  │
+［containerlab CLI］  ←─────┘                                     │
+        │                                                          │
+        ▼                                                          ▼
+［Docker：FRR / ovs-bridge / linuxコンテナ群］  ←── ovs-vsctl（ホスト側のOVS）
 ```
 
 研究室/学校の共有Linuxサーバー1台の上に、上記すべてが同居する。
@@ -62,6 +63,13 @@ CMLのようなGUI操作感（ドラッグ&ドロップでのトポロジ編集�
 カスタムヘッダーを設定できない（回避不可能な仕様上の制約）。このため、ヘッダーを代わりに
 付けて接続する薄い中継プロキシを`backend/console-proxy/`に用意している
 （経緯・プロトコルの詳細は`direction.md`・`backend/console-proxy/README.md`参照）。
+
+**`ovs-helper`について（2026-10-06追加）**：L2スイッチのVLAN設定（アクセス/トランク）は
+containerlabのトポロジYAMLには無く、deploy後にホスト側で`ovs-vsctl`を実行する必要がある。
+clab-api-serverの`exec`系APIはコンテナ単位でしか実行できず、`ovs-bridge` kindのノードは
+コンテナを持たないため届かない。そのため、JWTで認証してユーザー本人のラボかどうかを
+clab-api-server自身に問い合わせてから`ovs-vsctl`を代行実行する薄いヘルパーを
+`backend/ovs-helper/`に用意している（詳細は`direction.md`・`backend/ovs-helper/README.md`参照）。
 
 **認証をclab-api-serverに任せている理由**：clab-api-serverはLinuxのシステムアカウント＋
 PAM認証で動作し、ラボを`$CLAB_LABS_ROOT/<username>/`のようにユーザー名ごとに自動で

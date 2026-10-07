@@ -22,13 +22,15 @@ import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
-import { toClabBridgeName } from '../utils/clabNaming'
+import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
+import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
-import { applyAnnotations, serializeAnnotations } from '../utils/annotations'
+import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serializeAnnotations } from '../utils/annotations'
 import {
   ApiError,
   deployLab,
+  execInLab,
   getLabAnnotations,
   getLabTopologyYaml,
   putLabAnnotations,
@@ -51,7 +53,59 @@ const edgeTypes = { floating: FloatingEdge }
 interface EdgeIfaceData {
   sourceIface: string
   targetIface: string
+  // L2スイッチ側のポートにだけ意味がある（PC/ルーター側は常にundefined）。
+  // VLAN設定自体はcontainerlabのトポロジYAMLには無く、deploy後にbackend/ovs-helper/
+  // 経由でovs-vsctlを叩いて別途投入する（2026-10-06追加、docs/direction.md参照）
+  sourceVlan?: VlanConfig
+  targetVlan?: VlanConfig
+  // PC/ルーター側にだけ意味がある（L2スイッチ側は常にundefined。スイッチはL2なのでIPは持たない）。
+  // "10.0.0.1/24"形式のCIDR文字列。アドレス設定もトポロジYAMLには無く、deploy後に
+  // clab-api-serverのexec経由で`ip addr add`して別途投入する（2026-10-07追加、
+  // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
+  sourceAddress?: string
+  targetAddress?: string
   [key: string]: unknown
+}
+
+// VLANモードの選択肢。トランクは「全VLAN許可」と「指定VLANのみ許可」を分ける
+// （2026-10-06指摘：最初はトランク＝常に指定リスト必須だったが、
+// OVSの「tag/trunksどちらも設定しない＝全VLAN許可のトランク」という挙動に合わせて選べるようにした）
+type VlanMode = 'none' | 'access' | 'trunk-all' | 'trunk-list'
+
+// VLAN入力欄の文字列をVlanConfigに変換する。modeが'none'なら未設定として扱う
+function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; error?: string } {
+  if (mode === 'none') return {}
+  const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
+  if (mode === 'access') {
+    const n = Number(value)
+    if (!isValidVlanId(n)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
+    return { config: { mode: 'access', vlan: n } }
+  }
+  if (mode === 'trunk-all') return { config: { mode: 'trunk', vlans: 'all' } }
+  const vlans = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(Number)
+  if (vlans.length === 0 || vlans.some((n) => !isValidVlanId(n))) {
+    return { error: 'VLAN IDはカンマ区切りで1〜4094の整数を指定してください（例: 10,20,30）' }
+  }
+  return { config: { mode: 'trunk', vlans } }
+}
+
+// IPv4アドレス入力欄の文字列を検証する。空文字は「未設定」として扱う（PC/ルーター側は
+// 配線だけしてアドレスは後で、という使い方もできるようにするため必須にしない）
+function parseIpv4Cidr(value: string): { address?: string; error?: string } {
+  const trimmed = value.trim()
+  if (trimmed === '') return {}
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(trimmed)
+  if (!m) return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
+  const octets = m.slice(1, 5).map(Number)
+  const prefix = Number(m[5])
+  if (octets.some((n) => n > 255) || prefix > 32) {
+    return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
+  }
+  return { address: trimmed }
 }
 
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
@@ -103,9 +157,51 @@ function nextAvailableIface(nodeId: string, edges: Edge[]): string {
 // React Flowのノード/エッジから、POST /api/v1/labs に渡す topologyContent を組み立てる。
 // L2スイッチ(ovs-bridge kind)のノード名だけ、ホスト全体でのブリッジ名衝突を避けるため
 // toClabBridgeName() で短いハッシュ名に変換する（2026-09-24改訂、docs/direction.md参照）。
-function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, labName: string): TopologyContent {
+interface VlanTask {
+  port: string
+  config: VlanConfig
+}
+
+interface AddressTask {
+  nodeName: string
+  iface: string
+  address: string
+}
+
+// デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
+// ブリッジ名・ポート名）から、UI上で使っていた分かりやすい名前・VLAN・アドレス設定を
+// 引き戻すためのマップ。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
+// （endpointsの文字列そのものと同じ形なので、再読み込み時にそのまま突き合わせられる）。
+// containerlabのトポロジYAML自体にはこれらの情報を置けないため、annotations.tsの保存先に
+// 載せて一緒に永続化する（2026-10-07追加。再読み込み後にL2スイッチ接続のI/F名が
+// 文字化けのように見える・VLAN/アドレス設定が消える、の両方の修正）
+interface PortAnnotation {
+  iface: string
+  vlan?: VlanConfig
+  address?: string
+}
+
+function buildTopologyContent(
+  nodes: Node[],
+  edges: Edge[],
+  username: string,
+  labName: string,
+): {
+  topologyContent: TopologyContent
+  vlanTasks: VlanTask[]
+  switchPorts: string[]
+  addressTasks: AddressTask[]
+  portAnnotations: Record<string, PortAnnotation>
+  switchOriginalIds: Record<string, string>
+} {
   const clabNodeNames = new Map<string, string>()
+  const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
+  // L2スイッチのブリッジ名は node.id をハッシュ化して作る。再読み込み後にnode.idが元の値に
+  // 戻せていないと、ハッシュ済みの名前をさらにハッシュしてしまい、再deployのたびにブリッジ名・
+  // ポート名がズレていく（2026-10-07レビュー指摘）。ここでnode.id→ブリッジ名の対応を記録して
+  // annotationsに保存し、再読み込み時に元のnode.idへ戻せるようにする
+  const switchOriginalIds: Record<string, string> = {}
 
   // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
   const deviceNodes = nodes.filter((n) => n.type === 'topoNode')
@@ -117,8 +213,15 @@ function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, la
     }
     const clabName = data.kind === 'l2-switch' ? toClabBridgeName(username, labName, node.id) : node.id
     clabNodeNames.set(node.id, clabName)
+    nodeKinds.set(node.id, data.kind)
     nodesMap[clabName] = data.image ? { kind: data.clabKind, image: data.image } : { kind: data.clabKind }
+    if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
+
+  const vlanTasks: VlanTask[] = []
+  const switchPorts: string[] = []
+  const addressTasks: AddressTask[] = []
+  const portAnnotations: Record<string, PortAnnotation> = {}
 
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
@@ -127,10 +230,46 @@ function buildTopologyContent(nodes: Node[], edges: Edge[], username: string, la
     if (!sourceName || !targetName || !iface?.sourceIface || !iface?.targetIface) {
       throw new Error(`リンク「${edge.id}」のインターフェース情報が見つかりません`)
     }
-    return { endpoints: [`${sourceName}:${iface.sourceIface}`, `${targetName}:${iface.targetIface}`] as [string, string] }
+
+    // L2スイッチ側のポート名は、ブリッジ名と同じ理由（ホスト全体でグローバルな名前空間）で
+    // ハッシュ化した実名を使う。UI上はeth1等の分かりやすい名前のまま見せる
+    // （2026-10-06発見、docs/direction.md参照）。VLAN設定も同じ実名を使って後段で投入する
+    const sourceIsSwitch = nodeKinds.get(edge.source) === 'l2-switch'
+    const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
+    const sourcePort = sourceIsSwitch ? toClabPortName(username, labName, edge.source, iface.sourceIface) : iface.sourceIface
+    const targetPort = targetIsSwitch ? toClabPortName(username, labName, edge.target, iface.targetIface) : iface.targetIface
+
+    if (sourceIsSwitch) switchPorts.push(sourcePort)
+    if (targetIsSwitch) switchPorts.push(targetPort)
+    // trunkの「全VLAN許可」はovs-helperに送る必要がない（resetPort後のポートは
+    // デフォルトで全VLAN許可のトランクになっているため、何もしなくてよい）
+    const isAllTrunk = (v?: VlanConfig) => v?.mode === 'trunk' && v.vlans === 'all'
+    if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
+    if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
+
+    // PC/ルーター側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
+    // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）
+    if (!sourceIsSwitch && iface.sourceAddress) {
+      addressTasks.push({ nodeName: sourceName, iface: iface.sourceIface, address: iface.sourceAddress })
+    }
+    if (!targetIsSwitch && iface.targetAddress) {
+      addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
+    }
+
+    portAnnotations[`${sourceName}:${sourcePort}`] = { iface: iface.sourceIface, vlan: iface.sourceVlan, address: iface.sourceAddress }
+    portAnnotations[`${targetName}:${targetPort}`] = { iface: iface.targetIface, vlan: iface.targetVlan, address: iface.targetAddress }
+
+    return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
 
-  return { name: labName, topology: { nodes: nodesMap, links } }
+  return {
+    topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
+    vlanTasks,
+    switchPorts,
+    addressTasks,
+    portAnnotations,
+    switchOriginalIds,
+  }
 }
 
 type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
@@ -152,6 +291,14 @@ function TopologyEditorInner() {
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
+  // L2スイッチ側のポートにだけ表示するVLAN設定の入力欄（2026-10-06追加）
+  const [pendingSourceVlanMode, setPendingSourceVlanMode] = useState<VlanMode>('none')
+  const [pendingSourceVlanValue, setPendingSourceVlanValue] = useState('')
+  const [pendingTargetVlanMode, setPendingTargetVlanMode] = useState<VlanMode>('none')
+  const [pendingTargetVlanValue, setPendingTargetVlanValue] = useState('')
+  // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
+  const [pendingSourceAddress, setPendingSourceAddress] = useState('')
+  const [pendingTargetAddress, setPendingTargetAddress] = useState('')
   // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
   // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
@@ -191,14 +338,24 @@ function TopologyEditorInner() {
         // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
         // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
         let nodes = parsed.nodes
+        let edges = parsed.edges
         try {
           const annotationsText = await getLabAnnotations(targetLabName)
           nodes = applyAnnotations(nodes, annotationsText)
+          // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
+          // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
+          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
+          // portAnnotationsのキーはハッシュ化されたclabName基準なので、これを
+          // restoreSwitchIdentitiesより先に呼ぶこと
+          edges = applyPortAnnotations(edges, annotationsText)
+          // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
+          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す
+          ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
         setNodes(nodes)
-        setEdges(parsed.edges)
+        setEdges(edges)
         counters.current = parsed.counters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
@@ -246,9 +403,26 @@ function TopologyEditorInner() {
       })
       setPendingSourceIface(nextAvailableIface(connection.source, edges))
       setPendingTargetIface(nextAvailableIface(connection.target, edges))
+      setPendingSourceVlanMode('none')
+      setPendingSourceVlanValue('')
+      setPendingTargetVlanMode('none')
+      setPendingTargetVlanValue('')
+      setPendingSourceAddress('')
+      setPendingTargetAddress('')
     },
     [edges],
   )
+
+  const sourceVlanResult = useMemo(
+    () => parseVlanInput(pendingSourceVlanMode, pendingSourceVlanValue),
+    [pendingSourceVlanMode, pendingSourceVlanValue],
+  )
+  const targetVlanResult = useMemo(
+    () => parseVlanInput(pendingTargetVlanMode, pendingTargetVlanValue),
+    [pendingTargetVlanMode, pendingTargetVlanValue],
+  )
+  const sourceAddressResult = useMemo(() => parseIpv4Cidr(pendingSourceAddress), [pendingSourceAddress])
+  const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
@@ -262,11 +436,26 @@ function TopologyEditorInner() {
         sourceHandle: sourceHandle ?? undefined,
         targetHandle: targetHandle ?? undefined,
         type: 'floating',
-        data: { sourceIface: pendingSourceIface, targetIface: pendingTargetIface } satisfies EdgeIfaceData,
+        data: {
+          sourceIface: pendingSourceIface,
+          targetIface: pendingTargetIface,
+          sourceVlan: sourceVlanResult.config,
+          targetVlan: targetVlanResult.config,
+          sourceAddress: sourceAddressResult.address,
+          targetAddress: targetAddressResult.address,
+        } satisfies EdgeIfaceData,
       }),
     )
     setPendingConnection(null)
-  }, [pendingConnection, pendingSourceIface, pendingTargetIface])
+  }, [
+    pendingConnection,
+    pendingSourceIface,
+    pendingTargetIface,
+    sourceVlanResult,
+    targetVlanResult,
+    sourceAddressResult,
+    targetAddressResult,
+  ])
 
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
 
@@ -276,6 +465,10 @@ function TopologyEditorInner() {
   const targetIfaceConflict = pendingConnection
     ? usedInterfaces(pendingConnection.target, edges).has(pendingTargetIface)
     : false
+
+  const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
+  const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
+  const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -386,17 +579,23 @@ function TopologyEditorInner() {
     }
     const pairSeen = new Map<string, number>()
 
+    const vlanLabel = (v?: VlanConfig) =>
+      v ? (v.mode === 'access' ? `VLAN${v.vlan}` : `trunk(${v.vlans === 'all' ? 'all' : v.vlans.join(',')})`) : ''
+
     return edges.map((edge) => {
       const iface = edge.data as Partial<EdgeIfaceData> | undefined
       const pairKey = [edge.source, edge.target].sort().join('|')
       const parallelIndex = pairSeen.get(pairKey) ?? 0
       pairSeen.set(pairKey, parallelIndex + 1)
       const parallelCount = pairCounts.get(pairKey) ?? 1
+      const sourceVlanLabel = vlanLabel(iface?.sourceVlan) || iface?.sourceAddress || ''
+      const targetVlanLabel = vlanLabel(iface?.targetVlan) || iface?.targetAddress || ''
+      const vlanSuffix = sourceVlanLabel || targetVlanLabel ? ` [${[sourceVlanLabel, targetVlanLabel].filter(Boolean).join('/')}]` : ''
 
       return {
         ...edge,
         type: edge.type ?? 'floating',
-        label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}` : undefined,
+        label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}${vlanSuffix}` : undefined,
         style: { stroke: 'var(--edge)', strokeWidth: 2 },
         labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
         labelBgStyle: { fill: 'var(--surface)' },
@@ -423,15 +622,73 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const topologyContent = buildTopologyContent(nodes, edges, username, safeName)
+      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations, switchOriginalIds } = buildTopologyContent(
+        nodes,
+        edges,
+        username,
+        safeName,
+      )
+
+      // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
+      // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
+      // 「bridge "..." referenced in topology but does not exist」で失敗することが判明）。
+      // 既に存在していてもエラーにならないので、reconfigure時も毎回呼んで問題ない
+      const bridgeNames = nodes
+        .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
+        .map((n) => toClabBridgeName(username, safeName, n.id))
+      await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
+
+      // ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、再deployすると
+      // 必ず同じ名前になる。前回のdeployで作られたOVS側のインターフェースが残っていると、
+      // containerlabが「already exists」で失敗する（2026-10-06実機確認）ため、
+      // deploy前に一度消してから作り直させる（存在しなければ何もしない）
+      await Promise.all(switchPorts.map((port) => resetPort(port)))
+
       // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
       // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
       // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
       await deployLab(topologyContent, { reconfigure: isRedeploy })
       rememberLabDisplayName(safeName, displayName)
+
+      // VLAN設定（アクセス/トランク）はcontainerlabのトポロジYAMLには無いため、
+      // deploy成功後にbackend/ovs-helper/経由でovs-vsctlを実行して別途投入する
+      // （2026-10-06追加）。1件でも失敗したら成功メッセージにその旨を添える。
+      // ensureBridge/resetPortと同じくPromise.allで並列実行する（2026-10-07レビュー指摘：
+      // 直列だとポート数が増えるほどdeployが線形に遅くなっていた）
+      const vlanResults = await Promise.allSettled(vlanTasks.map((task) => applyVlanConfig(safeName, task.port, task.config)))
+      const vlanFailures = vlanResults
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => (r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'VLAN設定に失敗しました'))
+
+      // PC/ルーターのIPv4アドレスもトポロジYAMLには無いため、deploy成功後にclab-api-serverの
+      // execで`ip addr add`して別途投入する（2026-10-07追加。「PCのアドレシングが面倒」指摘対応）
+      const addressResults = await Promise.allSettled(
+        addressTasks.map(async (task) => {
+          const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
+          const [firstResult] = Object.values(result).flat()
+          if (firstResult && firstResult['return-code'] !== 0) {
+            throw new Error((firstResult.stderr ?? '').trim() || 'アドレス設定に失敗しました')
+          }
+          return task
+        }),
+      )
+      const addressFailures = addressResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const task = addressTasks[i]
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'アドレス設定に失敗しました'
+        return [`${task.nodeName}:${task.iface} ${message}`]
+      })
+
+      const failureSuffixes = [
+        vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
+        addressFailures.length > 0 ? `アドレス設定に失敗: ${addressFailures.join(' / ')}` : '',
+      ].filter(Boolean)
+
       setDeployStatus({
         kind: 'success',
-        message: isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`,
+        message:
+          (isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`) +
+          (failureSuffixes.length > 0 ? `（ただし${failureSuffixes.join(' / ')}）` : ''),
       })
       // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
       const consoleNodeIds = new Set(
@@ -442,7 +699,7 @@ function TopologyEditorInner() {
       setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
       // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
       // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
-      putLabAnnotations(safeName, serializeAnnotations(nodes)).catch((err: unknown) => {
+      putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations, switchOriginalIds)).catch((err: unknown) => {
         console.warn('ノード配置の保存に失敗しました', err)
       })
     } catch (e) {
@@ -456,8 +713,13 @@ function TopologyEditorInner() {
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
   const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
   const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
+  // L2スイッチ（ovs-bridge kind）はコンテナを持たないためそもそもコンソールが無い（2026-10-07指摘）
+  const contextMenuIsSwitch = (contextMenuNode?.data as Partial<TopoNodeData> | undefined)?.kind === 'l2-switch'
   const contextMenuCanOpenConsole =
-    contextMenu?.kind === 'node' && !contextMenuIsAnnotation && !!deployedLab?.nodeIds.has(contextMenu.nodeId)
+    contextMenu?.kind === 'node' &&
+    !contextMenuIsAnnotation &&
+    !contextMenuIsSwitch &&
+    !!deployedLab?.nodeIds.has(contextMenu.nodeId)
 
   return (
     <div className="topology-editor">
@@ -524,7 +786,7 @@ function TopologyEditorInner() {
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               {!contextMenuIsAnnotation && <button onClick={() => renameNode(contextMenu.nodeId)}>名前を変更</button>}
-              {!contextMenuIsAnnotation && (
+              {!contextMenuIsAnnotation && !contextMenuIsSwitch && (
                 <button
                   onClick={() => openNodeConsole(contextMenu.nodeId)}
                   disabled={!contextMenuCanOpenConsole}
@@ -558,6 +820,34 @@ function TopologyEditorInner() {
                     </select>
                   </label>
                   {sourceIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
+                  {sourceIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <select value={pendingSourceVlanMode} onChange={(e) => setPendingSourceVlanMode(e.target.value as VlanMode)}>
+                        <option value="none">VLAN未設定</option>
+                        <option value="access">アクセス</option>
+                        <option value="trunk-all">トランク（全VLAN許可）</option>
+                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
+                      </select>
+                      {pendingSourceVlanMode === 'access' || pendingSourceVlanMode === 'trunk-list' ? (
+                        <input
+                          value={pendingSourceVlanValue}
+                          onChange={(e) => setPendingSourceVlanValue(e.target.value)}
+                          placeholder={pendingSourceVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
+                        />
+                      ) : null}
+                      {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
+                    </div>
+                  )}
+                  {!sourceIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <input
+                        value={pendingSourceAddress}
+                        onChange={(e) => setPendingSourceAddress(e.target.value)}
+                        placeholder="IPv4アドレス（任意、例: 10.0.0.1/24）"
+                      />
+                      {sourceAddressResult.error && <span className="topology-editor__modal-warn">{sourceAddressResult.error}</span>}
+                    </div>
+                  )}
                 </div>
                 <div className="topology-editor__modal-row">
                   <label>
@@ -571,10 +861,48 @@ function TopologyEditorInner() {
                     </select>
                   </label>
                   {targetIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
+                  {targetIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <select value={pendingTargetVlanMode} onChange={(e) => setPendingTargetVlanMode(e.target.value as VlanMode)}>
+                        <option value="none">VLAN未設定</option>
+                        <option value="access">アクセス</option>
+                        <option value="trunk-all">トランク（全VLAN許可）</option>
+                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
+                      </select>
+                      {pendingTargetVlanMode === 'access' || pendingTargetVlanMode === 'trunk-list' ? (
+                        <input
+                          value={pendingTargetVlanValue}
+                          onChange={(e) => setPendingTargetVlanValue(e.target.value)}
+                          placeholder={pendingTargetVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
+                        />
+                      ) : null}
+                      {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
+                    </div>
+                  )}
+                  {!targetIsSwitch && (
+                    <div className="topology-editor__modal-vlan">
+                      <input
+                        value={pendingTargetAddress}
+                        onChange={(e) => setPendingTargetAddress(e.target.value)}
+                        placeholder="IPv4アドレス（任意、例: 10.0.0.2/24）"
+                      />
+                      {targetAddressResult.error && <span className="topology-editor__modal-warn">{targetAddressResult.error}</span>}
+                    </div>
+                  )}
                 </div>
                 <div className="topology-editor__modal-actions">
                   <button onClick={cancelConnection}>キャンセル</button>
-                  <button onClick={confirmConnection} disabled={sourceIfaceConflict || targetIfaceConflict}>
+                  <button
+                    onClick={confirmConnection}
+                    disabled={
+                      sourceIfaceConflict ||
+                      targetIfaceConflict ||
+                      (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
+                      (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
+                      !!sourceAddressResult.error ||
+                      !!targetAddressResult.error
+                    }
+                  >
                     接続
                   </button>
                 </div>

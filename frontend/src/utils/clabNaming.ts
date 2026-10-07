@@ -14,3 +14,16 @@ import { fnv1aHash } from './hash'
 export function toClabBridgeName(username: string, labName: string, nodeName: string): string {
   return `sw-${fnv1aHash(`${username}/${labName}/${nodeName}`)}`
 }
+
+// ブリッジ名だけでなく、ブリッジに挿さる各リンクのポート名（＝containerlabのlinksで
+// ブリッジ側に指定するインターフェース名）もホスト全体でグローバルな名前空間であることが
+// containerlab公式ドキュメント（ovs-bridge kind）で判明（2026-10-06）：
+// 「リンクのブリッジ側エンドポイントで指定した名前が、そのままホストのOVSポート名になる」。
+// つまり今まで使っていた"eth1"のような分かりやすい名前をそのまま送ると、別ユーザー・別ラボの
+// L2スイッチが同じ"eth1"を使った瞬間に衝突してしまう（ブリッジ名の衝突と同種の問題）。
+// ブリッジ名と同様にハッシュ化した名前をAPIには送り、UI上は元の名前（eth1等）を表示したまま
+// にする。VLAN設定（backend/ovs-helper/）もこの実名を使ってポートを指定する必要があるため、
+// 同じ入力からは常に同じ名前が決定的に出るようにしている（呼び出し側で別途記憶しなくてよい）
+export function toClabPortName(username: string, labName: string, switchNodeName: string, iface: string): string {
+  return `p-${fnv1aHash(`${username}/${labName}/${switchNodeName}/${iface}`)}`
+}

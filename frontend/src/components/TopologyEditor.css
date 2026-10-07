@@ -169,6 +169,26 @@
   color: var(--warn);
 }
 
+.topology-editor__modal-vlan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 6px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.topology-editor__modal-vlan select,
+.topology-editor__modal-vlan input {
+  font-size: 12.5px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
 .topology-editor__modal-actions {
   display: flex;
   justify-content: flex-end;

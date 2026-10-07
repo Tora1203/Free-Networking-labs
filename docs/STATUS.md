@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-10-05 / kawase3（統合コンソールの単独タブを廃止、ラボ切り替え時にコンソールをリセット）
+最終更新: 2026-10-06 / kawase3（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -321,8 +321,175 @@
     複数ノードのコンソールを同時に開く（右クリック×複数回）動作は変わらず可能
   - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ
 
+- **ホームタブを削除（2026-10-06、「ホームタブもいらなくない？」指摘）**
+  - ロゴクリックで常にホームに戻れるので、別に「ホーム」ボタンをナビに置くのは冗長だった。
+    `App.tsx`のナビから`views`配列（タブボタンのループ）を削除し、ロゴのみに一本化した
+
+- **L2スイッチのVLAN設定（アクセス/トランク）を追加＋ポート名衝突バグを修正（2026-10-06）**
+  - 「l2とl3 switchちゃんとしたやつほしい」の指摘のうち、L2 VLANを実装（L3は保留、
+    `docs/direction.md`参照）
+  - **副産物で見つけた既存バグ**：containerlab公式ドキュメントの確認で、ブリッジ側リンクの
+    インターフェース名がそのままホストのOVSポート名になり、ブリッジ名と同じくホスト全体で
+    グローバルな名前空間だと判明。今まで"eth1"等をそのまま送っていたため、別ユーザー・
+    別ラボ間でポート名が衝突する可能性があった。`utils/clabNaming.ts`に
+    `toClabPortName()`を追加し、ブリッジ名と同じ方式でハッシュ化して解消
+  - トポロジエディタの接続ポップアップに、L2スイッチ側のポートだけVLAN設定欄
+    （未設定/アクセス/トランク、VLAN ID 1〜4094）を追加。エッジラベルにも`[VLAN10]`等を表示
+  - **新規サービス`backend/ovs-helper/`を追加**：VLAN設定はcontainerlabのトポロジYAMLに無く
+    deploy後に`ovs-vsctl`をホスト側で実行する必要があるが、clab-api-serverの`exec`系APIは
+    コンテナ単位でしか実行できず`ovs-bridge` kindには届かない。`console-proxy`と同じ発想で、
+    JWTを受け取り`GET /api/v1/labs`で本人のラボか確認してから`ovs-vsctl`を代行実行する
+    薄いヘルパーを新設（ポート8083）。OVSへの非root権限は既存の設定がそのまま使える
+  - deploy成功後、VLAN設定が1件でも必要なリンクがあれば自動で`ovs-helper`を呼ぶ。失敗しても
+    deploy自体は成功扱いのまま、成功メッセージにVLAN設定失敗の旨を添える
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機でのVLAN投入確認は
+    まだ（`ovs-helper`をsystemdサービス化してから次回確認予定、権限操作が本セッションの
+    自動承認で止められたため手動セットアップをkawase3に依頼済み）
+  - `ovs-helper`のsystemdサービス化完了（kawase3対応済み）。実機確認の過程で新たな不具合発見：
+    **containerlabはovs-bridge kindのブリッジを自動生成しない**ため、事前に
+    `ovs-vsctl add-br`していないと`bridge "..." referenced in topology but does not exist`
+    でdeployが失敗することが判明（M2時点で分かっていた既知の制約だが、今回自動deployフローに
+    ブリッジ作成処理が入っていなかった）。`ovs-helper`に`POST /bridge`を追加し、
+    `onDeploy`でdeployLab()を呼ぶ直前に、トポロジ内の各L2スイッチのブリッジ名で呼ぶように
+    修正（`--may-exist`で既存ブリッジがあってもエラーにならないので再deployでも安全）
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。ブリッジ作成込みでの
+    実機deploy確認は次回
+
+- **実機確認中に見つかった不具合2件を修正（2026-10-06）**
+  - **`ovs-vsctl: database connection failed (Permission denied)`**：`systemctl --user`の
+    ユーザーマネージャ（`user@1000.service`）が、`labuser`を`clab_admins`グループに
+    追加するより前（9/9ログイン時点）から起動し続けていたため、新しいグループ情報を
+    拾えていなかった（`/proc/<pid>/status`のGroupsで確認）。`sudo systemctl restart
+    user@$(id -u labuser).service`でユーザーマネージャ自体を再起動し解消
+    （`console-proxy`・`ovs-helper`は`enabled`なので自動的に正しいグループで再起動された）
+  - **「ラボ「fine」は自分の所有ではありません」でVLAN設定が失敗**：deploy成功直後に
+    `GET /api/v1/labs`を叩いても、clab-api-server側にまだラボが反映されていない
+    タイミングがあったと判明。`ovs-helper`の所有権確認に400msおきの再試行（最大5回）を追加
+  - 両方修正後、再テストで3件目の不具合を発見：
+    **`interface "..." is defined via topology but already exists`**。ポート名が
+    (username,labName,switchNodeId,iface)から決定的に決まるため、同じラボを再deployすると
+    毎回同じポート名になり、前回deployでOVS側に作られたインターフェースが残っていて衝突する。
+    `ovs-helper`に`POST /port/reset`（`ovs-vsctl --if-exists del-port`）を追加し、
+    `onDeploy`でdeployLab()を呼ぶ直前に全L2スイッチ側ポートに対して呼ぶように修正
+    （VLAN設定はdeploy後に毎回再投入するので、消しても実質的な影響は無い）
+  - 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機での再テストは次回
+
+- **Vite開発サーバーも理由不明で停止（2026-10-06）**：`console-proxy`・`ovs-helper`と同様に、
+  ターミナルで直接`npm run dev`していたVite自体が落ち、フロントに一切アクセスできなくなる
+  事象が発生。同じくsystemdのuserサービス化で対応（`frontend/frontend-dev.service.example`
+  を追加、このサーバー上では`enable --now`済み）
+- **「所有ではありません」の再試行を強化＋デバッグログ追加**：400ms×5回（2秒）では
+  解消しなかったため、1秒×15回（最大15秒）に延長。失敗時は実際にGET /api/v1/labsで
+  返ってきたラボ名一覧をログに残すようにした（原因切り分け用）
+- **トランクVLANの設定方法を改善（2026-10-06、「all allowedか指定VLANだけにするか」指摘）**：
+  今までトランクは常に「指定VLANのみ許可」だったが、「全VLAN許可」も選べるようにした。
+  OVSはポートにtag/trunksのどちらも設定しないとデフォルトで全VLAN許可のトランクになるため、
+  「全VLAN許可」を選んだ場合はovs-helperを呼ぶ必要が無い（resetPort後の状態がそのまま
+  該当する）。`VlanConfig`の`trunk`モードは`vlans: number[] | 'all'`に変更
+  （`frontend/src/api/ovsHelperClient.ts`・`TopologyEditor.tsx`）
+- **「所有ではありません」の真因が判明（2026-10-06）**：15秒まで再試行を延長しても解消しない
+  ケースがあり、`ovs-helper`のログに`GET /api/v1/labs`の返り値を出すと常に`{}`（空）だった。
+  clab-api-serverのログで突き止めた原因は`Lab deployed successfully ... containerCount=0`——
+  **`GET /api/v1/labs`はcontainerlabのinspect結果（＝実行中コンテナ一覧）ベースで、
+  コンテナを1台も持たないラボ（スイッチ同士を直結しただけの構成等）は何秒待っても
+  一覧に出てこない**。待ち時間の問題ではなかった。
+  所有権確認を`GET /api/v1/labs/{labName}/topology/yaml`（保存済みYAMLを読むだけで
+  所有権チェック済みの200/404を返す。コンテナ数に依存しない）に切り替えて修正。
+  再試行も不要になった分500ms×3回に戻した（`backend/ovs-helper/server.js`の`verifyLabOwnership`）。
+  実機での再テストは次回
+- **「変更していないのに再Deployでエラーになる」の真因が判明（2026-10-07）**：
+  `front-test`ラボで、1回目deploy成功→何も変更せず2回目deployで
+  `interface "..." is defined via topology but already exists`が再発。
+  `ip -o link show`で確認すると、`resetPort`の`ovs-vsctl --if-exists del-port`を呼んだ後も
+  **vethデバイス自体（`p-xxxxxxxx@p-yyyyyyyy`）がカーネルに残っていた**。
+  `del-port`はOVSブリッジからの切り離しのみで、veth自体の削除ではなかったため。
+  `ip link delete`で削除する対応を追加したが、これにはCAP_NET_ADMINが必要で
+  `labuser`権限のovs-helperプロセスからは`Operation not permitted`になることが判明。
+  `ovsdb-server`の`root:clab_admins`方式を参考に、`p-xxxxxxxx`形式のdeleteだけを許可する
+  専用ラッパー`backend/ovs-helper/link-delete.sh`を追加し、まず`setcap cap_net_admin+ep`で
+  試したが**シェルスクリプトにはファイルcapabilityが効かない**（カーネルが実際にexecveするのは
+  `/bin/sh`であり、capabilityはスクリプトのinodeに付けてもインタプリタ本体には引き継がれない
+  既知の制限。ユーザー実機確認：setcap後も`RTNETLINK answers: Operation not permitted`）ため、
+  `/etc/sudoers.d/`での限定NOPASSWD許可（`sudo -n`でこのラッパー1本だけを許可）に方式変更。
+  **実機での`sudo`セットアップ・再テストは次回**
+- **VLAN動作テスト中にBさん役（kawase3）から4点の指摘（2026-10-07）**：
+  1. 変更後deployしないとコンソールが開けない → 仕様（コンテナが無いと入れない）。
+     既存ノードは未deployの変更があっても開ける。右クリックメニューはdisabled＋
+     「このノードはまだdeployされていません」のツールチップ表示済みで対応は入っていた
+  2. **バグ：L2スイッチにも「コンソールを開く」の項目が出る** → `contextMenuCanOpenConsole`が
+     ノードのkindをチェックしていなかった。修正し、スイッチの場合はメニュー項目自体を
+     出さないようにした（`TopologyEditor.tsx`）
+  3. PCのアドレシングが面倒 → IPアドレス設定UIが無く、コンソールで`ip addr add`を
+     手打ちするしかなかった。「固定IP設定UIを追加」で対応（本行の次の項目）
+  4. PCで`ip a`すると設定済みのi/fが見える → 実機確認したところcontainerlabの管理用
+     `eth0`（docker管理ネットワークの172.20.20.x/24、clabが自動付与）だった。
+     ラボのトポロジ用リンクは`eth1`以降で、そちらはIPv6 link-localのみの未設定状態
+     （バグではなく仕様。ユーザーに説明済み）
+- **PCの固定IPアドレス設定UIを追加（2026-10-07）**：接続ポップアップに、L2スイッチ以外の
+  ノード側へ「IPv4アドレス（任意）」欄を追加（`10.0.0.1/24`形式、`parseIpv4Cidr()`で検証）。
+  L2スイッチがVLANをovs-helper経由で投入するのと同様、PCはコンテナを持つので
+  clab-api-serverの`POST /api/v1/labs/{labName}/exec`を直接使い、deploy成功後に
+  `ip addr add <addr> dev <iface>`を実行する（`frontend/src/api/client.ts`の`execInLab()`、
+  `TopologyEditor.tsx`の`addressTasks`）
+- **execのnodeFilterはコンテナのフルネームが必要と判明（2026-10-07実機確認）**：
+  `front-test`でユーザー実機テストしたところ、`nodeFilter=pc-1`（短い名前）では
+  `500 exec failed: filter did not match any containers`で全滅。execはデプロイ前の
+  トポロジ定義を見る`wipeNode()`と違い、デプロイ済みコンテナを対象にするため、
+  `terminal-sessions`と同じ`clab-<labName>-<nodeName>`のフルネームが要る。
+  `execInLab()`内でフルネームに変換するよう修正。`docs/api-contract.md`も修正
+  （フルネーム変換後の成功レスポンス自体の確認は次回）。
+  `npx tsc --noEmit`はクリア。**実機テスト済み（2026-10-07）：動作良好**
+- **再読み込み時にL2スイッチ接続のI/F名が文字化け・VLAN/アドレス設定が消える、を修正
+  （2026-10-07指摘）**：`parseTopologyYaml()`はYAMLに書かれた実名（ハッシュ化されたポート名
+  `p-xxxxxxxx`等）をそのまま`sourceIface`/`targetIface`に入れていたため、再読み込み後は
+  UIの表示が実名のまま（ユーザーには文字化けのように見える）になっていた。さらにVLAN/IPアドレス
+  設定はそもそもトポロジYAMLに書けないため、再読み込みで編集状態から完全に消えていた
+  （再deployするとovs-helperの`resetPort`でVLANが初期化され、設定が戻らないまま
+  上書きされる潜在バグでもあった）。
+  `buildTopologyContent()`が返す`portAnnotations`（`${実名clabName}:${実名ポート}`をキーに
+  した「分かりやすい名前・VLAN・アドレス」のマップ）を既存のannotations保存先
+  （`topology/annotations`、version 1→2に拡張）に一緒に保存し、再読み込み時に
+  `applyPortAnnotations()`で引き戻すようにした（`utils/annotations.ts`）。
+  `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。
+  **旧versionのannotations（port情報無し）は無視されるだけで壊れない。次回、front-testで
+  一度redeploy→再読み込みして文字化けが直るか確認する**
+- **マージ前に`/code-review high`で自己レビュー（2026-10-07）**：最重要の指摘1件を確認・修正、
+  他2件も合わせて修正：
+  1. **【重要・修正】L2スイッチのブリッジ名/ポート名が再読み込み後の再deployでズレ続ける
+     潜在バグ**：`toClabBridgeName(username, labName, node.id)`はnode.idをハッシュ化するが、
+     再読み込み直後のnode.idは既にハッシュ化済みの実名（`sw-xxxxxxxx`）になっている
+     （元のUI上のidはYAMLに保存されないため）。これをさらにハッシュしてしまうため、
+     「開く→redeploy」を繰り返すたびに別のブリッジ名になり、古いブリッジ/vethがホストに
+     残骸として残り、VLAN設定も失われる。上の「文字化け」修正で追加した`portAnnotations`の
+     仕組みを拡張し、L2スイッチの`clabName→元のnode.id`の対応も`switchOriginalIds`として
+     annotationsに保存。再読み込み時、`applyPortAnnotations`の後に
+     `restoreSwitchIdentities()`でnode.id・edgeのsource/targetを元のidへ戻すようにした
+     （順序が重要：`portAnnotations`のキーはハッシュ化済みclabName基準のため、
+     id復元より先にport復元を行う必要がある）
+  2. VLAN/アドレス設定の投入が直列await（ポート数が増えるほどdeployが線形に遅くなる）だった
+     のを、ブリッジ作成/ポートリセットと同じく`Promise.allSettled`で並列化
+  3. アドレス設定失敗時に`firstResult.stderr`が無い場合に`.trim()`が例外を投げる可能性を修正
+     （`?? ''`でガード）
+  - 指摘のうち2件は意図的に見送り：ブリッジ作成/ポートリセット失敗時にdeploy全体を
+    中断する挙動（VLAN/アドレス失敗時は中断しないのと非対称、との指摘）は、
+    ブリッジ/ポートが無いとdeploy自体が確実に失敗するので早期中断の方が分かりやすいと判断。
+    `deleteLinkIfExists`の`Cannot find device`文字列マッチ（英語決め打ち）も、
+    想定外のsudoエラー等を誤って握りつぶさないためにそのまま残した（sudoers未設定問題は
+    実際にこの仕組みで発見できた）
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **次の目標（2026-10-07、ユーザーより）**：
+  1. VLANを使ったrouter on a stick（FRRのVLANサブインターフェースでルーター1台が複数VLANを
+     ルーティングできるか）の検証
+  2. ルーターコンソールで`exit`するとvtyshを抜けてコンテナのLinuxシェルに落ちてしまう
+     （脆弱性として指摘）
+  3. PCコンソールで`eth0`（containerlabの管理用interface）等を触れてしまう（脆弱性として指摘）
+  → まだ着手していない。スコープ・対応方針は次回相談
+
 **Blocked / 相手待ち**
-- （なし）
+- `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
+  「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
+- 上記「再読み込み時の文字化け」修正の実機確認（redeploy→再読み込みでI/F名・VLAN・アドレスが
+  正しく戻るか）
 
 ---
 

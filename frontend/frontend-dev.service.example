@@ -1,0 +1,27 @@
+# 開発用のVite dev serverをsystemdのuserサービスとして常駐させるためのテンプレート。
+# backend/console-proxy/console-proxy.service.example と同じ理由・同じ使い方（sudo不要）。
+# このセッション中、ターミナルで直接`npm run dev`していたプロセスが理由不明のまま
+# 停止することが何度もあったため（2026-10-06）、常駐化することにした。
+#
+# 使い方:
+#   1. パス（WorkingDirectory / ExecStartのnodeバイナリ）を自分の環境に合わせて書き換える
+#      （nodeのパスは `source ~/.nvm/nvm.sh && which node` で確認できる）
+#   2. ~/.config/systemd/user/frontend-dev.service にコピー
+#   3. systemctl --user daemon-reload
+#   4. systemctl --user enable --now frontend-dev.service
+
+[Unit]
+Description=Free-Networking-labs frontend (vite dev server)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/<your-username>/Free-Networking-labs/frontend
+ExecStart=/home/<your-username>/.nvm/versions/node/<version>/bin/node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

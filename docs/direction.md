@@ -137,6 +137,34 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   見つけたが、実際のフォーマットは未確認。座標保存は次の検討課題）
 - ロゴ画像クリックでホームに戻れるようにした（`components/Brand.tsx`）
 
+## 決定事項（2026-10-06追記）：L2スイッチにVLAN設定、L3スイッチは保留
+
+- **L2スイッチに「ちゃんとした」VLAN設定（アクセス/トランク）を追加**：
+  `CLAUDE.md`で「VLANタグ付け＝アクセス/トランクポートは`ovs-vsctl`の`tag`/`trunks`で
+  対応可能」と書いていた部分を、今回実際にUIから設定できるようにした
+  - **新しい発見（重要）**：containerlab公式ドキュメント（ovs-bridge kind）で、
+    リンクのブリッジ側エンドポイントに指定したインターフェース名が、そのまま
+    ホストのOVSポート名になることが判明。これは**ブリッジ名と同じくホスト全体で
+    グローバルな名前空間**であるため、今まで使っていた"eth1"等の分かりやすい名前を
+    そのまま送ると、別ユーザー・別ラボのL2スイッチが同じ名前を使った瞬間に衝突する
+    （ブリッジ名衝突と同種の既存バグ）。ブリッジ名（`toClabBridgeName()`）と同じ方式で
+    ポート名もハッシュ化する`toClabPortName()`を追加して解消した
+  - VLAN設定自体はcontainerlabのトポロジYAMLには存在せず、deploy後に`ovs-vsctl`を
+    ホスト側で実行する必要がある。しかしclab-api-serverの`exec`系APIはコンテナ単位でしか
+    実行できず、`ovs-bridge` kindのノードはコンテナを持たないため届かない
+    （Swagger仕様で確認：`NodeInterfaceInfo.name`が「container node」と明記）
+  - そのため新しい特権ヘルパー`backend/ovs-helper/`を追加した。`console-proxy`と同じ発想で、
+    JWTを受け取り`GET /api/v1/labs`をclab-api-server自身に問い合わせて「本人が所有する
+    ラボか」を確認してから`ovs-vsctl`を代行実行する。OVSへの非root権限は既にkawase3の
+    アカウントに設定済み（本ファイル内の過去の決定事項参照）なので、追加の権限設定は不要
+- **L3スイッチ（インターVLANルーティング）は今回も保留**：方式としては「FRRノード＋OVS
+  ブリッジを内部でセットにして1つのノードとして見せる」方向で合意したが、着手してみると
+  前提として「ノードにIPアドレスを割り当てるUI」「VLANごとのSVI/ルーティング設定の生成」が
+  丸ごと未実装だと判明し、L2 VLANとは規模が一段違うことが分かった。`CLAUDE.md`の
+  「将来の拡張候補」のまま保留を継続する。先にIPアドレッシングの設計が必要
+- 検証は`npx tsc --noEmit` / `npm run lint` / `npm run build`のみ。実機でのVLAN投入確認は
+  まだ（`backend/ovs-helper/`をsystemdサービス化してから次回確認予定）
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

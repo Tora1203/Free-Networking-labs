@@ -1,0 +1,26 @@
+# systemdのuserサービスとしてovs-helperを常駐させるためのテンプレート。
+# backend/console-proxy/console-proxy.service.example と同じ理由・同じ使い方（sudo不要）。
+#
+# 使い方:
+#   1. パス（WorkingDirectory / ExecStartのnodeバイナリ）を自分の環境に合わせて書き換える
+#      （nodeのパスは `source ~/.nvm/nvm.sh && which node` で確認できる）
+#   2. ~/.config/systemd/user/ovs-helper.service にコピー
+#   3. systemctl --user daemon-reload
+#   4. systemctl --user enable --now ovs-helper.service
+
+[Unit]
+Description=Free-Networking-labs ovs-helper (VLAN設定用の特権ヘルパー)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/<your-username>/Free-Networking-labs/backend/ovs-helper
+ExecStart=/home/<your-username>/.nvm/versions/node/<version>/bin/node server.js
+Environment=CORS_ALLOWED_ORIGINS=http://localhost:5173
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
