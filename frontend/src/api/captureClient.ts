@@ -27,8 +27,14 @@ async function waitUntilReady(sessionId: string): Promise<string> {
 }
 
 // 指定したターゲット（コンテナ名＋インターフェース名）ごとにWireshark noVNCセッションを作成し、
-// 準備ができたらcapture-proxy経由のURLを新しいタブで開く。1つでも失敗したらエラーを投げる
-export async function startPacketCapture(labName: string, targets: CaptureTarget[]): Promise<void> {
+// 準備ができたらcapture-proxy経由のURLを新しいタブで開く。1つでも失敗したらエラーを投げる。
+// `labelsByContainer`はタブの見分けづらさ対策（2026-10-08、「どこをキャプチャしてるか
+// わからない」指摘対応）：capture-proxyがnoVNCのHTMLに`<title>`として埋め込む
+export async function startPacketCapture(
+  labName: string,
+  targets: CaptureTarget[],
+  labelsByContainer: Record<string, string> = {},
+): Promise<void> {
   const token = getAuthToken()
   if (!token) throw new Error('ログインしていません')
   if (targets.length === 0) throw new Error('キャプチャ対象のインターフェースがありません（L2スイッチはコンテナを持たないため対象外）')
@@ -41,7 +47,9 @@ export async function startPacketCapture(labName: string, targets: CaptureTarget
       // そのままcapture-proxyのパスに埋め込んで渡す（capture-proxy側もそのまま中継するだけ）
       const vncPath = await waitUntilReady(session.sessionId)
       const normalizedPath = vncPath.startsWith('/') ? vncPath : `/${vncPath}`
-      const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}`
+      const label = labelsByContainer[session.containerName]
+      const labelQuery = label ? `?label=${encodeURIComponent(label)}` : ''
+      const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}${labelQuery}`
       window.open(url, '_blank')
     }),
   )

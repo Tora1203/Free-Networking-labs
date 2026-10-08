@@ -30,16 +30,22 @@ const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:80
 const upstreamOrigin = new URL(CLAB_API_BASE_URL)
 const upstreamIsTls = upstreamOrigin.protocol === 'https:'
 
-// `/capture/<token>/<clab-api-serverのパス...>` を分解する。restはそのまま
-// clab-api-server側のパス（`/api/v1/...`）として使うので、ここでは組み立て直さない
+// `/capture/<token>/<clab-api-serverのパス...>?label=<表示ラベル>` を分解する。restはそのまま
+// clab-api-server側のパス（`/api/v1/...`）として使うので、ここでは組み立て直さない。
+// `label`はこのプロキシだけで使う（上流には渡さない。タブの見分けづらさ対策、2026-10-08追加）
 function parseCapturePath(rawUrl) {
-  const [pathPart, query] = rawUrl.split('?')
+  const [pathPart, queryRaw] = rawUrl.split('?')
   const m = /^\/capture\/([^/]+)(\/.*)?$/.exec(pathPart)
   if (!m) return null
+  const params = new URLSearchParams(queryRaw ?? '')
+  const label = params.get('label')
+  params.delete('label')
+  const query = params.toString()
   return {
     token: m[1],
     rest: m[2] || '/',
     query: query ? `?${query}` : '',
+    label,
   }
 }
 
@@ -47,13 +53,25 @@ function upstreamPathFor(parsed) {
   return `${parsed.rest}${parsed.query}`
 }
 
+// noVNCのトップページ（HTML）にタブタイトルを埋め込む。どのリンク/インターフェースを
+// キャプチャしているタブなのかが見た目で分からない、という指摘（2026-10-08）への対応
+function injectTitle(html, label) {
+  const escaped = String(label).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  if (/<title>[\s\S]*?<\/title>/i.test(html)) {
+    return html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escaped}</title>`)
+  }
+  return html.replace(/<head[^>]*>/i, (tag) => `${tag}<title>${escaped}</title>`)
+}
+
 const server = createServer((req, res) => {
   const parsed = parseCapturePath(req.url ?? '')
   if (!parsed) {
+    console.log(`[http] 404 no-match: ${req.method} ${req.url}`)
     res.writeHead(404, { 'Content-Type': 'text/plain' })
     res.end('not found: expected /capture/<sessionId>/<token>/...')
     return
   }
+  console.log(`[http] ${req.method} ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
 
   const proxyReq = https.request(
     {
@@ -66,11 +84,26 @@ const server = createServer((req, res) => {
       rejectUnauthorized: false,
     },
     (proxyRes) => {
+      console.log(`[http]   <- upstream status ${proxyRes.statusCode}`)
+      const contentType = proxyRes.headers['content-type'] ?? ''
+      if (parsed.label && contentType.includes('text/html')) {
+        let body = ''
+        proxyRes.setEncoding('utf8')
+        proxyRes.on('data', (chunk) => (body += chunk))
+        proxyRes.on('end', () => {
+          const rewritten = injectTitle(body, parsed.label)
+          const headers = { ...proxyRes.headers, 'content-length': Buffer.byteLength(rewritten) }
+          res.writeHead(proxyRes.statusCode ?? 502, headers)
+          res.end(rewritten)
+        })
+        return
+      }
       res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers)
       proxyRes.pipe(res)
     },
   )
-  proxyReq.on('error', () => {
+  proxyReq.on('error', (err) => {
+    console.log(`[http]   <- upstream error: ${err.message}`)
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
     res.end('{"error":"upstream request failed"}')
   })
@@ -84,15 +117,30 @@ const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const parsed = parseCapturePath(req.url ?? '')
   if (!parsed) {
+    console.log(`[ws] reject no-match: ${req.url}`)
     socket.destroy()
     return
   }
+  console.log(`[ws] upgrade ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
+
+  // noVNCが要求するサブプロトコル（通常"binary"）をそのまま上流にも伝える。
+  // 2026-10-08実機確認：この`Sec-WebSocket-Protocol`ヘッダーが無いと、Wireshark VNCコンテナ内の
+  // nginx（websockifyモジュール）がハンドシェイクを`400 Bad Request`で拒否することが分かった
+  // （`ws`ライブラリは`protocols`引数を渡さない限りこのヘッダーを自動では送らない）
+  const requestedProtocol = req.headers['sec-websocket-protocol']
 
   wss.handleUpgrade(req, socket, head, (client) => {
-    const upstream = new WebSocket(`${upstreamOrigin.protocol === 'https:' ? 'wss' : 'ws'}://${upstreamOrigin.host}${upstreamPathFor(parsed)}`, {
-      headers: { Authorization: `Bearer ${parsed.token}` },
-      rejectUnauthorized: false,
-    })
+    const upstream = new WebSocket(
+      `${upstreamOrigin.protocol === 'https:' ? 'wss' : 'ws'}://${upstreamOrigin.host}${upstreamPathFor(parsed)}`,
+      requestedProtocol ? requestedProtocol.split(',').map((p) => p.trim()) : undefined,
+      {
+        headers: { Authorization: `Bearer ${parsed.token}` },
+        rejectUnauthorized: false,
+      },
+    )
+    upstream.on('unexpected-response', (_r, upstreamRes) => console.log(`[ws]   <- upstream rejected with ${upstreamRes.statusCode}`))
+    upstream.on('open', () => console.log('[ws]   <- upstream open'))
+    upstream.on('error', (err) => console.log(`[ws]   <- upstream error: ${err.message}`))
 
     const pending = []
     let upstreamOpen = false

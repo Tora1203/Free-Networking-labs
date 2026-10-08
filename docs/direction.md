@@ -356,6 +356,35 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   落ちてしまい404になる可能性があり、その場合はHTMLレスポンスのbody rewriting等の
   追加対応が必要になる見込み（`backend/capture-proxy/README.md`に明記済み）
 
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能の実機テストで見つかった不具合・制約
+
+- **初回のWiresharkイメージpullが45秒タイムアウトに引っかかる**：clab-api-serverの
+  `CreateWiresharkVncSessionsHandler`は45秒の固定タイムアウトを持つが、初回の
+  `ghcr.io/srl-labs/wireshark-vnc-docker:latest`のpullはそれより時間がかかることがあり、
+  `signal: killed`で失敗する。**対応**：`docker pull`で事前にイメージをキャッシュしておけば
+  2回目以降は問題にならない。READMEに明記した方が良さそう（次回検討）
+- **noVNCのHTML/JS/CSS資産読み込み自体は想定通り動いた**：心配していた「noVNCが絶対パスで
+  アセットを参照していて404になる」問題は発生しなかった（capture-proxyのログで全資産が
+  200で返っていることを確認）
+- **肝心のVNC用WebSocket（`/vnc/websockify`）が`400 Bad Request`で拒否される不具合を発見・修正**：
+  Wireshark VNCコンテナ（ベースイメージ`jlesage/baseimage-gui`）内のnginxは、
+  `websockify_pass`という専用ディレクティブでVNCソケットに直結しており、**`ws`ライブラリが
+  デフォルトでは送らない`Sec-WebSocket-Protocol: binary`ヘッダーが無いとハンドシェイクを
+  拒否する**ことが実機確認で判明（curlで手動ヘッダーを全部指定した場合は101で通ったことから
+  特定）。capture-proxy側で、ブラウザ（noVNC）が送ってきた`Sec-WebSocket-Protocol`を
+  そのまま上流への接続にも伝える（`ws`の`protocols`引数として渡す）ように修正して解決
+- **「どこをキャプチャしてるか分からない」指摘への対応**：noVNCの画面は`window.open()`で
+  別タブに開くだけだとタブタイトルが汎用的（"noVNC"等）で、複数タブを開くと見分けがつかない。
+  capture-proxy側で、クエリパラメータ`?label=...`を受け取ったら、上流から返ってきたHTMLの
+  `<title>`をその場で書き換える（レスポンスボディをバッファして文字列置換→Content-Length再計算）
+  という対応を実装。フロントエンド側は「R1(eth1) ↔ SW1」のような、ノードの短縮表示名＋
+  インターフェース名＋相手ノード名の形式でラベルを組み立てて渡す
+- **未対応・今後の検討事項**：「コピペができない」という指摘は、noVNCが画面を転送している
+  だけ（VNC自体の構造的な制約）であり、クリップボード同期機能が無いと解決しない。
+  noVNCやVNCサーバー側がクリップボード同期をサポートしているか別途調査が必要
+  （優先度は要相談。パケットを読むだけなら必須ではないが、BPFフィルタ文字列を貼り付けたい
+  等のニーズがあれば対応を検討する）
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

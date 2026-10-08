@@ -40,11 +40,30 @@ RFBプロトコルの生バイナリフレームをそのまま双方向に流�
 フロントエンドはこの`url`をそのまま`<clab-api-serverのパス>`部分に埋め込むだけでよい。
 このプロキシ自身はパスを組み立て直さず、渡されたパスをそのまま右から左に流すだけ。
 
-**注意（2026-10-08時点、未確認）**：noVNC自身が生成するリンク/WebSocket接続先が、
-この`/capture/<jwt>/`というパス配下に正しく収まるかは実機確認がまだ。
-noVNCが絶対パス（`/`始まり、`/api/v1/...`を含まないもの）でアセットを参照している場合、
-このプレフィックスが落ちてしまい404になる可能性がある。問題が出たら、相対パスへの書き換え
-（HTMLレスポンスのbody rewriting等）が必要になるかもしれない。
+**実機確認済み（2026-10-08）**：noVNCのHTML/JS/CSS資産は想定通りこのパスプレフィックス越しに
+正しく読み込めた（絶対パス参照による404は発生しなかった）。
+
+**実機で発見・修正した不具合**：VNC用WebSocket（`/vnc/websockify`）がWireshark VNCコンテナ内の
+nginx（`websockify_pass`ディレクティブ、ベースイメージ`jlesage/baseimage-gui`）に
+`400 Bad Request`で拒否されていた。原因は`Sec-WebSocket-Protocol: binary`ヘッダーが
+無かったこと（`ws`ライブラリは`protocols`引数を渡さない限りこれを自動で送らない）。
+ブラウザ（noVNC）が送ってきた`Sec-WebSocket-Protocol`ヘッダーをそのまま上流への接続にも
+伝えるように修正して解決（`server.js`の`requestedProtocol`参照）。
+
+## タブの見分け方（`?label=`）
+
+`window.open()`で複数のキャプチャを別タブで開くと、タブタイトルが汎用的（"noVNC"等）で
+どのリンク/インターフェースのキャプチャか見分けがつかない、という指摘（2026-10-08）に対応。
+URLに`?label=<表示したい文字列>`を付けると、上流から返ってきたHTMLの`<title>`タグを
+その場で書き換える（レスポンスボディをバッファして文字列置換→`Content-Length`再計算）。
+フロントエンド（`captureClient.ts`）は「R1(eth1) ↔ SW1」のような、ノードの短縮表示名＋
+インターフェース名＋相手ノード名の形式でラベルを組み立てて渡している。
+
+## 既知の制約（未対応）
+
+**noVNC画面との間でコピペができない**：VNCは画面を転送しているだけ（構造的な制約）なので、
+クリップボード同期機能が無いと解決しない。対応するかはパケット解析での実際のニーズ次第
+（docs/direction.md参照）。
 
 ## 起動方法
 
@@ -64,4 +83,8 @@ npm start
 
 ## 前提
 
-`backend/edgeshark/`でEdgeShark（ghostwire+packetflix）が起動していること。
+- `backend/edgeshark/`でEdgeShark（ghostwire+packetflix）が起動していること。
+- `docker pull ghcr.io/srl-labs/wireshark-vnc-docker:latest`を事前に実行してイメージを
+  キャッシュしておくこと。clab-api-serverのセッション作成APIは45秒の固定タイムアウトを
+  持つため、初回pull（イメージが無い状態）だとそれより時間がかかって`signal: killed`で
+  失敗することがある（2026-10-08実機確認）。

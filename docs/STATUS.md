@@ -680,6 +680,26 @@
   `npm run build`はクリア。**実機での動作確認（noVNC経由でWireshark画面が実際に開くか）は
   まだ**。詳細は`docs/direction.md`の2026-10-08決定事項、`backend/capture-proxy/README.md`参照
 
+- **パケットキャプチャ機能：実機テストで見つかった不具合2件を修正＋動作確認（2026-10-08）**：
+  1. 初回のWiresharkイメージpullが clab-api-server側の45秒固定タイムアウトに引っかかり
+     `signal: killed`で失敗 → `docker pull ghcr.io/srl-labs/wireshark-vnc-docker:latest`を
+     事前実行してキャッシュしておくことで回避（2回目以降は問題なし）
+  2. VNC用WebSocket（`/vnc/websockify`）がWireshark VNCコンテナ内のnginxに`400`で拒否される
+     不具合を発見・修正：nginxの`websockify_pass`ディレクティブが`Sec-WebSocket-Protocol: binary`
+     ヘッダーを要求しており、`ws`ライブラリはデフォルトでこれを送らないため拒否されていた。
+     capture-proxy側でブラウザが送ってきたプロトコルをそのまま上流にも伝えるよう修正し解決
+  - 上記2点を直した上で**実機確認：noVNC経由でWiresharkの画面が実際に開き、動作することを
+    確認済み**（ユーザーのブラウザで動作確認。HTML/JS/CSS資産読み込みは最初から問題無かった）
+  - ユーザーから2件の使い勝手の指摘：(a) 複数タブを開くとどのリンクをキャプチャしているか
+    タブの見た目で分からない → capture-proxyが上流HTMLの`<title>`をラベル（例：
+    「R1(eth1) ↔ SW1」）に書き換える機能を追加して対応済み。(b) noVNC画面との間でコピペが
+    できない → VNC自体の構造的な制約（画面を転送しているだけ）で、クリップボード同期機能が
+    無いと解決しない。**未対応**（優先度は要相談、docs/direction.md参照）
+  - デバッグ中にWireshark VNCコンテナが複数（6個）溜まってしまい、掃除の際に誤って
+    ユーザーが開いていた可能性のあるセッションのコンテナも削除してしまった（実害は
+    「もう一度右クリックし直せば直る」程度だが、今後は稼働中セッションの有無を
+    確認してから掃除するよう注意）
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
@@ -692,11 +712,9 @@
   別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
 - **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
   どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
-- **パケットキャプチャ機能（上記、UI＋capture-proxyまで実装済み）**：capture-proxyを
-  `systemctl --user enable --now capture-proxy.service`で起動する必要あり（他の2サービスと
-  同様）。実際にリンクを右クリック→パケットキャプチャで、別タブにWireshark画面が開くか・
-  パケットが見えるかを実機確認してほしい。noVNCのアセット読み込みがパスプレフィックス越しに
-  正しく解決されるかが一番不安な点（`backend/capture-proxy/README.md`の「注意」参照）
+- **パケットキャプチャ機能（上記、実機動作確認済み）**：実際にWiresharkの画面が開くことまでは
+  確認できたが、**キャプチャしたパケットが期待通りに見えるか（流量のある通信を実際に流して
+  確認）は次回**。クリップボード同期（コピペ）の対応要否も相談したい
 
 ---
 

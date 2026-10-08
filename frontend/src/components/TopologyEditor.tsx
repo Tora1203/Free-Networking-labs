@@ -856,17 +856,21 @@ function TopologyEditorInner() {
       const edge = edges.find((e) => e.id === edgeId)
       if (!edge || !deployedLab) return
       const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
-      const kindOf = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
+      const nodeInfo = (id: string) => nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined
+      const shortLabelOf = (id: string) => (nodeInfo(id)?.shortLabel as string | undefined) ?? id
       const targets: CaptureTarget[] = []
-      if (kindOf(edge.source) !== 'l2-switch' && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
+      const labelsByContainer: Record<string, string> = {}
+      if (nodeInfo(edge.source)?.kind !== 'l2-switch' && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
         targets.push({ containerName: edge.source, interfaceName: data.sourceIface })
+        labelsByContainer[edge.source] = `${shortLabelOf(edge.source)}(${data.sourceIface}) ↔ ${shortLabelOf(edge.target)}`
       }
-      if (kindOf(edge.target) !== 'l2-switch' && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
+      if (nodeInfo(edge.target)?.kind !== 'l2-switch' && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
         targets.push({ containerName: edge.target, interfaceName: data.targetIface })
+        labelsByContainer[edge.target] = `${shortLabelOf(edge.target)}(${data.targetIface}) ↔ ${shortLabelOf(edge.source)}`
       }
       setCaptureStatus({ kind: 'starting' })
       try {
-        await startPacketCapture(deployedLab.labName, targets)
+        await startPacketCapture(deployedLab.labName, targets, labelsByContainer)
         setCaptureStatus({ kind: 'idle' })
       } catch (e) {
         const message = e instanceof ApiError || e instanceof Error ? e.message : 'キャプチャの開始に失敗しました'
