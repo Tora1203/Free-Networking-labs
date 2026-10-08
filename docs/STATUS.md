@@ -586,19 +586,6 @@
     （ルーター配置→VLANサブインターフェース作成→vtyshでアドレス設定→write memory→
     再deployでの保持）の確認は次回**
 
-**Blocked / 相手待ち**
-- **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
-  privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
-  front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、
-  その後の指摘で判明したコードの不具合も含めて対応済み）
-- ルーターのCLI主体化（プレーンなアドレス設定をvtyshで行う方式）＋FRR設定の永続化
-  （`write memory`→再deployを越えて設定が残る）の実機テストは一時テストラボで実施済みだが、
-  front-test等の実運用ラボでも確認してほしい
-- **YAML export/import機能（上記、新規実装）の実機確認**：front-test等をエクスポートし、
-  別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
-- **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
-  どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
-
 - **【一部撤回】VLANサブインターフェースの作成はGUIで完結させる方式に戻した（2026-10-08）**：
   「FRR自体がLinuxカーネルで動いてるならVLANサブインターフェース作成も取り込めないか」という
   提案を受けてFRR公式ドキュメントを確認したところ、zebraはVRF/VXLAN/VLANいずれも作成せず、
@@ -665,6 +652,36 @@
     共通化し、サーバー取得/ローカルファイルどちらでも同じ復元品質になるようにした
   - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**実機でのexport→import
     往復テストは次回**
+
+- **パケットキャプチャ機能の前提：EdgeShark導入（2026-10-08）**：「リンクを右クリックして
+  パケットキャプチャ」機能を検討。clab-api-server側のAPIは実装済みだったが、裏で動く
+  Siemens EdgeShark（`ghostwire`＋`packetflix`）が無いと`503`になることが判明していた。
+  clab-api-serverのソース（`internal/config/config.go`）を確認し、デフォルトポート設定
+  （5001）がEdgeShark公式のデフォルトと一致することを確認（**clab-api-server側の設定変更は
+  不要**）。公式docker-composeを`backend/edgeshark/docker-compose.yaml`に保存して導入。
+  `labuser`が`docker`グループに入っているため**sudo不要で起動できた**（実機確認：
+  `curl http://127.0.0.1:5001/version`が正常応答）。権限についての整理（ghostwire/edgesharkは
+  `pid: host`等、学生用コンテナとは別次元の広い権限で動くが、具体的に列挙されたcapability
+  のみ＋非root＋読み取り専用rootfsという設計で、学生向けコンテナの権限を絞る方針とは
+  矛盾しないと判断）は`docs/direction.md`の2026-10-08決定事項参照。
+  **未確認**：clab-api-server経由の実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・
+  フロントエンドのUI実装はまだ無い。次回対応
+
+**Blocked / 相手待ち**
+- **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
+  privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
+  front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、
+  その後の指摘で判明したコードの不具合も含めて対応済み）
+- ルーターのCLI主体化（プレーンなアドレス設定をvtyshで行う方式）＋FRR設定の永続化
+  （`write memory`→再deployを越えて設定が残る）の実機テストは一時テストラボで実施済みだが、
+  front-test等の実運用ラボでも確認してほしい
+- **YAML export/import機能（上記、新規実装）の実機確認**：front-test等をエクスポートし、
+  別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
+- **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
+  どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
+- **パケットキャプチャ機能（上記、EdgeShark導入済み）**：フロントエンドのUI実装（ノード/リンクの
+  右クリックメニューにキャプチャ開始ボタン等）をこれから行う。実際のキャプチャAPIの動作確認も
+  まだなので、UI実装と合わせて実機確認する
 
 ---
 

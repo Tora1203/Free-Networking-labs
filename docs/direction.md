@@ -292,6 +292,30 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   - FRR設定ファイルの永続化機構（`backend/ovs-helper/`の`POST /frr-config`）はそのまま維持
     （プレーンモードのCLI設定や、OSPF/BGP等のルーティング設定の永続化に引き続き使う）
 
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能のためEdgeSharkを導入
+
+- CMLのような「リンクを右クリックしてパケットキャプチャ」機能を検討。clab-api-server側には
+  既にAPI（`POST /api/v1/labs/{labName}/capture/wireshark-vnc-sessions`でブラウザに
+  Wireshark GUIをnoVNC経由で表示、`/capture/packetflix`でローカルWireshark連携）が
+  実装されていたが、裏で動く[Siemens EdgeShark](https://github.com/siemens/edgeshark)
+  （`ghostwire`＋`packetflix`の2コンテナ構成）が無いと`503`になることが判明
+- clab-api-serverのソース（`internal/config/config.go`）を確認し、`CAPTURE_PACKETFLIX_PORT`の
+  デフォルト値（5001）がEdgeShark公式のデフォルトポートと一致していることを確認。
+  **clab-api-server側の設定変更は不要**と判断
+- 公式docker-compose（`backend/edgeshark/docker-compose.yaml`に保存）で導入。
+  `labuser`が`docker`グループに入っているため**sudo不要で起動できた**（実機確認済み：
+  `curl http://127.0.0.1:5001/version`が正常応答）
+- **権限についての整理**：`ghostwire`/`edgeshark`コンテナは、ホスト上の全コンテナの
+  ネットワーク名前空間を覗き見る必要があるため、`pid: host`・`CAP_SYS_PTRACE`・
+  `CAP_DAC_READ_SEARCH`等、学生が触るラボ用コンテナ（今回`privileged:false`に絞り込んだもの）
+  とは別次元の広い権限で動く。ただし`--privileged`ではなく具体的に列挙されたcapabilityのみ
+  （`cap_drop: ALL`→必要な分だけ`cap_add`）＋非root（uid 65534）＋読み取り専用rootfsという
+  設計（公式docker-compose自体がこの形）。これは「管理者が運用するホスト側の可視化・計測
+  インフラ」であり、学生が触る対象とは明確に別物という位置づけなので、学生向けコンテナの
+  権限を絞る方針とは矛盾しないと判断
+- **未確認**：EdgeShark自体の起動・`packetflix`の応答は確認したが、clab-api-server経由の
+  実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・フロントエンドのUIはまだ無い。次回対応
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**
