@@ -316,6 +316,46 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
 - **未確認**：EdgeShark自体の起動・`packetflix`の応答は確認したが、clab-api-server経由の
   実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・フロントエンドのUIはまだ無い。次回対応
 
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能のフロントエンドUI＋中継プロキシ実装
+
+- 右クリック（リンクのコンテキストメニュー）→「パケットキャプチャ」→別タブでWiresharkの
+  noVNC画面を開く、という流れで実装（CMLと同じ操作感）
+- clab-api-serverのソース（`internal/api/capture_handlers.go`、`internal/api/middleware.go`）を
+  確認し、以下を把握：
+  - `POST /labs/{labName}/capture/wireshark-vnc-sessions`のリクエストボディは
+    `{"targets":[{"containerName":"...","interfaceName":"..."}]}`。`containerName`は
+    `resolveCaptureContainer()`がノード名の曖昧一致も受け付けるため、execInLab()と違って
+    **短いノード名のままで通る**（フルコンテナ名への変換は不要と判断）
+  - 作成直後は`ready:false`のことがあるため`GET /capture/wireshark-vnc-sessions/{id}/ready`を
+    ポーリングし、`ready:true`になったら返ってくる`url`を使って
+    `GET /capture/wireshark-vnc-sessions/{id}/vnc/{proxyPath}`を開く、という2段階が必要
+  - **この`/vnc/{proxyPath}`も含め、clab-api-serverの`AuthMiddleware`は
+    `Authorization: Bearer <jwt>`ヘッダーでしか認証できず、クエリパラメータ等の代替は
+    一切無い**（ソース確認済み）。一方`/vnc/{proxyPath}`はnoVNCのHTML/JS/CSS資産＋
+    VNC用WebSocketを中継する、複数ファイルからなる通常のWebアプリであり、ブラウザの
+    新規タブ（`window.open()`）やそこから発生するアセット読み込み・WebSocket接続は
+    カスタムヘッダーを一切設定できない。これは統合コンソール機能（`console-proxy`）で
+    既に経験した壁と同じ構造の問題
+  - L2スイッチはコンテナを持たないため、スイッチ側の接続端はキャプチャ対象から除外
+    （PC/ルーター側のみ対象。両端ともスイッチのリンクは今回は非対応）
+- **対応**：`console-proxy`と同じ発想で`backend/capture-proxy/`という新しい中継プロキシを
+  新設。ただしトークンの受け渡し方式は変えた：
+  - `console-proxy`は「WebSocket接続後、最初の1メッセージでトークンを送る」方式だが、
+    noVNCは素のGETで複数ファイルを読みに行く通常のWebアプリなので、そのハンドシェイクが
+    使えない
+  - 代わりに`capture-proxy`は**トークンをURLのパスに埋め込む**方式にした：
+    `http://<capture-proxy>/capture/<sessionId>/<jwt>/<相対パス>`を開くと、`<相対パス>`を
+    clab-api-serverの`/vnc/{proxyPath}`にAuthorizationヘッダー付きで転送する
+    （WebSocketアップグレードも同じパスパターンで中継。RFBプロトコルの生バイナリフレームを
+    そのまま双方向に流すだけでJSON等の解釈はしない）
+  - ポート8084（`console-proxy`=8082、`ovs-helper`=8083、`edgeshark`/packetflix=5001との
+    重複を避けた番号）。`console-proxy`と同じく`systemctl --user`での常駐を想定
+- **未確認・次回やること**：noVNC自身が生成するリンク/WebSocket接続先が、
+  この`/capture/<sessionId>/<jwt>/`というパス配下に正しく収まるかは実機確認がまだ。
+  noVNCが絶対パス（`/`始まり）でアセットを参照している場合、このプレフィックスが
+  落ちてしまい404になる可能性があり、その場合はHTMLレスポンスのbody rewriting等の
+  追加対応が必要になる見込み（`backend/capture-proxy/README.md`に明記済み）
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

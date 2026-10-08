@@ -225,3 +225,42 @@ export function execInLab(labName: string, nodeName: string, command: string) {
     { method: 'POST', body: JSON.stringify({ command }) },
   )
 }
+
+// パケットキャプチャ（WiresharkのnoVNCセッション）関連（api-contract.md参照、2026-10-08追加）。
+// `containerName`はcapture_handlers.goのresolveCaptureContainer()がノード名の曖昧一致も
+// 受け付けるため、execInLab()と違って短いノード名のままで通る想定（短い名前だと
+// NodeNameとの一致でヒットする実装になっている、ソースコード確認済み）
+export interface CaptureTarget {
+  containerName: string
+  interfaceName: string
+}
+export interface CaptureWiresharkVncSession {
+  sessionId: string
+  labName: string
+  containerName: string
+  interfaceNames: string[]
+  vncPath: string
+  showVolumeTip: boolean
+  createdAt: string
+  expiresAt: string
+}
+export interface CaptureWiresharkVncCreateResponse {
+  sessions: CaptureWiresharkVncSession[]
+}
+export interface CaptureWiresharkVncReadyResponse {
+  ready: boolean
+  url: string
+}
+
+export function createCaptureSessions(labName: string, targets: CaptureTarget[]) {
+  return request<CaptureWiresharkVncCreateResponse>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/capture/wireshark-vnc-sessions`,
+    { method: 'POST', body: JSON.stringify({ targets }) },
+  )
+}
+
+export function getCaptureSessionReady(sessionId: string) {
+  return request<CaptureWiresharkVncReadyResponse>(
+    `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}/ready`,
+  )
+}

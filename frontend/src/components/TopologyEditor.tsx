@@ -24,6 +24,8 @@ import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
 import { applyVlanConfig, ensureBridge, ensureFrrConfig, resetPort, type VlanConfig } from '../api/ovsHelperClient'
+import { startPacketCapture } from '../api/captureClient'
+import type { CaptureTarget } from '../api/client'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
 import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serializeAnnotations } from '../utils/annotations'
@@ -842,6 +844,38 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
+  // パケットキャプチャ（WiresharkのnoVNCセッション）を開始する（2026-10-08追加）。
+  // L2スイッチ側はコンテナを持たないため対象外（両端ともスイッチなら何もできない）。
+  // deploy済みのノードでないとコンテナが無いので、deployedLabに含まれる側だけが対象
+  const [captureStatus, setCaptureStatus] = useState<{ kind: 'idle' | 'starting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onCaptureEdge = useCallback(
+    async (edgeId: string) => {
+      setContextMenu(null)
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge || !deployedLab) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      const kindOf = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
+      const targets: CaptureTarget[] = []
+      if (kindOf(edge.source) !== 'l2-switch' && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
+        targets.push({ containerName: edge.source, interfaceName: data.sourceIface })
+      }
+      if (kindOf(edge.target) !== 'l2-switch' && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
+        targets.push({ containerName: edge.target, interfaceName: data.targetIface })
+      }
+      setCaptureStatus({ kind: 'starting' })
+      try {
+        await startPacketCapture(deployedLab.labName, targets)
+        setCaptureStatus({ kind: 'idle' })
+      } catch (e) {
+        const message = e instanceof ApiError || e instanceof Error ? e.message : 'キャプチャの開始に失敗しました'
+        setCaptureStatus({ kind: 'error', message })
+      }
+    },
+    [edges, nodes, deployedLab],
+  )
+
   // 既存接続の設定（I/F・VLAN・アドレス・ゲートウェイ・サブインターフェース）を編集する
   // ポップアップを開く。新規接続時と同じポップアップを、保存済みのデータで埋めて再利用する
   // （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応）
@@ -1306,7 +1340,19 @@ function TopologyEditorInner() {
           {contextMenu?.kind === 'edge' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               <button onClick={() => editEdge(contextMenu.edgeId)}>設定を編集</button>
+              <button
+                onClick={() => void onCaptureEdge(contextMenu.edgeId)}
+                disabled={!deployedLab || captureStatus.kind === 'starting'}
+                title={deployedLab ? 'このリンクのパケットキャプチャを別タブで開きます（L2スイッチ側は対象外）' : 'deployしてから使えます'}
+              >
+                {captureStatus.kind === 'starting' ? 'キャプチャ開始中...' : 'パケットキャプチャ'}
+              </button>
               <button onClick={() => disconnectEdge(contextMenu.edgeId)}>接続を解除</button>
+            </div>
+          )}
+          {captureStatus.kind === 'error' && (
+            <div className="topology-editor__context-menu-status topology-editor__status topology-editor__status--error">
+              {captureStatus.message}
             </div>
           )}
 

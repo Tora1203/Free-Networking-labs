@@ -667,6 +667,19 @@
   **未確認**：clab-api-server経由の実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・
   フロントエンドのUI実装はまだ無い。次回対応
 
+- **パケットキャプチャ機能：フロントエンドUI＋中継プロキシ実装（2026-10-08）**：
+  リンクを右クリック→「パケットキャプチャ」→別タブでWiresharkのnoVNC画面を開く、という
+  流れを実装。clab-api-serverのソースを確認し、`/vnc/{proxyPath}`（noVNCのHTML/JS/CSS資産＋
+  VNC用WebSocketを中継するエンドポイント）も`Authorization`ヘッダー必須（代替手段無し）だと
+  判明。これは統合コンソール機能（`console-proxy`）で経験した壁と同じ構造の問題のため、
+  同じ発想で`backend/capture-proxy/`（ポート8084）という新しい中継プロキシを新設した。
+  ただし`console-proxy`（最初の1メッセージでトークンを送る方式）とは違い、noVNCは素のGETで
+  複数ファイルを読みに行く通常のWebアプリなので、**トークンをURLのパスに埋め込む方式**
+  （`/capture/<sessionId>/<jwt>/<相対パス>`）にした。L2スイッチ側はコンテナを持たないため
+  キャプチャ対象から除外（PC/ルーター側のみ対象）。`npx tsc --noEmit` / `npm run lint` /
+  `npm run build`はクリア。**実機での動作確認（noVNC経由でWireshark画面が実際に開くか）は
+  まだ**。詳細は`docs/direction.md`の2026-10-08決定事項、`backend/capture-proxy/README.md`参照
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
@@ -679,9 +692,11 @@
   別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
 - **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
   どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
-- **パケットキャプチャ機能（上記、EdgeShark導入済み）**：フロントエンドのUI実装（ノード/リンクの
-  右クリックメニューにキャプチャ開始ボタン等）をこれから行う。実際のキャプチャAPIの動作確認も
-  まだなので、UI実装と合わせて実機確認する
+- **パケットキャプチャ機能（上記、UI＋capture-proxyまで実装済み）**：capture-proxyを
+  `systemctl --user enable --now capture-proxy.service`で起動する必要あり（他の2サービスと
+  同様）。実際にリンクを右クリック→パケットキャプチャで、別タブにWireshark画面が開くか・
+  パケットが見えるかを実機確認してほしい。noVNCのアセット読み込みがパスプレフィックス越しに
+  正しく解決されるかが一番不安な点（`backend/capture-proxy/README.md`の「注意」参照）
 
 ---
 
