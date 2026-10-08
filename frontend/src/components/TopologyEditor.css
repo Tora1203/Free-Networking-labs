@@ -199,13 +199,6 @@
   width: 64px;
 }
 
-.topology-editor__modal-note {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--ink-soft);
-  line-height: 1.4;
-}
-
 .topology-editor__modal-actions {
   display: flex;
   justify-content: flex-end;

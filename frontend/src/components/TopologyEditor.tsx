@@ -79,13 +79,15 @@ interface EdgeIfaceData {
   [key: string]: unknown
 }
 
-// router on a stick用のVLANサブインターフェース。アドレスはここでは持たない
-// （2026-10-07方針変更：「ルーターはCLIで設定しないと意味がない」指摘対応。
-// デバイス自体の作成（`ip link add ... type vlan`）はFRR/vtyshのスコープ外で
-// カーネル側の操作が必須なためGUI側で用意するしかないが、アドレス設定はvtyshで行う。
-// 詳細はdocs/direction.md参照）
+// router on a stick用のVLANサブインターフェース。
+// ルーターの通常のアドレス設定（「プレーン」モード）はvtyshのCLIで行う方針のままだが、
+// サブインターフェースの作成はVLAN ID＋アドレスの両方をGUIで一度に設定する方式に戻した
+// （2026-10-08再変更：デバイス作成はCLIでは不可能なためGUI必須、かつ「デバイスだけGUIで
+// 作ってアドレスは別途CLIで」という2段階の運用は煩雑で誤解を生みやすいという指摘を受けて、
+// サブインターフェース作成時はGUIで完結させることにした。詳細はdocs/direction.md参照）
 interface SubInterfaceConfig {
   vlan: number
+  address: string
 }
 
 // VLANモードの選択肢。トランクは「全VLAN許可」と「指定VLANのみ許可」を分ける
@@ -138,20 +140,23 @@ function parseIpv4Cidr(value: string): { address?: string; error?: string } {
   return { address: trimmed }
 }
 
-// router on a stick用：VLANサブインターフェースのVLAN IDをまとめて検証する。
-// 行が0件なら「未設定」として扱う。アドレスはここでは扱わない（ルーターのアドレス設定は
-// vtyshのCLIで行う方針、2026-10-07変更）
-function parseSubInterfaceRows(rows: string[]): { configs?: SubInterfaceConfig[]; error?: string } {
+// router on a stick用：VLANサブインターフェースの行（VLAN ID＋アドレス）をまとめて検証する。
+// 行が0件なら「未設定」として扱う（2026-10-08再変更：デバイス作成がGUI必須な以上、
+// 同じタイミングでアドレスも設定してしまう方がシンプルで誤解が無いという判断）
+function parseSubInterfaceRows(rows: { vlan: string; address: string }[]): { configs?: SubInterfaceConfig[]; error?: string } {
   if (rows.length === 0) return {}
   const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
   const configs: SubInterfaceConfig[] = []
   const seenVlans = new Set<number>()
   for (const row of rows) {
-    const vlan = Number(row)
+    const vlan = Number(row.vlan)
     if (!isValidVlanId(vlan)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
     if (seenVlans.has(vlan)) return { error: `VLAN ${vlan} が重複しています` }
     seenVlans.add(vlan)
-    configs.push({ vlan })
+    const { address, error } = parseIpv4Cidr(row.address)
+    if (error) return { error }
+    if (!address) return { error: 'サブインターフェースにはIPv4アドレスが必要です' }
+    configs.push({ vlan, address })
   }
   return { configs }
 }
@@ -266,15 +271,17 @@ interface AddressTask {
 }
 
 // router on a stick用：VLANサブインターフェース（例: eth1.10）の作成タスク。
-// デバイス自体の作成（`ip link add ... type vlan`→`ip link set ... up`）のみを行う。
-// IPアドレスの割り当てはここでは行わない（2026-10-07方針変更：vtyshでは
-// デバイス自体を作成できないためデバイス作成はGUI側で用意するしかないが、
-// アドレス設定はルーターのCLI（vtysh）で行う。「ルーターはCLIで設定しないと
-// 意味がない」指摘対応。docs/direction.md参照）
+// デバイス作成（`ip link add ... type vlan`→`ip link set ... up`）とアドレス設定
+// （`ip addr add`）の両方をここで行う（2026-10-08再変更：デバイス作成はvtyshでは
+// 不可能なためGUI側で用意するしかなく、「デバイスだけGUIで作ってアドレスは別途CLIで」という
+// 2段階運用は煩雑で誤解を生みやすいという指摘を受けて、サブインターフェース作成時は
+// GUIで完結させる方式に戻した。ルーターの通常のアドレス設定（「プレーン」モード）は
+// 引き続きvtyshのCLIで行う。docs/direction.md参照）
 interface SubInterfaceTask {
   nodeName: string
   parentIface: string
   vlan: number
+  address: string
 }
 
 // デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
@@ -421,10 +428,10 @@ function buildTopologyContent(
     if (!sourceIsSwitch && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
     if (!targetIsSwitch && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
     for (const sub of iface.sourceSubInterfaces ?? []) {
-      subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan })
+      subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan, address: sub.address })
     }
     for (const sub of iface.targetSubInterfaces ?? []) {
-      subInterfaceTasks.push({ nodeName: targetName, parentIface: iface.targetIface, vlan: sub.vlan })
+      subInterfaceTasks.push({ nodeName: targetName, parentIface: iface.targetIface, vlan: sub.vlan, address: sub.address })
     }
 
     portAnnotations[`${sourceName}:${sourcePort}`] = {
@@ -500,8 +507,8 @@ function TopologyEditorInner() {
   // 'vlan-subif'ならVLANごとのサブインターフェース一覧を使う（排他）
   const [pendingSourceMode, setPendingSourceMode] = useState<'plain' | 'vlan-subif'>('plain')
   const [pendingTargetMode, setPendingTargetMode] = useState<'plain' | 'vlan-subif'>('plain')
-  const [pendingSourceSubIfaces, setPendingSourceSubIfaces] = useState<string[]>([])
-  const [pendingTargetSubIfaces, setPendingTargetSubIfaces] = useState<string[]>([])
+  const [pendingSourceSubIfaces, setPendingSourceSubIfaces] = useState<{ vlan: string; address: string }[]>([])
+  const [pendingTargetSubIfaces, setPendingTargetSubIfaces] = useState<{ vlan: string; address: string }[]>([])
   // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
   // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
@@ -817,8 +824,8 @@ function TopologyEditorInner() {
       const targetHasSubIfaces = !!data.targetSubInterfaces?.length
       setPendingSourceMode(sourceHasSubIfaces ? 'vlan-subif' : 'plain')
       setPendingTargetMode(targetHasSubIfaces ? 'vlan-subif' : 'plain')
-      setPendingSourceSubIfaces((data.sourceSubInterfaces ?? []).map((s) => String(s.vlan)))
-      setPendingTargetSubIfaces((data.targetSubInterfaces ?? []).map((s) => String(s.vlan)))
+      setPendingSourceSubIfaces((data.sourceSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
+      setPendingTargetSubIfaces((data.targetSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
       setContextMenu(null)
     },
     [edges],
@@ -977,11 +984,12 @@ function TopologyEditorInner() {
         return [`${task.nodeName}:${task.iface} ${message}`]
       })
 
-      // router on a stick：VLANサブインターフェースの「デバイス作成」のみ行う（2026-10-07方針変更）。
-      // アドレス設定はここでは行わない——vtyshにはカーネルのVLANデバイスを作成する機能が無く
-      // （実機確認済み：`interface eth1.10`と打ってもカーネル上にはデバイスが出来ない）、
-      // デバイス作成自体はGUI側でやるしかないが、作成後のアドレス設定は学生がvtyshのCLIで行う
-      // 方針にした（「ルーターはCLIで設定しないと意味がない」指摘対応。docs/direction.md参照）。
+      // router on a stick：VLANサブインターフェースのデバイス作成＋アドレス設定を
+      // まとめてここで行う（2026-10-08再変更。vtyshにはカーネルのVLANデバイスを作成する
+      // 機能が無いため作成自体はGUI側で必須だが、「デバイスだけGUIで作ってアドレスは
+      // 別途CLIで」という2段階運用は煩雑で誤解を生みやすいという指摘を受けて、
+      // GUIで完結させる方式に戻した。ルーターの通常のアドレス設定（「プレーン」モード）は
+      // 引き続きvtyshのCLIで行う。docs/direction.md参照）。
       // execエンドポイントはシェルとして`&&`等を解釈するか未確認のため、安全側に倒して
       // 1コマンドずつ順番にexecする（タスクをまたいだ並列化はPromise.allSettledで行う）
       const subIfaceResults = await Promise.allSettled(
@@ -996,6 +1004,7 @@ function TopologyEditorInner() {
           }
           await runStep(`ip link add link ${task.parentIface} name ${subIface} type vlan id ${task.vlan}`)
           await runStep(`ip link set ${subIface} up`)
+          await runStep(`ip addr add ${task.address} dev ${subIface}`)
           return task
         }),
       )
@@ -1207,7 +1216,7 @@ function TopologyEditorInner() {
                     <div className="topology-editor__modal-vlan">
                       <select value={pendingSourceMode} onChange={(e) => setPendingSourceMode(e.target.value as 'plain' | 'vlan-subif')}>
                         <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
-                        <option value="vlan-subif">VLANサブインターフェースを作る（アドレスはCLIで）</option>
+                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
                       </select>
                     </div>
                   )}
@@ -1229,27 +1238,29 @@ function TopologyEditorInner() {
                   )}
                   {!sourceIsSwitch && sourceIsRouterOnStick && pendingSourceMode === 'vlan-subif' && (
                     <div className="topology-editor__modal-vlan">
-                      {pendingSourceSubIfaces.map((vlan, i) => (
+                      {pendingSourceSubIfaces.map((row, i) => (
                         <div key={i} className="topology-editor__modal-subif-row">
                           <input
-                            value={vlan}
+                            value={row.vlan}
                             onChange={(e) =>
-                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? e.target.value : r)))
+                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
                             }
                             placeholder="VLAN ID"
+                          />
+                          <input
+                            value={row.address}
+                            onChange={(e) =>
+                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
+                            }
+                            placeholder="10.10.0.1/24"
                           />
                           <button onClick={() => setPendingSourceSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
                         </div>
                       ))}
-                      <button onClick={() => setPendingSourceSubIfaces((rows) => rows.concat(''))}>
+                      <button onClick={() => setPendingSourceSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
                         + サブインターフェースを追加
                       </button>
                       {sourceSubIfacesResult.error && <span className="topology-editor__modal-warn">{sourceSubIfacesResult.error}</span>}
-                      <p className="topology-editor__modal-note">
-                        VLAN IDだけ指定してください。IPアドレスはdeploy後、ルーターのコンソールでvtyshから
-                        `interface eth1.&lt;VLAN&gt;` → `ip address ...` で設定します（`write memory`で保存すれば
-                        再deployしても残ります）。
-                      </p>
                     </div>
                   )}
                 </div>
@@ -1287,7 +1298,7 @@ function TopologyEditorInner() {
                     <div className="topology-editor__modal-vlan">
                       <select value={pendingTargetMode} onChange={(e) => setPendingTargetMode(e.target.value as 'plain' | 'vlan-subif')}>
                         <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
-                        <option value="vlan-subif">VLANサブインターフェースを作る（アドレスはCLIで）</option>
+                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
                       </select>
                     </div>
                   )}
@@ -1309,27 +1320,29 @@ function TopologyEditorInner() {
                   )}
                   {!targetIsSwitch && targetIsRouterOnStick && pendingTargetMode === 'vlan-subif' && (
                     <div className="topology-editor__modal-vlan">
-                      {pendingTargetSubIfaces.map((vlan, i) => (
+                      {pendingTargetSubIfaces.map((row, i) => (
                         <div key={i} className="topology-editor__modal-subif-row">
                           <input
-                            value={vlan}
+                            value={row.vlan}
                             onChange={(e) =>
-                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? e.target.value : r)))
+                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
                             }
                             placeholder="VLAN ID"
+                          />
+                          <input
+                            value={row.address}
+                            onChange={(e) =>
+                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
+                            }
+                            placeholder="10.10.0.2/24"
                           />
                           <button onClick={() => setPendingTargetSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
                         </div>
                       ))}
-                      <button onClick={() => setPendingTargetSubIfaces((rows) => rows.concat(''))}>
+                      <button onClick={() => setPendingTargetSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
                         + サブインターフェースを追加
                       </button>
                       {targetSubIfacesResult.error && <span className="topology-editor__modal-warn">{targetSubIfacesResult.error}</span>}
-                      <p className="topology-editor__modal-note">
-                        VLAN IDだけ指定してください。IPアドレスはdeploy後、ルーターのコンソールでvtyshから
-                        `interface eth1.&lt;VLAN&gt;` → `ip address ...` で設定します（`write memory`で保存すれば
-                        再deployしても残ります）。
-                      </p>
                     </div>
                   )}
                 </div>

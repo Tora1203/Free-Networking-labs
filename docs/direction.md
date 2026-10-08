@@ -270,6 +270,28 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
 - 実機での最終確認（ルーターのVLANサブインターフェース作成→vtyshでのアドレス設定→
   write memory→再deployでの設定保持の一連の流れ）は次回
 
+## 決定事項（2026-10-08追記）：VLANサブインターフェースの作成はGUIで完結させる（CLI分離は撤回）
+
+- ユーザーから「FRR自体がLinuxカーネルを使ってrouting出来てるから、VLANサブインターフェースの
+  作成もFRRの一部として取り込めないか」という提案があり、FRR公式ドキュメント
+  （docs.frrouting.org）で確認した。zebraは**VRFもVXLANもVLANサブインターフェースも
+  一切作成しない**（"FRR neither creates VRFs... FRR simply uses whatever is provided by
+  the OS"、VXLANも"must be done externally"と明記）。インターフェース作成は常に`ip link`等の
+  外部ツールに委ねる設計であることが公式に確定した
+- これにより「デバイス作成はGUI必須、アドレス設定だけCLI」という2026-10-07の方針は技術的には
+  可能だが、ユーザーから「2段階に分かれた今のやり方は煩雑すぎて誤解を生みかねない」という
+  判断があり、**サブインターフェース作成時に限り、VLAN ID＋アドレスの両方をGUIで一度に設定する
+  方式に戻した**（撤回）。実機テスト（test2）で「ルーター側の設定を忘れてping が通らない」
+  事象が実際に発生したことも、この判断の裏付けになっている
+- **現在の役割分担（最終）**：
+  - ルーターの**通常のアドレス設定（「プレーン」モード）は引き続きvtyshのCLIで行う**
+    （2026-10-07の決定は維持）
+  - **router on a stickのVLANサブインターフェースは、VLAN ID＋アドレスをGUIで一度に設定**
+    （2026-10-08で元に戻した部分）。デバイス作成＋アドレス設定を`ip link add`→
+    `ip link set up`→`ip addr add`の3段階でexec実行する
+  - FRR設定ファイルの永続化機構（`backend/ovs-helper/`の`POST /frr-config`）はそのまま維持
+    （プレーンモードのCLI設定や、OSPF/BGP等のルーティング設定の永続化に引き続き使う）
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**
