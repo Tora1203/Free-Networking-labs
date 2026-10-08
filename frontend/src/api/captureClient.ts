@@ -36,9 +36,12 @@ export async function startPacketCapture(labName: string, targets: CaptureTarget
   const { sessions } = await createCaptureSessions(labName, targets)
   await Promise.all(
     sessions.map(async (session) => {
+      // readyが返す`url`はclab-api-server側の完全なパス（`/api/v1/capture/wireshark-vnc-sessions/
+      // <sessionId>/vnc/...`）であり、`/vnc/`配下の相対パスではない（2026-10-08実機確認）。
+      // そのままcapture-proxyのパスに埋め込んで渡す（capture-proxy側もそのまま中継するだけ）
       const vncPath = await waitUntilReady(session.sessionId)
       const normalizedPath = vncPath.startsWith('/') ? vncPath : `/${vncPath}`
-      const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(session.sessionId)}/${encodeURIComponent(token)}${normalizedPath}`
+      const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}`
       window.open(url, '_blank')
     }),
   )

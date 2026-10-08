@@ -22,22 +22,28 @@ clab-api-serverの`AuthMiddleware`はヘッダー以外の手段を一切持た�
 ハンドシェイクをフックできないため：
 
 ```
-http://<capture-proxy>/capture/<sessionId>/<jwt>/<相対パス>
+http://<capture-proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>
 ```
 
-を開くと、`<相対パス>`部分を
+を開くと、`<clab-api-serverのパス>`部分をそのまま
 
 ```
-https://<clab-api-server>/api/v1/capture/wireshark-vnc-sessions/<sessionId>/vnc/<相対パス>
+https://<clab-api-server><そのパス>
 ```
 
 にAuthorizationヘッダー付きで転送する（WebSocketアップグレードも同じパスパターンで中継、
 RFBプロトコルの生バイナリフレームをそのまま双方向に流すだけでJSON等の解釈はしない）。
 
+`GET /capture/wireshark-vnc-sessions/{sessionId}/ready`が返す`url`は
+`/api/v1/capture/wireshark-vnc-sessions/<sessionId>/vnc/...`という**完全なパス**
+（2026-10-08実機確認。`/vnc/{proxyPath}`配下の相対パスではなかった）なので、
+フロントエンドはこの`url`をそのまま`<clab-api-serverのパス>`部分に埋め込むだけでよい。
+このプロキシ自身はパスを組み立て直さず、渡されたパスをそのまま右から左に流すだけ。
+
 **注意（2026-10-08時点、未確認）**：noVNC自身が生成するリンク/WebSocket接続先が、
-この`/capture/<sessionId>/<jwt>/`というパス配下に正しく収まるかは実機確認がまだ。
-noVNCが絶対パス（`/`始まり）でアセットを参照している場合、このプレフィックスが
-落ちてしまい404になる可能性がある。問題が出たら、相対パスへの書き換え
+この`/capture/<jwt>/`というパス配下に正しく収まるかは実機確認がまだ。
+noVNCが絶対パス（`/`始まり、`/api/v1/...`を含まないもの）でアセットを参照している場合、
+このプレフィックスが落ちてしまい404になる可能性がある。問題が出たら、相対パスへの書き換え
 （HTMLレスポンスのbody rewriting等）が必要になるかもしれない。
 
 ## 起動方法

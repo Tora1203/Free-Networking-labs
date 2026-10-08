@@ -12,12 +12,14 @@
 // プロトコル（console-proxyと違い、こちらはトークンをURLのパスに埋め込む方式にしている。
 // 理由：noVNCは複数のHTML/JS/CSSファイルを素のGETで読みに行く通常のWebアプリであり、
 // 「最初の1メッセージでトークンを送る」ようなハンドシェイクをフックできないため）：
-//   ブラウザで `http://<proxy>/capture/<sessionId>/<jwt>/<相対パス>` を開くと、
-//   このプロキシが `<相対パス>` 部分を
-//   `https://<clab-api-server>/api/v1/capture/wireshark-vnc-sessions/<sessionId>/vnc/<相対パス>`
-//   にAuthorizationヘッダー付きで転送する（WebSocketアップグレードも同じパスパターンで中継）。
-//   noVNC自身が生成するリンク/WebSocket接続先が、この`/capture/<sessionId>/<jwt>/`配下に
-//   正しく収まるかは実機確認がまだ（2026-10-08時点）。問題が出たら相対パスの解決方法を調整する
+//   ブラウザで `http://<proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>` を開くと、
+//   このプロキシが `<clab-api-serverのパス>` 部分をそのまま
+//   `https://<clab-api-server><そのパス>` にAuthorizationヘッダー付きで転送する
+//   （WebSocketアップグレードも同じパスパターンで中継）。
+//   `GET .../ready`が返す`url`は`/api/v1/capture/wireshark-vnc-sessions/<sessionId>/vnc/...`
+//   という**フルパス**なので（2026-10-08実機確認：`vnc/{proxyPath}`配下の相対パスではなかった）、
+//   このプロキシは`/vnc`以下を自分で組み立てたりせず、渡されたパスをそのまま右から左に流すだけにする
+//   （sessionIdをこのプロキシ自身のURLパスに含めないのもこのため。既にrest側に入っている）
 
 import { createServer } from 'node:http'
 import https from 'node:https'
@@ -28,22 +30,21 @@ const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:80
 const upstreamOrigin = new URL(CLAB_API_BASE_URL)
 const upstreamIsTls = upstreamOrigin.protocol === 'https:'
 
-// `/capture/<sessionId>/<token>/<rest...>` を分解する。rest省略時は`/`扱い
-// （noVNCのトップページ自体への直接アクセス用）
+// `/capture/<token>/<clab-api-serverのパス...>` を分解する。restはそのまま
+// clab-api-server側のパス（`/api/v1/...`）として使うので、ここでは組み立て直さない
 function parseCapturePath(rawUrl) {
   const [pathPart, query] = rawUrl.split('?')
-  const m = /^\/capture\/([^/]+)\/([^/]+)(\/.*)?$/.exec(pathPart)
+  const m = /^\/capture\/([^/]+)(\/.*)?$/.exec(pathPart)
   if (!m) return null
   return {
-    sessionId: m[1],
-    token: m[2],
-    rest: m[3] || '/',
+    token: m[1],
+    rest: m[2] || '/',
     query: query ? `?${query}` : '',
   }
 }
 
 function upstreamPathFor(parsed) {
-  return `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(parsed.sessionId)}/vnc${parsed.rest}${parsed.query}`
+  return `${parsed.rest}${parsed.query}`
 }
 
 const server = createServer((req, res) => {
