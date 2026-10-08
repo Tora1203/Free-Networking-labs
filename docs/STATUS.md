@@ -588,14 +588,16 @@
 
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
-  privileged:false化はfront-testで実機確認済み（問題なし）
-- router on a stick（上記、新規実装）の実機確認：L2スイッチのトランクポート経由で
-  ルーター同士をVLANサブインターフェースで繋ぎ、vtyshでアドレス設定してpingが通るか、
-  再読み込み後の復元を確認してほしい
-- デフォルトゲートウェイ設定＋eth0ルート削除（上記、新規実装）の実機確認：PCに
-  ゲートウェイを設定してdeployし、ラボ内の通信とラボ外への遮断の両方を確認してほしい
-- **ルーターのCLI主体化（上記、新規実装）の実機確認**：ルーターのアドレス設定をvtyshで行い、
-  `write memory`→再deployを越えて設定が残るか確認してほしい
+  privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
+  front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、
+  その後の指摘で判明したコードの不具合も含めて対応済み）
+- ルーターのCLI主体化（プレーンなアドレス設定をvtyshで行う方式）＋FRR設定の永続化
+  （`write memory`→再deployを越えて設定が残る）の実機テストは一時テストラボで実施済みだが、
+  front-test等の実運用ラボでも確認してほしい
+- **YAML export/import機能（上記、新規実装）の実機確認**：front-test等をエクスポートし、
+  別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
+- **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
+  どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
 
 - **【一部撤回】VLANサブインターフェースの作成はGUIで完結させる方式に戻した（2026-10-08）**：
   「FRR自体がLinuxカーネルで動いてるならVLANサブインターフェース作成も取り込めないか」という
@@ -608,6 +610,61 @@
   GUIで一度に設定する方式に戻した**（撤回）。ルーターの通常のアドレス設定（「プレーン」
   モード）・FRR設定の永続化機構はそのまま維持。
   `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+
+- **`/code-review high`での自己レビュー対応（2026-10-08）**：`fe-be/router-on-a-stick`ブランチを
+  多角的にレビューし、10件の指摘から以下を修正：
+  1. **【重要】`ip route del default`が無条件すぎる問題**：ルーターがvtyshのCLI＋
+     `write memory`で別デバイス経由のデフォルトルートを設定していた場合、deploy後の
+     クリーンアップ処理が誤ってそれを消してしまう恐れがあった。`ip route del default
+     dev eth0`とcontainerlabのmgmtインターフェースに明示的に絞るよう修正し、実機で
+     「FRRが別デバイス経由で設定した静的デフォルトルートは生き残り、eth0側だけ消える」
+     ことを確認した
+  2. **execの戻り値が空の時に成功扱いになっていた問題**：対象コンテナが見つからず
+     execの結果が空オブジェクトになるケースで、エラー判定が素通りして静かに成功扱いに
+     なっていた（`addressTasks`/`subInterfaceTasks`/`routeResults`の4箇所で共通のパターン
+     だったため`assertExecOk()`に共通化して修正）
+  3. **方針変更前の古いルーター側アドレス/ゲートウェイ設定が再投入され続ける問題**：
+     ルーターのプレーンなアドレス設定はvtyshのCLIで行う方針（2026-10-07）にしたが、
+     GUIの入力欄を隠しただけで、方針変更前に保存されていた古いデータがあれば
+     deployのたびにexecで再投入され、学生がCLIで設定した内容と静かに競合する恐れが
+     あった。ルーター側は`addressTasks`/`gatewayByNode`の対象から常に除外するよう修正
+  4. 既存接続を編集してI/Fを変更すると、エッジidがI/F名由来のまま古くなり、同じI/F組み合わせの
+     新規接続と衝突する恐れがあった→ idをI/F名から組み立てず乱数ベースに変更
+  5. `ovs-helper`のユーザー名検証パターンが`.`を含むLinuxユーザー名を拒否してしまう
+     問題→ ユーザー名専用のパターンを追加して対応
+  6. 保存済みannotationsが想定外の形式だった場合に`editEdge()`がクラッシュする可能性
+     →`Array.isArray()`チェックを追加
+  - 見送った指摘（優先度が低いと判断）：router on a stick UIがトランク/アクセスの
+    実際のポート設定を見ずに出る点、同一ノードに複数ゲートウェイを設定した時の
+    サイレントな上書き、VLANサブインターフェースを0件のまま保存できる点
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+
+- **ルーティングプロトコルの実機テスト（2026-10-08）**：OSPFに加えてRIP/BGP/IS-IS/OSPFv3
+  （ospf6d）を2ルーター構成で一通り検証。全て最終的に疎通成功（0% loss）：
+  - RIP: `redistribute connected`で問題なく疎通
+  - IS-IS: `metric-style wide`が無いとSPFは計算されるがzebraにルートが入らなかった
+    （標準的なIS-IS設定なので対応不要、学習内容として妥当）
+  - OSPFv3: `router ospf6`のインスタンス自体を作らないと動かない点に注意（インターフェース側の
+    `ipv6 ospf6 area 0`だけでは不十分）
+  - **BGP: 要注意**。FRR 10.xはeBGP（AS番号が違う）セッションに対して
+    デフォルトで`bgp ebgp-requires-policy`が有効で、明示的なroute-map等のポリシーが
+    無いとprefixを一切交換しない（`show bgp summary`に`(Policy)`と表示されるだけで
+    原因が分かりにくい）。`no bgp ebgp-requires-policy`で解除すれば教科書通りの設定で動く。
+    `router bgp <AS番号>`はdeployより前にAS番号が決まらないため、デフォルトの`frr.conf`に
+    事前設定することはできない——学生がハマりやすい点として、何らかの形で周知する方法を
+    検討する必要がある（次回相談）
+
+- **YAML export/import機能を追加（2026-10-08、「授業で使うテンプレート共有」指摘対応）**：
+  - エクスポート：deploy済みラボのトポロジYAML＋annotations（座標・VLAN/アドレス設定）を
+    サーバーから取得し直してダウンロードする（今の編集中の未deploy変更ではなく、実際に
+    deployされている内容を正確に反映するため）
+  - インポート：ローカルのYAML（＋任意でannotations）ファイルを読み込んでキャンバスに
+    反映する（deployはしない、確認してから自分のアカウントでdeployしてもらう想定）
+  - 既存の「エディタで開く」時の復元ロジック（`applyPortAnnotations`→
+    `restoreSwitchIdentities`→`applyAnnotations`の順）を`parseImportedTopology()`として
+    共通化し、サーバー取得/ローカルファイルどちらでも同じ復元品質になるようにした
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**実機でのexport→import
+    往復テストは次回**
 
 ---
 

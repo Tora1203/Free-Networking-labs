@@ -70,6 +70,10 @@ const PORT_NAME_PATTERN = /^p-[0-9a-f]{8}$/
 // 英数字・ハイフン・アンダースコアのみに制限する（2026-10-07追加。
 // ラボ名はtoSafeLabName()が生成する形式、ルーター名はユーザーがUIで付けたノードidそのもの）
 const SAFE_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+// Linuxのユーザー名は`.`も許されるため、上のパターンだと存在するアカウントを拒否してしまう
+// 可能性があった（2026-10-08レビュー指摘）。先頭を英数字に固定しているので、この時点で
+// 文字列全体が".."等のパストラバーサル列になることはない
+const SAFE_USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 
 // ルーター新規作成時のdaemonsファイルの初期値。学生がvtyshのコンソールから直接
 // daemonsファイルを編集する手段が無い（コンソールはvtyshのみに制限済み、docs/direction.md
@@ -312,7 +316,7 @@ async function handleFrrConfig(req, res, token) {
     return
   }
   const username = decodeJwtUsername(token)
-  if (!username || !SAFE_PATH_SEGMENT_PATTERN.test(username)) {
+  if (!username || !SAFE_USERNAME_PATTERN.test(username)) {
     sendJson(res, 400, { error: 'トークンからユーザー名を取得できませんでした' })
     return
   }

@@ -34,6 +34,7 @@ import {
   getLabAnnotations,
   getLabTopologyYaml,
   putLabAnnotations,
+  type ExecResponse,
   type TopologyContent,
 } from '../api/client'
 import { useAuthStore } from '../store/authStore'
@@ -301,6 +302,57 @@ interface PortAnnotation {
   subInterfaces?: SubInterfaceConfig[]
 }
 
+// containerlabのトポロジYAML（＋任意でannotations JSON）からReact Flowのnodes/edgesを復元する。
+// 「既存ラボをエディタで開く」（サーバーから取得）と「YAMLファイルをインポート」（ローカルの
+// ファイルを読む）の両方で同じ復元ロジックを使うため共通化した（2026-10-08追加、YAML
+// export/import機能）。annotationsが無い場合は座標・VLAN/アドレス設定の復元をスキップし、
+// グリッド配置のまま進める（他ユーザーが作ったYAMLをインポートする場合、annotationsは
+// 無いのが普通）
+function parseImportedTopology(
+  yamlText: string,
+  annotationsText: string | null,
+): { nodes: Node[]; edges: Edge[]; counters: Record<PaletteNodeKind, number> } {
+  const parsed = parseTopologyYaml(yamlText)
+  let nodes = parsed.nodes
+  let edges = parsed.edges
+  if (annotationsText) {
+    try {
+      // 順序の理由はuseEffect側の読み込み処理と同じ（restoreSwitchIdentitiesより先にport
+      // annotationsを引く、座標復元は最後）
+      edges = applyPortAnnotations(edges, annotationsText)
+      ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
+      nodes = applyAnnotations(nodes, annotationsText)
+    } catch {
+      // 想定外のフォーマットの場合は無視してグリッド配置のまま進める
+    }
+  }
+  return { nodes, edges, counters: parsed.counters }
+}
+
+// 文字列をブラウザでファイルとしてダウンロードさせる（2026-10-08追加、YAML export機能）
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// execInLab()の結果を見てエラーなら投げる。execはコマンド自体が失敗してもHTTPとしては200で
+// 返ってくるため`return-code`で判定する必要がある（addressTasks/subInterfaceTasks/
+// routeResultsで共通して必要なロジックなのでまとめた、2026-10-08レビュー指摘対応）。
+// 対象ノードが見つからず`result`が空オブジェクトになるケース（firstResultがundefined）も
+// 「結果が取れなかった＝失敗」として扱う（以前はここが抜けていて、execが実質的に
+// 何も実行できなかった場合でも静かに成功扱いになっていた）
+function assertExecOk(result: ExecResponse, failureMessage: string) {
+  const [firstResult] = Object.values(result).flat()
+  if (!firstResult || firstResult['return-code'] !== 0) {
+    throw new Error((firstResult?.stderr ?? '').trim() || failureMessage)
+  }
+}
+
 function buildTopologyContent(
   nodes: Node[],
   edges: Edge[],
@@ -414,19 +466,26 @@ function buildTopologyContent(
     if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
     if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
 
-    // PC/ルーター側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
-    // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）。
-    // router on a stick（sourceSubInterfaces/targetSubInterfaces）が設定されている場合は
-    // 物理I/F自体にはアドレスを持たせず、VLANごとのサブインターフェースを別途作る
-    if (!sourceIsSwitch && iface.sourceAddress) {
+    // ルーターの通常のアドレス設定はvtyshのCLIで行う方針（2026-10-07決定）のため、GUIの
+    // プレーンなアドレス/ゲートウェイ入力欄はルーターには出していない。ただし古い保存データ
+    // （方針変更前にルーター側へ設定されたsourceAddress/sourceGateway）が再読み込み時に
+    // 復元されてしまう可能性があり、それを律義に毎回execで再投入すると、学生がvtyshで
+    // `write memory`した設定と静かに競合してしまう（2026-10-08レビュー指摘）。
+    // ルーター側は常にスキップする（PCのみ対象）
+    const sourceIsRouter = nodeKinds.get(edge.source) === 'router'
+    const targetIsRouter = nodeKinds.get(edge.target) === 'router'
+
+    // PC側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
+    // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）
+    if (!sourceIsSwitch && !sourceIsRouter && iface.sourceAddress) {
       addressTasks.push({ nodeName: sourceName, iface: iface.sourceIface, address: iface.sourceAddress })
     }
-    if (!targetIsSwitch && iface.targetAddress) {
+    if (!targetIsSwitch && !targetIsRouter && iface.targetAddress) {
       addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
     }
     // デフォルトゲートウェイ（2026-10-07追加）。プレーンなアドレス設定の時だけ意味がある
-    if (!sourceIsSwitch && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
-    if (!targetIsSwitch && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
+    if (!sourceIsSwitch && !sourceIsRouter && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
+    if (!targetIsSwitch && !targetIsRouter && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
     for (const sub of iface.sourceSubInterfaces ?? []) {
       subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan, address: sub.address })
     }
@@ -543,34 +602,20 @@ function TopologyEditorInner() {
     setLoadStatus({ kind: 'loading' })
     getLabTopologyYaml(targetLabName)
       .then(async (yamlText) => {
-        const parsed = parseTopologyYaml(yamlText)
-        // 座標・ラベル/エリアの保存データがあれば復元する。保存されていない（404）、
-        // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
-        // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
-        let nodes = parsed.nodes
-        let edges = parsed.edges
+        // 座標・VLAN/アドレス設定の保存データがあれば復元する（保存されていない＝404の場合は
+        // 無視してグリッド配置のまま進める。座標が無いことを理由にエディタが開けなくなることは
+        // 避けたいため）。実際の復元ロジックはparseImportedTopology()に共通化している
+        // （YAMLインポート機能と共有、2026-10-08）
+        let annotationsText: string | null = null
         try {
-          const annotationsText = await getLabAnnotations(targetLabName)
-          // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
-          // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
-          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
-          // portAnnotationsのキーはハッシュ化されたclabName基準なので、これを
-          // restoreSwitchIdentitiesより先に呼ぶこと
-          edges = applyPortAnnotations(edges, annotationsText)
-          // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
-          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す。
-          // positions（座標）はnode.idをキーに保存されており、保存時点では既にこの変換が
-          // 済んだ状態のidだったため、applyAnnotations（座標の復元）より先にこれを行う必要がある
-          // （順序が逆だとL2スイッチの座標だけ復元できずグリッド配置に戻ってしまう、
-          // 2026-10-07実機確認：バグ報告「deployしたのに座標が復元されなかった」の原因）
-          ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
-          nodes = applyAnnotations(nodes, annotationsText)
+          annotationsText = await getLabAnnotations(targetLabName)
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
+        const { nodes, edges, counters: parsedCounters } = parseImportedTopology(yamlText, annotationsText)
         setNodes(nodes)
         setEdges(edges)
-        counters.current = parsed.counters
+        counters.current = parsedCounters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
           nodes
@@ -674,7 +719,11 @@ function TopologyEditorInner() {
       // 既存接続の編集：idはそのまま、dataだけ入れ替える（2026-10-07追加）
       setEdges((eds) => eds.map((e) => (e.id === editingEdgeId ? { ...e, data: newData } : e)))
     } else {
-      const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
+      // idはI/F名から組み立てず、ランダムな値にする（2026-10-08レビュー指摘対応：
+      // I/F名から組み立てたidだと、既存接続を編集してI/Fを変更した時にidが古いI/Fの
+      // ままになり、後から同じI/F組み合わせで新規接続を作るとidが衝突し、
+      // disconnectEdge/editEdgeが両方のエッジを同時に操作してしまう不具合があった）
+      const id = randomAnnotationId('edge')
       setEdges((eds) =>
         eds.concat({
           id,
@@ -824,8 +873,20 @@ function TopologyEditorInner() {
       const targetHasSubIfaces = !!data.targetSubInterfaces?.length
       setPendingSourceMode(sourceHasSubIfaces ? 'vlan-subif' : 'plain')
       setPendingTargetMode(targetHasSubIfaces ? 'vlan-subif' : 'plain')
-      setPendingSourceSubIfaces((data.sourceSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
-      setPendingTargetSubIfaces((data.targetSubInterfaces ?? []).map((s) => ({ vlan: String(s.vlan), address: s.address })))
+      // 保存済みannotationsが想定外の形式（配列でない等）だった場合にクラッシュしないよう
+      // Array.isArray()で確認する（`??`はnull/undefinedしか拾わないため、2026-10-08レビュー指摘対応）
+      setPendingSourceSubIfaces(
+        (Array.isArray(data.sourceSubInterfaces) ? data.sourceSubInterfaces : []).map((s) => ({
+          vlan: String(s.vlan),
+          address: s.address,
+        })),
+      )
+      setPendingTargetSubIfaces(
+        (Array.isArray(data.targetSubInterfaces) ? data.targetSubInterfaces : []).map((s) => ({
+          vlan: String(s.vlan),
+          address: s.address,
+        })),
+      )
       setContextMenu(null)
     },
     [edges],
@@ -970,10 +1031,7 @@ function TopologyEditorInner() {
       const addressResults = await Promise.allSettled(
         addressTasks.map(async (task) => {
           const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
-          const [firstResult] = Object.values(result).flat()
-          if (firstResult && firstResult['return-code'] !== 0) {
-            throw new Error((firstResult.stderr ?? '').trim() || 'アドレス設定に失敗しました')
-          }
+          assertExecOk(result, 'アドレス設定に失敗しました')
           return task
         }),
       )
@@ -997,10 +1055,7 @@ function TopologyEditorInner() {
           const subIface = `${task.parentIface}.${task.vlan}`
           const runStep = async (command: string) => {
             const result = await execInLab(safeName, task.nodeName, command)
-            const [firstResult] = Object.values(result).flat()
-            if (firstResult && firstResult['return-code'] !== 0) {
-              throw new Error((firstResult.stderr ?? '').trim() || 'サブインターフェース設定に失敗しました')
-            }
+            assertExecOk(result, 'サブインターフェース設定に失敗しました')
           }
           await runStep(`ip link add link ${task.parentIface} name ${subIface} type vlan id ${task.vlan}`)
           await runStep(`ip link set ${subIface} up`)
@@ -1021,24 +1076,25 @@ function TopologyEditorInner() {
       // deploy後に全PC/ルーターでこのデフォルトルートを削除し、ゲートウェイが設定されている
       // ノードだけ明示的に`ip route add default via <gateway>`で設定し直す。
       // アドレス設定（上のaddressTasks/subInterfaceTasks）が先に終わっている必要がある
-      // （ゲートウェイの接続先サブネットがまだ無いとadd defaultが失敗するため）
+      // （ゲートウェイの接続先サブネットがまだ無いとadd defaultが失敗するため）。
+      // `dev eth0`を明示して削除対象を絞る（2026-10-08レビュー指摘対応：`ip route del default`
+      // だけだと、ルーターがvtyshのCLI＋`write memory`で設定した別デバイス経由のデフォルトルート
+      // （FRR設定はdeploy時にzebraが読み込んで再設定する）まで誤って消してしまう恐れがあった。
+      // `dev eth0`を付けてもcontainerlab自動設定のmgmtルートだけを狙い撃ちできることを実機確認済み）
       const routeResults = await Promise.allSettled(
         linuxNodeNames.map(async (name) => {
           // execは失敗してもHTTPとしては200で返ってくる（`return-code`で判定する必要がある、
           // addressTasks/subInterfaceTasksと同じ仕組み）。「既にデフォルトルートが無い」場合は
           // `ip route del default`が`No such process`で失敗するのが正常なので無視する
-          const delResult = await execInLab(safeName, name, 'ip route del default')
+          const delResult = await execInLab(safeName, name, 'ip route del default dev eth0')
           const [delFirst] = Object.values(delResult).flat()
-          if (delFirst && delFirst['return-code'] !== 0 && !(delFirst.stderr ?? '').includes('No such process')) {
-            throw new Error((delFirst.stderr ?? '').trim() || 'デフォルトルートの削除に失敗しました')
+          if (!delFirst || (delFirst['return-code'] !== 0 && !(delFirst.stderr ?? '').includes('No such process'))) {
+            throw new Error((delFirst?.stderr ?? '').trim() || 'デフォルトルートの削除に失敗しました')
           }
           const gateway = gatewayByNode.get(name)
           if (gateway) {
             const addResult = await execInLab(safeName, name, `ip route add default via ${gateway}`)
-            const [addFirst] = Object.values(addResult).flat()
-            if (addFirst && addFirst['return-code'] !== 0) {
-              throw new Error((addFirst.stderr ?? '').trim() || 'ゲートウェイ設定に失敗しました')
-            }
+            assertExecOk(addResult, 'ゲートウェイ設定に失敗しました')
           }
           return name
         }),
@@ -1081,6 +1137,57 @@ function TopologyEditorInner() {
     }
   }, [nodes, edges, username, labName, isRedeploy])
 
+  // デプロイ済みラボのYAML（＋annotations）をダウンロードする（2026-10-08追加、
+  // 「授業で使うテンプレートを配布しやすく」指摘対応）。サーバーから改めて取得することで、
+  // 今の編集中の未deploy変更ではなく「実際にdeployされている内容」を正確にエクスポートする
+  const [exportStatus, setExportStatus] = useState<{ kind: 'idle' | 'exporting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onExport = useCallback(async () => {
+    if (!deployedLab) return
+    setExportStatus({ kind: 'exporting' })
+    try {
+      const yamlText = await getLabTopologyYaml(deployedLab.labName)
+      const annotationsText = await getLabAnnotations(deployedLab.labName).catch(() => null)
+      downloadTextFile(`${deployedLab.labName}.clab.yml`, yamlText)
+      if (annotationsText) downloadTextFile(`${deployedLab.labName}.clab.yml.annotations.json`, annotationsText)
+      setExportStatus({ kind: 'idle' })
+    } catch (e) {
+      const message = e instanceof ApiError || e instanceof Error ? e.message : 'エクスポートに失敗しました'
+      setExportStatus({ kind: 'error', message })
+    }
+  }, [deployedLab])
+
+  // YAML（＋任意でannotations）をローカルファイルからインポートしてキャンバスに読み込む
+  // （2026-10-08追加）。他の人がexportしたテンプレートを取り込んで新規ラボとして
+  // 使い始められるようにする。読み込むだけでdeployはしない（ユーザーが確認してから
+  // 自分のアカウントでdeployする）
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const onImportFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const fileList = Array.from(files)
+    const yamlFile = fileList.find((f) => /\.ya?ml$/i.test(f.name))
+    const annotationsFile = fileList.find((f) => /\.json$/i.test(f.name))
+    if (!yamlFile) {
+      setLoadStatus({ kind: 'error', message: 'YAMLファイル（.yml/.yaml）を選んでください' })
+      return
+    }
+    try {
+      const yamlText = await yamlFile.text()
+      const annotationsText = annotationsFile ? await annotationsFile.text() : null
+      const { nodes: importedNodes, edges: importedEdges, counters: importedCounters } = parseImportedTopology(
+        yamlText,
+        annotationsText,
+      )
+      setNodes(importedNodes)
+      setEdges(importedEdges)
+      counters.current = importedCounters
+      setLoadStatus({ kind: 'idle' })
+    } catch (e) {
+      setLoadStatus({ kind: 'error', message: e instanceof Error ? e.message : 'インポートに失敗しました' })
+    }
+  }, [])
+
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
 
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
@@ -1121,6 +1228,31 @@ function TopologyEditorInner() {
           </button>
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".yml,.yaml,.json"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              void onImportFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() => importInputRef.current?.click()}
+            title="他の人がエクスポートしたYAML（＋annotations）を読み込んで新規ラボとして編集を始めます"
+          >
+            インポート
+          </button>
+          <button
+            onClick={onExport}
+            disabled={!deployedLab || exportStatus.kind === 'exporting'}
+            title={deployedLab ? 'deploy済みのYAML（＋annotations）をダウンロードします' : 'deployしてから使えます'}
+          >
+            {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
+          </button>
+          {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
           <div className="topology-editor__toolbar-spacer" />
           <button
             className="topology-editor__panel-toggle"
