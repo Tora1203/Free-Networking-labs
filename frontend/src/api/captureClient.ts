@@ -8,7 +8,7 @@
 // （noVNCは複数ファイルを素のGETで読みに行く通常のWebアプリのため、
 // 「最初の1メッセージでトークンを送る」ようなハンドシェイクが使えない。
 // backend/capture-proxy/README.md参照）。
-import { createCaptureSessions, getCaptureSessionReady, getAuthToken, type CaptureTarget } from './client'
+import { createCaptureSessions, deleteCaptureSession, getCaptureSessionReady, getAuthToken, type CaptureTarget } from './client'
 
 const CAPTURE_PROXY_BASE_URL = import.meta.env.VITE_CAPTURE_PROXY_URL ?? 'https://localhost:8084'
 
@@ -24,6 +24,23 @@ async function waitUntilReady(sessionId: string): Promise<string> {
     await new Promise((r) => setTimeout(r, READY_POLL_INTERVAL_MS))
   }
   throw new Error('キャプチャセッションの起動がタイムアウトしました')
+}
+
+// キャプチャタブが閉じられたらWiresharkコンテナ（セッション）を削除する。
+// 削除しないとタブを閉じてもコンテナが動き続け、キャプチャのたびに積み上がる（2026-10-09）。
+// 別オリジンのタブでも`closed`プロパティだけは読めるのでポーリングで検知する
+// （タブのリロードは`closed`にならないためセッションは維持される）。
+function watchTabAndCleanup(win: Window | null, sessionId: string) {
+  if (!win) {
+    // ポップアップブロック等でタブを開けなかった場合は即座に片付ける
+    deleteCaptureSession(sessionId).catch(() => {})
+    return
+  }
+  const timer = window.setInterval(() => {
+    if (!win.closed) return
+    window.clearInterval(timer)
+    deleteCaptureSession(sessionId).catch(() => {})
+  }, 2000)
 }
 
 // 指定したターゲット（コンテナ名＋インターフェース名）ごとにWireshark noVNCセッションを作成し、
@@ -55,7 +72,8 @@ export async function startPacketCapture(
       const label = labelKey ? labelsByContainer[labelKey] : undefined
       const labelQuery = label ? `?label=${encodeURIComponent(label)}` : ''
       const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}${labelQuery}`
-      window.open(url, '_blank')
+      const win = window.open(url, '_blank')
+      watchTabAndCleanup(win, session.sessionId)
     }),
   )
 }

@@ -259,6 +259,12 @@ export function createCaptureSessions(labName: string, targets: CaptureTarget[])
   )
 }
 
+export function deleteCaptureSession(sessionId: string) {
+  return request<unknown>(`/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
+}
+
 export function getCaptureSessionReady(sessionId: string) {
   return request<CaptureWiresharkVncReadyResponse>(
     `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}/ready`,
