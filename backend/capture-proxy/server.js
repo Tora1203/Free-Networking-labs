@@ -12,7 +12,7 @@
 // プロトコル（console-proxyと違い、こちらはトークンをURLのパスに埋め込む方式にしている。
 // 理由：noVNCは複数のHTML/JS/CSSファイルを素のGETで読みに行く通常のWebアプリであり、
 // 「最初の1メッセージでトークンを送る」ようなハンドシェイクをフックできないため）：
-//   ブラウザで `http://<proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>` を開くと、
+//   ブラウザで `https://<proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>` を開くと、
 //   このプロキシが `<clab-api-serverのパス>` 部分をそのまま
 //   `https://<clab-api-server><そのパス>` にAuthorizationヘッダー付きで転送する
 //   （WebSocketアップグレードも同じパスパターンで中継）。
@@ -20,13 +20,26 @@
 //   という**フルパス**なので（2026-10-08実機確認：`vnc/{proxyPath}`配下の相対パスではなかった）、
 //   このプロキシは`/vnc`以下を自分で組み立てたりせず、渡されたパスをそのまま右から左に流すだけにする
 //   （sessionIdをこのプロキシ自身のURLパスに含めないのもこのため。既にrest側に入っている）
+//
+// このプロキシ自身を2026-10-09にHTTPS化した。理由：noVNC（jlesage/baseimage-gui）には
+// ブラウザのClipboard APIを使った「ホストクリップボード自動同期」機能があるが、
+// Clipboard APIの非同期read/writeは「secure context」（HTTPS、またはlocalhost）でないと
+// 動かない。capture-proxyが平文HTTPのままだと自動同期が有効化されず、ユーザーは
+// noVNCのサイドバーにある手動のクリップボードテキストエリア経由でしかコピペできず
+// 「ちょっと面倒」という指摘を受けた（手動の方法自体は`backend/capture-proxy/README.md`参照）。
+// 自己署名証明書は`certs/`に生成済み（.gitignore対象、リポジトリには含めない）
 
-import { createServer } from 'node:http'
 import https from 'node:https'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer, WebSocket } from 'ws'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PROXY_PORT = Number(process.env.CAPTURE_PROXY_PORT ?? 8084)
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
+const TLS_CERT_PATH = process.env.CAPTURE_PROXY_TLS_CERT ?? path.join(__dirname, 'certs', 'cert.pem')
+const TLS_KEY_PATH = process.env.CAPTURE_PROXY_TLS_KEY ?? path.join(__dirname, 'certs', 'key.pem')
 const upstreamOrigin = new URL(CLAB_API_BASE_URL)
 const upstreamIsTls = upstreamOrigin.protocol === 'https:'
 
@@ -54,21 +67,29 @@ function upstreamPathFor(parsed) {
 }
 
 // noVNCのトップページ（HTML）にタブタイトルを埋め込む。どのリンク/インターフェースを
-// キャプチャしているタブなのかが見た目で分からない、という指摘（2026-10-08）への対応
+// キャプチャしているタブなのかが見た目で分からない、という指摘（2026-10-08）への対応。
+// 単純に<title>を書き換えるだけでは不十分だった：このベースイメージ（jlesage/baseimage-gui）の
+// noVNCアプリは読み込み後にJSで`document.title`を"Wireshark"（APP_NAME）に上書きしてしまうため、
+// 静的なHTML書き換えがすぐ上書きされて効かなかった（2026-10-09実機確認）。
+// → setIntervalで定期的に強制上書きするスクリプトを埋め込んで対抗する
 function injectTitle(html, label) {
-  const escaped = String(label).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  if (/<title>[\s\S]*?<\/title>/i.test(html)) {
-    return html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escaped}</title>`)
-  }
-  return html.replace(/<head[^>]*>/i, (tag) => `${tag}<title>${escaped}</title>`)
+  const escapedHtml = String(label).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const withTitle = /<title>[\s\S]*?<\/title>/i.test(html)
+    ? html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapedHtml}</title>`)
+    : html.replace(/<head[^>]*>/i, (tag) => `${tag}<title>${escapedHtml}</title>`)
+
+  const script = `<script>(function(){var t=${JSON.stringify(String(label))};function enforce(){if(document.title!==t)document.title=t;}enforce();setInterval(enforce,500);})();</script>`
+  return /<\/body>/i.test(withTitle) ? withTitle.replace(/<\/body>/i, `${script}</body>`) : `${withTitle}${script}`
 }
 
-const server = createServer((req, res) => {
+const tlsOptions = { cert: fs.readFileSync(TLS_CERT_PATH), key: fs.readFileSync(TLS_KEY_PATH) }
+
+const server = https.createServer(tlsOptions, (req, res) => {
   const parsed = parseCapturePath(req.url ?? '')
   if (!parsed) {
     console.log(`[http] 404 no-match: ${req.method} ${req.url}`)
     res.writeHead(404, { 'Content-Type': 'text/plain' })
-    res.end('not found: expected /capture/<sessionId>/<token>/...')
+    res.end('not found: expected /capture/<token>/<path>')
     return
   }
   console.log(`[http] ${req.method} ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
@@ -168,5 +189,5 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 server.listen(PROXY_PORT, () => {
-  console.log(`capture-proxy listening on http://localhost:${PROXY_PORT}/capture/<sessionId>/<token>/... (upstream: ${CLAB_API_BASE_URL})`)
+  console.log(`capture-proxy listening on https://localhost:${PROXY_PORT}/capture/<token>/... (upstream: ${CLAB_API_BASE_URL})`)
 })

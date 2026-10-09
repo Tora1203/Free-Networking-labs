@@ -385,6 +385,26 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   （優先度は要相談。パケットを読むだけなら必須ではないが、BPFフィルタ文字列を貼り付けたい
   等のニーズがあれば対応を検討する）
 
+## 決定事項（2026-10-09追記）：パケットキャプチャ機能のタイトル不具合修正とHTTPS化
+
+- **タブタイトルが反映されない不具合を発見・修正**：実機確認したところ、単に`<title>`タグを
+  書き換えるだけでは効かなかった。原因は、Wireshark VNCコンテナのベースイメージ
+  （`jlesage/baseimage-gui`）のnoVNCアプリが、ページ読み込み後にJSで`document.title`を
+  `APP_NAME`（"Wireshark"）に上書きしてしまうこと。**対応**：`setInterval`で定期的に
+  `document.title`を強制的に書き戻すスクリプトをHTMLレスポンスに埋め込むよう修正
+- **「コピペが面倒」という指摘を受けてcapture-proxyをHTTPS化**：調査の結果、
+  noVNC（`jlesage/baseimage-gui`ベース）には**ブラウザのClipboard APIを使った
+  「ホストクリップボード自動同期」機能が標準で既に入っている**ことが判明
+  （`UI.webData.hostClipboardSync`、`RFB.isClipboardAutoSyncSupported()`）。
+  Wireshark側でコピーすると自動的にOS/ブラウザのクリップボードに反映される仕組みだが、
+  Clipboard APIの非同期read/writeは「secure context」（HTTPS、またはlocalhost）を要求する
+  仕様のため、capture-proxyが平文HTTPのままだとこの自動同期機能自体が有効化されなかった。
+  `certs/`に自己署名証明書を生成し`https.createServer`化して解決（自己署名のため
+  初回アクセス時にブラウザの警告は出る。他の自己署名TLSサービス（clab-api-server等）と
+  同様の割り切り）
+  - 手動での代替手段（noVNCサイドバーのクリップボードテキストエリア経由）も引き続き使える
+  - フロントエンドの`VITE_CAPTURE_PROXY_URL`も`https://`に変更
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**

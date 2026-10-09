@@ -10,7 +10,7 @@
 // backend/capture-proxy/README.md参照）。
 import { createCaptureSessions, getCaptureSessionReady, getAuthToken, type CaptureTarget } from './client'
 
-const CAPTURE_PROXY_BASE_URL = import.meta.env.VITE_CAPTURE_PROXY_URL ?? 'http://localhost:8084'
+const CAPTURE_PROXY_BASE_URL = import.meta.env.VITE_CAPTURE_PROXY_URL ?? 'https://localhost:8084'
 
 // セッション作成直後はまだWiresharkコンテナの起動中で`ready`がfalseのことがあるため、
 // 少し待ってから何度か再確認する

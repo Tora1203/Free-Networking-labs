@@ -22,7 +22,7 @@ clab-api-serverの`AuthMiddleware`はヘッダー以外の手段を一切持た�
 ハンドシェイクをフックできないため：
 
 ```
-http://<capture-proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>
+https://<capture-proxy>/capture/<jwt>/<clab-api-serverのパス（先頭/から）>
 ```
 
 を開くと、`<clab-api-serverのパス>`部分をそのまま
@@ -59,22 +59,47 @@ URLに`?label=<表示したい文字列>`を付けると、上流から返って
 フロントエンド（`captureClient.ts`）は「R1(eth1) ↔ SW1」のような、ノードの短縮表示名＋
 インターフェース名＋相手ノード名の形式でラベルを組み立てて渡している。
 
-## 既知の制約（未対応）
+**実機で発見・修正した不具合（2026-10-09）**：単に`<title>`タグを書き換えるだけでは
+反映されなかった。原因は、ベースイメージ（`jlesage/baseimage-gui`）のnoVNCアプリが
+ページ読み込み後にJSで`document.title`を`APP_NAME`（"Wireshark"）に上書きしてしまうため。
+対応：`setInterval`で定期的に`document.title`を強制的に書き戻すスクリプトを
+HTMLレスポンスに埋め込むように修正（`injectTitle()`参照）。
 
-**noVNC画面との間でコピペができない**：VNCは画面を転送しているだけ（構造的な制約）なので、
-クリップボード同期機能が無いと解決しない。対応するかはパケット解析での実際のニーズ次第
-（docs/direction.md参照）。
+## クリップボード同期（HTTPS化、2026-10-09）
+
+当初は平文HTTPだったが、「noVNC画面とのコピペが面倒」という指摘を受けてHTTPS化した。
+理由：noVNC（`jlesage/baseimage-gui`ベース）には、ブラウザのClipboard APIを使った
+「ホストクリップボード自動同期」機能が標準で入っている（`UI.webData.hostClipboardSync`、
+`RFB.isClipboardAutoSyncSupported()`）。Wireshark側でテキストをコピーすると自動的に
+ブラウザ（OS）側のクリップボードに反映され、普通にCtrl+Vで貼り付けられるようになる。
+
+ただし、Clipboard APIの非同期read/writeは「secure context」（HTTPS、またはlocalhost）
+でないと動かない仕様のため、capture-proxyが平文HTTPのままだと自動同期機能自体が
+有効化されなかった。`certs/`に自己署名証明書を生成し、`https.createServer`で
+待ち受けるように変更して解決（自己署名のため初回アクセス時はブラウザの警告が出る）。
+
+この機能が無効・使えない場合でも、noVNCのサイドバー（画面左端の矢印タブ）に
+手動のクリップボードテキストエリアがあり、そちら経由でもコピペは可能
+（Wireshark側で右クリック→Copy→任意の形式を選ぶ→サイドバーのテキストエリアに
+反映→そこから選択してCtrl+Cすればブラウザのクリップボードに入る、という手順）。
 
 ## 起動方法
 
 ```sh
 npm install
+# 初回のみ：自己署名証明書を生成（certs/はリポジトリに含めない）
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
+  -days 825 -nodes -subj "/CN=capture-proxy" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 npm start
 ```
 
 環境変数（`.env.example`参照）:
 - `CAPTURE_PROXY_PORT`: 待受ポート（デフォルト `8084`）
 - `CLAB_API_BASE_URL`: `clab-api-server`のベースURL（デフォルト `https://localhost:8090`）
+- `CAPTURE_PROXY_TLS_CERT` / `CAPTURE_PROXY_TLS_KEY`: TLS証明書/秘密鍵のパス
+  （デフォルト `certs/cert.pem` / `certs/key.pem`）
 
 ## 常駐させる
 
