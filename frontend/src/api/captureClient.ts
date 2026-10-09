@@ -47,7 +47,12 @@ export async function startPacketCapture(
       // そのままcapture-proxyのパスに埋め込んで渡す（capture-proxy側もそのまま中継するだけ）
       const vncPath = await waitUntilReady(session.sessionId)
       const normalizedPath = vncPath.startsWith('/') ? vncPath : `/${vncPath}`
-      const label = labelsByContainer[session.containerName]
+      // セッションのcontainerNameは完全名（`clab-<lab>-<node>`）で返ることがあるため、
+      // 短縮ノード名のキーとも末尾一致で照合する（これで一致せずラベルが付かなかった、2026-10-09）
+      const labelKey = Object.keys(labelsByContainer).find(
+        (k) => session.containerName === k || session.containerName.endsWith(`-${k}`),
+      )
+      const label = labelKey ? labelsByContainer[labelKey] : undefined
       const labelQuery = label ? `?label=${encodeURIComponent(label)}` : ''
       const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}${labelQuery}`
       window.open(url, '_blank')
