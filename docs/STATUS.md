@@ -726,7 +726,11 @@
   ホスト名へ統一する場合はcapture-proxy等の証明書SANに`fnl.sotsuken.net`の追加が必要。
 
 - **本番形態を決定（2026-10-10）**：nginxで単一オリジン化（第1段階）→必要時にnginx＋3プロキシをDocker化（第2段階）。
-  clab-api-server/containerlabはホストに残す。詳細は`direction.md`。実装は未着手（次の作業候補）。
+  clab-api-server/containerlabはホストに残す。詳細は`direction.md`。
+  **第1段階を実施し実機確認済み（2026-10-10）**：`backend/nginx/`（README参照）。`https://fnl.sotsuken.net/`で
+  ログイン・コンソール・VLAN設定・パケットキャプチャが動作。フロント更新は`backend/nginx/deploy-frontend.sh`（sudo不要）。
+  フロントの接続先は`frontend/.env.production`で相対パス化（開発用`.env`は従来どおり）。
+  今後の候補：8082/8083/8084/8090を外部から直接触れないようファイアウォールで閉じる（nginx経由のみにする）。
 
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの

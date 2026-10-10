@@ -480,4 +480,6 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   - ovs-helper（ホストのOVSを操作）とcapture-proxy（ホスト上のコンテナへ接続）は、
     コンテナ化時にネットワーク/権限まわりの設計が必要。
 - 現状の`vite dev`運用は、第1段階の実施までの暫定とする。
-
+- **第1段階は実施・実機確認済み（2026-10-10）**：`backend/nginx/`に設定一式（`fnl.conf`/`install.sh`/`deploy-frontend.sh`）。
+  `https://fnl.sotsuken.net/`でログイン・コンソール・VLAN設定・パケットキャプチャが動作することをユーザーが確認。
+  nginx 1.24（Ubuntu 24.04）では`http2 on;`が使えず`listen ... http2`と書く必要があった。
