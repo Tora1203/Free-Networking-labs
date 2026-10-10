@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-10-09 / kawase3（パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
+最終更新: 2026-10-10 / kawase3（ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -719,6 +719,12 @@
   `docs/backlog.md`（機能候補・運用・公開の検討事項）。方針決定（自動保存なし／BGPは仕様として周知／テストは内部ヒアリング／
   限定公開希望）は`direction.md`に記録。本番形態の比較はbacklog.mdのC-1。マニュアルは画面を実際に通しては未確認。
 
+- **ホスト名`fnl` / `fnl.sotsuken.net`でのアクセスに対応（2026-10-10）**：viteの`allowedHosts`に追加
+  （`frontend/vite.config.ts`、追加は`.env`の`ALLOWED_HOSTS`）、ovs-helperとclab-api-serverの
+  `CORS_ALLOWED_ORIGINS`に`http://fnl:5173`・`http://fnl.sotsuken.net:5173`を追加（clab-api-server側はユーザーがsudoで実施、
+  再起動後にpreflightが204になることを確認）。API接続先（`frontend/.env`）はIPのまま。
+  ホスト名へ統一する場合はcapture-proxy等の証明書SANに`fnl.sotsuken.net`の追加が必要。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
@@ -727,8 +733,7 @@
 - ルーターのCLI主体化（プレーンなアドレス設定をvtyshで行う方式）＋FRR設定の永続化
   （`write memory`→再deployを越えて設定が残る）の実機テストは一時テストラボで実施済みだが、
   front-test等の実運用ラボでも確認してほしい
-- **YAML export/import機能（上記、新規実装）の実機確認**：front-test等をエクスポートし、
-  別の新規ラボにインポートしてトポロジ・VLAN・座標が正しく復元されるか確認してほしい
+- **YAML export/import機能：実機確認済み（2026-10-10、ユーザー確認）**。エクスポートしたYAMLのインポートまで問題なく動作
 - **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
   どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
 - **パケットキャプチャ機能（上記、実機動作確認済み。ARP/ICMPが見えることまで確認済み）**：
