@@ -10,6 +10,6 @@ export default defineConfig(({ mode }) => {
   const extraHosts = (env.ALLOWED_HOSTS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
   return {
     plugins: [react()],
-    server: { allowedHosts: ['fnl', ...extraHosts] },
+    server: { allowedHosts: ['fnl', 'fnl.sotsuken.net', ...extraHosts] },
   }
 })
