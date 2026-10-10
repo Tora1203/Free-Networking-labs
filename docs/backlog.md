@@ -55,8 +55,8 @@ ovs-helper(8083, http)、capture-proxy(8084, HTTPS) がそれぞれ**別ポー�
 | C. Nodeの簡易静的サーバー | `vite build`＋`vite preview`やexpress等 | 構成が軽い。Node一本で完結 | `vite preview`は本番非推奨。リバースプロキシ機能を自作する羽目になりやすく、結局Bの下位互換 |
 | D. Docker Compose化 | nginx＋各プロキシをコンテナ化 | 再現性が高く、新サーバーへの導入・公開時の配布が楽 | clab-api-serverはPAM認証・docker.sock・netns操作でホスト依存が強く、コンテナ化が難しい。ネットワーク周り（capture-proxyがホストのコンテナへ到達）が複雑。工数大 |
 
-暫定の見立て：**Bを軸にし、必要になればDを将来拡張**とするのが費用対効果が高い。決定ではないため、
-方針が固まったら`direction.md`に追記する。
+**決定（2026-10-10）**：第1段階でB（nginxで単一オリジン化）、第2段階（配布が必要になったら）でnginxと
+3つのプロキシのみDocker化。clab-api-server/containerlabはホストに残す。詳細は`direction.md`。
 
 ## D. ドキュメント・公開
 
@@ -88,10 +88,9 @@ ovs-helper(8083, http)、capture-proxy(8084, HTTPS) がそれぞれ**別ポー�
 
 1. 自動保存 → **やらない**（決定済み）
 2. BGP `ebgp-requires-policy` → **FRRの仕様として周知する**（決定済み）
-3. 本番形態 → 比較は上記C-1。**未確定**（Bが有力、方針が固まったらdirection.mdへ）
+3. 本番形態 → **決定済み**（2026-10-10、nginxで単一オリジン化→必要時にnginx+プロキシをDocker化。direction.md）
 4. テスト → **完全内部**、担当者が直接ヒアリング（決定済み）
 5. 公開 → **限定公開を希望、時期未定**、公開物は動作に必要な部分のみ・Claude関連は除外（決定済み）
 
 残っている相談事項：
-- 本番形態の最終決定（C-1）
 - 限定公開の具体的な形（誰に・どう渡すか）と時期

@@ -725,6 +725,9 @@
   再起動後にpreflightが204になることを確認）。API接続先（`frontend/.env`）はIPのまま。
   ホスト名へ統一する場合はcapture-proxy等の証明書SANに`fnl.sotsuken.net`の追加が必要。
 
+- **本番形態を決定（2026-10-10）**：nginxで単一オリジン化（第1段階）→必要時にnginx＋3プロキシをDocker化（第2段階）。
+  clab-api-server/containerlabはホストに残す。詳細は`direction.md`。実装は未着手（次の作業候補）。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は

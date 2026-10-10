@@ -461,3 +461,23 @@ API仕様書を公開しているため、バックエンドの構築完了を�
 - **公開は限定公開を希望**（セキュリティ面で十分に自信を持てる状態ではないため）。時期は未定。
   公開物は**動作に必要な部分のみ**とし、Claude Code関連の資料は含めない（個人的なやり取りが含まれうるため）。
   具体的な含める/除くの範囲は`docs/backlog.md`のD章にチェックリスト化した。
+
+## 決定事項（2026-10-10追記）：本番形態（nginxで単一オリジン化、Docker化は段階的に）
+
+2026-10-09の「本番形態は比較してから決める」を受けた決定（比較表は`docs/backlog.md`のC-1）。
+
+- **第1段階：nginxを入口にして単一オリジン化する**。`vite build`した静的ファイルをnginxで配信し、
+  `/api`→clab-api-server(8090)、`/console`→console-proxy(8082)、`/ovs`→ovs-helper(8083)、
+  `/capture`→capture-proxy(8084)へリバースプロキシする。
+  - **理由**：CORS設定が不要になる、証明書の警告が1回で済む、ws://・http://の平文を解消できる
+    （クリップボード自動同期のsecure context要件も満たしやすい）、外部に見せるポートを1つに絞れる。
+  - 実施時の留意点：WebSocketのUpgrade設定と長時間接続のタイムアウト、clab-api-serverが自己署名のため
+    `proxy_ssl_verify off`相当が必要、フロントの`.env`（接続先URL）とコードの修正が入る。
+- **第2段階：Docker化は限定公開などで配布が必要になった時点で、nginxと3つのプロキシ
+  （console-proxy/ovs-helper/capture-proxy）のみを対象に検討する**。
+  - **clab-api-serverとcontainerlabはホストに残す**（PAM認証・docker.sock・netns操作などホスト依存が強く、
+    コンテナ化は現実的でないため）。
+  - ovs-helper（ホストのOVSを操作）とcapture-proxy（ホスト上のコンテナへ接続）は、
+    コンテナ化時にネットワーク/権限まわりの設計が必要。
+- 現状の`vite dev`運用は、第1段階の実施までの暫定とする。
+
