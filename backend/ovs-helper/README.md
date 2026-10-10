@@ -99,6 +99,35 @@ sudo visudo -c
 成功時は`200 {"message": "..."}`、認可エラーは`403`、入力不正は`400`、
 `ovs-vsctl`実行失敗は`500`で`{"error": "..."}`を返します。
 
+### `POST /frr-config`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "labName": "lab-xxxxxxxx", "routerName": "router-1" }
+```
+
+ルーターのFRR設定（`daemons`/`frr.conf`/`vtysh.conf`）をdeployより前に用意するための
+エンドポイント（2026-10-07追加）。`$CLAB_LABS_ROOT/<username>/<labName>/frr-config/<routerName>/`
+に3ファイルを作成します。**既に存在するファイルは上書きしません**
+（学生がvtyshで`write memory`した設定を消さないため）。
+
+- なぜ必要か：ルーターのIPアドレス設定等は「GUIで一方的に投入する」のではなく、
+  学生がvtyshのCLIで直接設定し、それがdeployを越えて残るようにしたい
+  （「ルーターはCLIで設定しないと意味がない」指摘対応）。containerlabはbind mount先の
+  ファイルが事前に存在しないとdeploy自体を拒否するため（実機確認済み：
+  `Failed to verify bind path: ... no such file or directory`）、最低限の初期ファイルを
+  ここで用意する必要がある
+- `username`はJWTのペイロードから読むだけで署名検証はしない（ファイルパスの構築にしか
+  使わないため。認可自体は`verifyTokenOnly`がclab-api-server自身に問い合わせて行っており、
+  偽装トークンならそこで401になる）
+- 実機確認済み：`write memory`で保存した設定が、コンテナを完全に破棄・再作成する
+  redeployを越えて残ることを確認した（一時テストラボでの検証）
+- `labName`/`routerName`は英数字・ハイフン・アンダースコアのみ（`SAFE_PATH_SEGMENT_PATTERN`）。
+  パストラバーサル対策
+
+環境変数`CLAB_LABS_ROOT`（デフォルト`/var/lib/containerlab/labs`）でラボのルートディレクトリを
+指定します。
+
 ## 起動方法
 
 ```sh

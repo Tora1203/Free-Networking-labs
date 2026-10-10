@@ -23,7 +23,9 @@ import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
-import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
+import { applyVlanConfig, ensureBridge, ensureFrrConfig, resetPort, type VlanConfig } from '../api/ovsHelperClient'
+import { startPacketCapture } from '../api/captureClient'
+import type { CaptureTarget } from '../api/client'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { parseTopologyYaml } from '../utils/topologyFromYaml'
 import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serializeAnnotations } from '../utils/annotations'
@@ -34,6 +36,7 @@ import {
   getLabAnnotations,
   getLabTopologyYaml,
   putLabAnnotations,
+  type ExecResponse,
   type TopologyContent,
 } from '../api/client'
 import { useAuthStore } from '../store/authStore'
@@ -64,7 +67,30 @@ interface EdgeIfaceData {
   // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
   sourceAddress?: string
   targetAddress?: string
+  // PC/ルーターがプレーンなアドレス設定（router on a stickではない）の時だけ意味がある。
+  // デフォルトゲートウェイ（単純なIPv4アドレス、プレフィックス無し）。設定するとdeploy後に
+  // `ip route add default via <gateway>`を実行する（2026-10-07追加。「ラボ内の宛先が
+  // 自動的に外部に飛んでしまう」指摘対応。docs/direction.md参照）
+  sourceGateway?: string
+  targetGateway?: string
+  // ルーター側がL2スイッチのトランクポートに接続している時だけ意味がある（router on a stick、
+  // 2026-10-07追加）。物理I/F自体にはアドレスを持たせず、VLANごとのサブインターフェース
+  // （例: eth1.10）を作ってそれぞれにアドレスを振る。sourceAddress/targetAddressとは
+  // 排他（モードで切り替える。UI側のpendingSourceMode/pendingTargetMode参照）
+  sourceSubInterfaces?: SubInterfaceConfig[]
+  targetSubInterfaces?: SubInterfaceConfig[]
   [key: string]: unknown
+}
+
+// router on a stick用のVLANサブインターフェース。
+// ルーターの通常のアドレス設定（「プレーン」モード）はvtyshのCLIで行う方針のままだが、
+// サブインターフェースの作成はVLAN ID＋アドレスの両方をGUIで一度に設定する方式に戻した
+// （2026-10-08再変更：デバイス作成はCLIでは不可能なためGUI必須、かつ「デバイスだけGUIで
+// 作ってアドレスは別途CLIで」という2段階の運用は煩雑で誤解を生みやすいという指摘を受けて、
+// サブインターフェース作成時はGUIで完結させることにした。詳細はdocs/direction.md参照）
+interface SubInterfaceConfig {
+  vlan: number
+  address: string
 }
 
 // VLANモードの選択肢。トランクは「全VLAN許可」と「指定VLANのみ許可」を分ける
@@ -93,6 +119,15 @@ function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; e
   return { config: { mode: 'trunk', vlans } }
 }
 
+// parseVlanInput()の逆変換。既存接続を編集する時、保存済みのVlanConfigから
+// モード選択＋入力欄の文字列を復元するために使う（2026-10-07追加）
+function vlanConfigToModeAndValue(config: VlanConfig | undefined): { mode: VlanMode; value: string } {
+  if (!config) return { mode: 'none', value: '' }
+  if (config.mode === 'access') return { mode: 'access', value: String(config.vlan) }
+  if (config.vlans === 'all') return { mode: 'trunk-all', value: '' }
+  return { mode: 'trunk-list', value: config.vlans.join(',') }
+}
+
 // IPv4アドレス入力欄の文字列を検証する。空文字は「未設定」として扱う（PC/ルーター側は
 // 配線だけしてアドレスは後で、という使い方もできるようにするため必須にしない）
 function parseIpv4Cidr(value: string): { address?: string; error?: string } {
@@ -106,6 +141,43 @@ function parseIpv4Cidr(value: string): { address?: string; error?: string } {
     return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
   }
   return { address: trimmed }
+}
+
+// router on a stick用：VLANサブインターフェースの行（VLAN ID＋アドレス）をまとめて検証する。
+// 行が0件なら「未設定」として扱う（2026-10-08再変更：デバイス作成がGUI必須な以上、
+// 同じタイミングでアドレスも設定してしまう方がシンプルで誤解が無いという判断）
+function parseSubInterfaceRows(rows: { vlan: string; address: string }[]): { configs?: SubInterfaceConfig[]; error?: string } {
+  if (rows.length === 0) return {}
+  const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
+  const configs: SubInterfaceConfig[] = []
+  const seenVlans = new Set<number>()
+  for (const row of rows) {
+    const vlan = Number(row.vlan)
+    if (!isValidVlanId(vlan)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
+    if (seenVlans.has(vlan)) return { error: `VLAN ${vlan} が重複しています` }
+    seenVlans.add(vlan)
+    const { address, error } = parseIpv4Cidr(row.address)
+    if (error) return { error }
+    if (!address) return { error: 'サブインターフェースにはIPv4アドレスが必要です' }
+    configs.push({ vlan, address })
+  }
+  return { configs }
+}
+
+// デフォルトゲートウェイ入力欄の検証。プレフィックス無しの単純なIPv4アドレスのみ
+// （2026-10-07追加。「ラボ内の宛先が自動的に外部に飛んでしまう」指摘対応：
+// containerlabはmgmt用のeth0に`default via <docker bridge gw>`を自動設定するため、
+// ラボ内で意図していない宛先向けの経路が無いと、そのままeth0経由で実際の外部ネットワークに
+// 出てしまうことが実機で確認された。デフォルトゲートウェイを明示設定できるようにし、
+// 併せてeth0の自動デフォルトルートはdeploy後に削除する）
+function parseIpv4Gateway(value: string): { gateway?: string; error?: string } {
+  const trimmed = value.trim()
+  if (trimmed === '') return {}
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(trimmed)
+  if (!m || m.slice(1, 5).map(Number).some((n) => n > 255)) {
+    return { error: 'ゲートウェイは「10.0.0.254」のようなIPv4アドレスで指定してください' }
+  }
+  return { gateway: trimmed }
 }
 
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
@@ -169,9 +241,12 @@ const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privileged: fals
   router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
 }
 
-function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
+// excludeEdgeIdは「このエッジ自身の既存のI/F割り当て」を使用中として数えないために使う
+// （既存接続を編集する時、自分自身のI/Fを「既に使用中」と誤検知してしまうのを防ぐ、2026-10-07追加）
+function usedInterfaces(nodeId: string, edges: Edge[], excludeEdgeId?: string): Set<string> {
   const used = new Set<string>()
   for (const e of edges) {
+    if (e.id === excludeEdgeId) continue
     const data = e.data as Partial<EdgeIfaceData> | undefined
     if (e.source === nodeId && data?.sourceIface) used.add(data.sourceIface)
     if (e.target === nodeId && data?.targetIface) used.add(data.targetIface)
@@ -198,6 +273,20 @@ interface AddressTask {
   address: string
 }
 
+// router on a stick用：VLANサブインターフェース（例: eth1.10）の作成タスク。
+// デバイス作成（`ip link add ... type vlan`→`ip link set ... up`）とアドレス設定
+// （`ip addr add`）の両方をここで行う（2026-10-08再変更：デバイス作成はvtyshでは
+// 不可能なためGUI側で用意するしかなく、「デバイスだけGUIで作ってアドレスは別途CLIで」という
+// 2段階運用は煩雑で誤解を生みやすいという指摘を受けて、サブインターフェース作成時は
+// GUIで完結させる方式に戻した。ルーターの通常のアドレス設定（「プレーン」モード）は
+// 引き続きvtyshのCLIで行う。docs/direction.md参照）
+interface SubInterfaceTask {
+  nodeName: string
+  parentIface: string
+  vlan: number
+  address: string
+}
+
 // デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
 // ブリッジ名・ポート名）から、UI上で使っていた分かりやすい名前・VLAN・アドレス設定を
 // 引き戻すためのマップ。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
@@ -209,6 +298,61 @@ interface PortAnnotation {
   iface: string
   vlan?: VlanConfig
   address?: string
+  // デフォルトゲートウェイ（2026-10-07追加）
+  gateway?: string
+  // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
+  subInterfaces?: SubInterfaceConfig[]
+}
+
+// containerlabのトポロジYAML（＋任意でannotations JSON）からReact Flowのnodes/edgesを復元する。
+// 「既存ラボをエディタで開く」（サーバーから取得）と「YAMLファイルをインポート」（ローカルの
+// ファイルを読む）の両方で同じ復元ロジックを使うため共通化した（2026-10-08追加、YAML
+// export/import機能）。annotationsが無い場合は座標・VLAN/アドレス設定の復元をスキップし、
+// グリッド配置のまま進める（他ユーザーが作ったYAMLをインポートする場合、annotationsは
+// 無いのが普通）
+function parseImportedTopology(
+  yamlText: string,
+  annotationsText: string | null,
+): { nodes: Node[]; edges: Edge[]; counters: Record<PaletteNodeKind, number> } {
+  const parsed = parseTopologyYaml(yamlText)
+  let nodes = parsed.nodes
+  let edges = parsed.edges
+  if (annotationsText) {
+    try {
+      // 順序の理由はuseEffect側の読み込み処理と同じ（restoreSwitchIdentitiesより先にport
+      // annotationsを引く、座標復元は最後）
+      edges = applyPortAnnotations(edges, annotationsText)
+      ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
+      nodes = applyAnnotations(nodes, annotationsText)
+    } catch {
+      // 想定外のフォーマットの場合は無視してグリッド配置のまま進める
+    }
+  }
+  return { nodes, edges, counters: parsed.counters }
+}
+
+// 文字列をブラウザでファイルとしてダウンロードさせる（2026-10-08追加、YAML export機能）
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// execInLab()の結果を見てエラーなら投げる。execはコマンド自体が失敗してもHTTPとしては200で
+// 返ってくるため`return-code`で判定する必要がある（addressTasks/subInterfaceTasks/
+// routeResultsで共通して必要なロジックなのでまとめた、2026-10-08レビュー指摘対応）。
+// 対象ノードが見つからず`result`が空オブジェクトになるケース（firstResultがundefined）も
+// 「結果が取れなかった＝失敗」として扱う（以前はここが抜けていて、execが実質的に
+// 何も実行できなかった場合でも静かに成功扱いになっていた）
+function assertExecOk(result: ExecResponse, failureMessage: string) {
+  const [firstResult] = Object.values(result).flat()
+  if (!firstResult || firstResult['return-code'] !== 0) {
+    throw new Error((firstResult?.stderr ?? '').trim() || failureMessage)
+  }
 }
 
 function buildTopologyContent(
@@ -221,6 +365,17 @@ function buildTopologyContent(
   vlanTasks: VlanTask[]
   switchPorts: string[]
   addressTasks: AddressTask[]
+  subInterfaceTasks: SubInterfaceTask[]
+  // PC/ルーター（L2スイッチ以外）の全clabName。containerlabが自動設定するeth0の
+  // デフォルトルートはmgmtネットワークのゲートウェイを指しており、ラボ内に存在しない
+  // 宛先への経路が無いとそのまま実際の外部ネットワークに出てしまう（2026-10-07実機確認）。
+  // deploy後に全ノードでこのデフォルトルートを削除する
+  linuxNodeNames: string[]
+  // ノードごとに設定されたデフォルトゲートウェイ。削除後、該当ノードだけ
+  // `ip route add default via <gateway>`で明示的に設定し直す
+  gatewayByNode: Map<string, string>
+  // deployより前にensureFrrConfig()を呼ぶ対象の全ルーターのclabName（2026-10-07追加）
+  routerClabNames: string[]
   portAnnotations: Record<string, PortAnnotation>
   switchOriginalIds: Record<string, string>
 } {
@@ -245,17 +400,48 @@ function buildTopologyContent(
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
     const caps = CONTAINER_CAPABILITIES[data.kind]
+    // ルーターはCLI（vtysh）での設定を永続化するため、daemons/frr.conf/vtysh.confを
+    // bind mountする（2026-10-07追加。「ルーターはCLIで設定しないと意味がない」指摘対応。
+    // 相対パスはlabのトポロジYAML自身からの相対位置になる、M1のテストラボと同じ流儀）。
+    // このパスにファイルが事前に存在していないとdeploy自体が失敗するため、deployより前に
+    // ensureFrrConfig()で用意する必要がある（buildTopologyContentのroutersから収集する）
+    const frrBinds =
+      data.kind === 'router'
+        ? [
+            `frr-config/${clabName}/daemons:/etc/frr/daemons`,
+            `frr-config/${clabName}/frr.conf:/etc/frr/frr.conf`,
+            `frr-config/${clabName}/vtysh.conf:/etc/frr/vtysh.conf`,
+          ]
+        : undefined
     nodesMap[clabName] = {
       kind: data.clabKind,
       ...(data.image ? { image: data.image } : {}),
       ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
+      ...(frrBinds ? { binds: frrBinds } : {}),
     }
     if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
 
+  // deployより前にensureFrrConfig()を呼ぶ対象（router on a stickのVLANサブインターフェースが
+  // 無いルーターも含め、全ルーターに対して必要。デフォルトのdaemons/frr.conf/vtysh.confを
+  // 用意しないとbind mount先が存在せずdeploy自体が失敗する、2026-10-07実機確認）
+  const routerClabNames = deviceNodes
+    .filter((n) => (n.data as Partial<TopoNodeData>).kind === 'router')
+    .map((n) => clabNodeNames.get(n.id))
+    .filter((name): name is string => !!name)
+
+  // PC/ルーター（コンテナを持つノード）の全clabName。deploy後、全ノードで
+  // containerlab自動設定のeth0デフォルトルートを削除する対象（2026-10-07追加）
+  const linuxNodeNames = deviceNodes
+    .filter((n) => (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+    .map((n) => clabNodeNames.get(n.id))
+    .filter((name): name is string => !!name)
+
   const vlanTasks: VlanTask[] = []
   const switchPorts: string[] = []
   const addressTasks: AddressTask[] = []
+  const subInterfaceTasks: SubInterfaceTask[] = []
+  const gatewayByNode = new Map<string, string>()
   const portAnnotations: Record<string, PortAnnotation> = {}
 
   const links = edges.map((edge) => {
@@ -282,17 +468,47 @@ function buildTopologyContent(
     if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
     if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
 
-    // PC/ルーター側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
+    // ルーターの通常のアドレス設定はvtyshのCLIで行う方針（2026-10-07決定）のため、GUIの
+    // プレーンなアドレス/ゲートウェイ入力欄はルーターには出していない。ただし古い保存データ
+    // （方針変更前にルーター側へ設定されたsourceAddress/sourceGateway）が再読み込み時に
+    // 復元されてしまう可能性があり、それを律義に毎回execで再投入すると、学生がvtyshで
+    // `write memory`した設定と静かに競合してしまう（2026-10-08レビュー指摘）。
+    // ルーター側は常にスキップする（PCのみ対象）
+    const sourceIsRouter = nodeKinds.get(edge.source) === 'router'
+    const targetIsRouter = nodeKinds.get(edge.target) === 'router'
+
+    // PC側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
     // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）
-    if (!sourceIsSwitch && iface.sourceAddress) {
+    if (!sourceIsSwitch && !sourceIsRouter && iface.sourceAddress) {
       addressTasks.push({ nodeName: sourceName, iface: iface.sourceIface, address: iface.sourceAddress })
     }
-    if (!targetIsSwitch && iface.targetAddress) {
+    if (!targetIsSwitch && !targetIsRouter && iface.targetAddress) {
       addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
     }
+    // デフォルトゲートウェイ（2026-10-07追加）。プレーンなアドレス設定の時だけ意味がある
+    if (!sourceIsSwitch && !sourceIsRouter && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
+    if (!targetIsSwitch && !targetIsRouter && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
+    for (const sub of iface.sourceSubInterfaces ?? []) {
+      subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan, address: sub.address })
+    }
+    for (const sub of iface.targetSubInterfaces ?? []) {
+      subInterfaceTasks.push({ nodeName: targetName, parentIface: iface.targetIface, vlan: sub.vlan, address: sub.address })
+    }
 
-    portAnnotations[`${sourceName}:${sourcePort}`] = { iface: iface.sourceIface, vlan: iface.sourceVlan, address: iface.sourceAddress }
-    portAnnotations[`${targetName}:${targetPort}`] = { iface: iface.targetIface, vlan: iface.targetVlan, address: iface.targetAddress }
+    portAnnotations[`${sourceName}:${sourcePort}`] = {
+      iface: iface.sourceIface,
+      vlan: iface.sourceVlan,
+      address: iface.sourceAddress,
+      gateway: iface.sourceGateway,
+      subInterfaces: iface.sourceSubInterfaces,
+    }
+    portAnnotations[`${targetName}:${targetPort}`] = {
+      iface: iface.targetIface,
+      vlan: iface.targetVlan,
+      address: iface.targetAddress,
+      gateway: iface.targetGateway,
+      subInterfaces: iface.targetSubInterfaces,
+    }
 
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
   })
@@ -302,6 +518,10 @@ function buildTopologyContent(
     vlanTasks,
     switchPorts,
     addressTasks,
+    subInterfaceTasks,
+    linuxNodeNames,
+    gatewayByNode,
+    routerClabNames,
     portAnnotations,
     switchOriginalIds,
   }
@@ -312,7 +532,13 @@ type ContextMenu =
   | { x: number; y: number; kind: 'node'; nodeId: string }
   | { x: number; y: number; kind: 'edge'; edgeId: string }
   | null
-type PendingConnection = { source: string; target: string; sourceHandle: string | null; targetHandle: string | null } | null
+// editingEdgeIdが設定されている時は「新規接続」ではなく「既存接続の設定編集」モード
+// （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応：
+// 元々は新規接続時のポップアップにしかI/F・VLAN・アドレス・ゲートウェイの入力欄が無く、
+// 既存の接続を後から変更する手段が無かった）
+type PendingConnection =
+  | { source: string; target: string; sourceHandle: string | null; targetHandle: string | null; editingEdgeId?: string }
+  | null
 
 function TopologyEditorInner() {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -334,6 +560,16 @@ function TopologyEditorInner() {
   // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
   const [pendingSourceAddress, setPendingSourceAddress] = useState('')
   const [pendingTargetAddress, setPendingTargetAddress] = useState('')
+  // プレーンなアドレス設定の時だけ表示するデフォルトゲートウェイの入力欄（2026-10-07追加）
+  const [pendingSourceGateway, setPendingSourceGateway] = useState('')
+  const [pendingTargetGateway, setPendingTargetGateway] = useState('')
+  // ルーターがL2スイッチのトランクポートに接続している時だけ表示するrouter on a stick設定
+  // （2026-10-07追加）。'plain'ならpendingSource/targetAddressのプレーンなアドレス設定、
+  // 'vlan-subif'ならVLANごとのサブインターフェース一覧を使う（排他）
+  const [pendingSourceMode, setPendingSourceMode] = useState<'plain' | 'vlan-subif'>('plain')
+  const [pendingTargetMode, setPendingTargetMode] = useState<'plain' | 'vlan-subif'>('plain')
+  const [pendingSourceSubIfaces, setPendingSourceSubIfaces] = useState<{ vlan: string; address: string }[]>([])
+  const [pendingTargetSubIfaces, setPendingTargetSubIfaces] = useState<{ vlan: string; address: string }[]>([])
   // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
   // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
   // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
@@ -368,30 +604,20 @@ function TopologyEditorInner() {
     setLoadStatus({ kind: 'loading' })
     getLabTopologyYaml(targetLabName)
       .then(async (yamlText) => {
-        const parsed = parseTopologyYaml(yamlText)
-        // 座標・ラベル/エリアの保存データがあれば復元する。保存されていない（404）、
-        // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
-        // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
-        let nodes = parsed.nodes
-        let edges = parsed.edges
+        // 座標・VLAN/アドレス設定の保存データがあれば復元する（保存されていない＝404の場合は
+        // 無視してグリッド配置のまま進める。座標が無いことを理由にエディタが開けなくなることは
+        // 避けたいため）。実際の復元ロジックはparseImportedTopology()に共通化している
+        // （YAMLインポート機能と共有、2026-10-08）
+        let annotationsText: string | null = null
         try {
-          const annotationsText = await getLabAnnotations(targetLabName)
-          nodes = applyAnnotations(nodes, annotationsText)
-          // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
-          // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
-          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
-          // portAnnotationsのキーはハッシュ化されたclabName基準なので、これを
-          // restoreSwitchIdentitiesより先に呼ぶこと
-          edges = applyPortAnnotations(edges, annotationsText)
-          // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
-          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す
-          ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
+          annotationsText = await getLabAnnotations(targetLabName)
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
+        const { nodes, edges, counters: parsedCounters } = parseImportedTopology(yamlText, annotationsText)
         setNodes(nodes)
         setEdges(edges)
-        counters.current = parsed.counters
+        counters.current = parsedCounters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
           nodes
@@ -444,6 +670,12 @@ function TopologyEditorInner() {
       setPendingTargetVlanValue('')
       setPendingSourceAddress('')
       setPendingTargetAddress('')
+      setPendingSourceGateway('')
+      setPendingTargetGateway('')
+      setPendingSourceMode('plain')
+      setPendingTargetMode('plain')
+      setPendingSourceSubIfaces([])
+      setPendingTargetSubIfaces([])
     },
     [edges],
   )
@@ -458,29 +690,54 @@ function TopologyEditorInner() {
   )
   const sourceAddressResult = useMemo(() => parseIpv4Cidr(pendingSourceAddress), [pendingSourceAddress])
   const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
+  const sourceGatewayResult = useMemo(() => parseIpv4Gateway(pendingSourceGateway), [pendingSourceGateway])
+  const targetGatewayResult = useMemo(() => parseIpv4Gateway(pendingTargetGateway), [pendingTargetGateway])
+  const sourceSubIfacesResult = useMemo(
+    () => (pendingSourceMode === 'vlan-subif' ? parseSubInterfaceRows(pendingSourceSubIfaces) : {}),
+    [pendingSourceMode, pendingSourceSubIfaces],
+  )
+  const targetSubIfacesResult = useMemo(
+    () => (pendingTargetMode === 'vlan-subif' ? parseSubInterfaceRows(pendingTargetSubIfaces) : {}),
+    [pendingTargetMode, pendingTargetSubIfaces],
+  )
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
-    const { source, target, sourceHandle, targetHandle } = pendingConnection
-    const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
-    setEdges((eds) =>
-      eds.concat({
-        id,
-        source,
-        target,
-        sourceHandle: sourceHandle ?? undefined,
-        targetHandle: targetHandle ?? undefined,
-        type: 'floating',
-        data: {
-          sourceIface: pendingSourceIface,
-          targetIface: pendingTargetIface,
-          sourceVlan: sourceVlanResult.config,
-          targetVlan: targetVlanResult.config,
-          sourceAddress: sourceAddressResult.address,
-          targetAddress: targetAddressResult.address,
-        } satisfies EdgeIfaceData,
-      }),
-    )
+    const { source, target, sourceHandle, targetHandle, editingEdgeId } = pendingConnection
+    const newData: EdgeIfaceData = {
+      sourceIface: pendingSourceIface,
+      targetIface: pendingTargetIface,
+      sourceVlan: sourceVlanResult.config,
+      targetVlan: targetVlanResult.config,
+      // router on a stick（'vlan-subif'）の時はプレーンなアドレス/ゲートウェイは設定しない（排他）
+      sourceAddress: pendingSourceMode === 'plain' ? sourceAddressResult.address : undefined,
+      targetAddress: pendingTargetMode === 'plain' ? targetAddressResult.address : undefined,
+      sourceGateway: pendingSourceMode === 'plain' ? sourceGatewayResult.gateway : undefined,
+      targetGateway: pendingTargetMode === 'plain' ? targetGatewayResult.gateway : undefined,
+      sourceSubInterfaces: pendingSourceMode === 'vlan-subif' ? sourceSubIfacesResult.configs : undefined,
+      targetSubInterfaces: pendingTargetMode === 'vlan-subif' ? targetSubIfacesResult.configs : undefined,
+    }
+    if (editingEdgeId) {
+      // 既存接続の編集：idはそのまま、dataだけ入れ替える（2026-10-07追加）
+      setEdges((eds) => eds.map((e) => (e.id === editingEdgeId ? { ...e, data: newData } : e)))
+    } else {
+      // idはI/F名から組み立てず、ランダムな値にする（2026-10-08レビュー指摘対応：
+      // I/F名から組み立てたidだと、既存接続を編集してI/Fを変更した時にidが古いI/Fの
+      // ままになり、後から同じI/F組み合わせで新規接続を作るとidが衝突し、
+      // disconnectEdge/editEdgeが両方のエッジを同時に操作してしまう不具合があった）
+      const id = randomAnnotationId('edge')
+      setEdges((eds) =>
+        eds.concat({
+          id,
+          source,
+          target,
+          sourceHandle: sourceHandle ?? undefined,
+          targetHandle: targetHandle ?? undefined,
+          type: 'floating',
+          data: newData,
+        }),
+      )
+    }
     setPendingConnection(null)
   }, [
     pendingConnection,
@@ -490,20 +747,35 @@ function TopologyEditorInner() {
     targetVlanResult,
     sourceAddressResult,
     targetAddressResult,
+    sourceGatewayResult,
+    targetGatewayResult,
+    pendingSourceMode,
+    pendingTargetMode,
+    sourceSubIfacesResult,
+    targetSubIfacesResult,
   ])
 
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
 
   const sourceIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.source, edges).has(pendingSourceIface)
+    ? usedInterfaces(pendingConnection.source, edges, pendingConnection.editingEdgeId).has(pendingSourceIface)
     : false
   const targetIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.target, edges).has(pendingTargetIface)
+    ? usedInterfaces(pendingConnection.target, edges, pendingConnection.editingEdgeId).has(pendingTargetIface)
     : false
 
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
   const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
   const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
+  // router on a stickのUIは「ルーター側が、L2スイッチに接続している時だけ」出す
+  // （PC側には出さない。PCは通常インターVLANルーティングをしないため、2026-10-07追加）
+  const sourceIsRouterOnStick = pendingConnection ? nodeKind(pendingConnection.source) === 'router' && targetIsSwitch : false
+  const targetIsRouterOnStick = pendingConnection ? nodeKind(pendingConnection.target) === 'router' && sourceIsSwitch : false
+  // ルーターはIPアドレス設定をvtyshのCLIで行う方針にしたため、GUIのプレーンなアドレス/
+  // ゲートウェイ入力欄はPCにしか出さない（2026-10-07方針変更：「ルーターはCLIで設定しないと
+  // 意味がない」指摘対応。docs/direction.md参照）
+  const sourceIsRouter = pendingConnection ? nodeKind(pendingConnection.source) === 'router' : false
+  const targetIsRouter = pendingConnection ? nodeKind(pendingConnection.target) === 'router' : false
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -571,6 +843,92 @@ function TopologyEditorInner() {
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))
     setContextMenu(null)
   }, [])
+
+  // パケットキャプチャ（WiresharkのnoVNCセッション）を開始する（2026-10-08追加）。
+  // L2スイッチ側はコンテナを持たないため対象外（両端ともスイッチなら何もできない）。
+  // deploy済みのノードでないとコンテナが無いので、deployedLabに含まれる側だけが対象
+  const [captureStatus, setCaptureStatus] = useState<{ kind: 'idle' | 'starting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onCaptureEdge = useCallback(
+    async (edgeId: string) => {
+      setContextMenu(null)
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge || !deployedLab) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      const nodeInfo = (id: string) => nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined
+      const shortLabelOf = (id: string) => (nodeInfo(id)?.shortLabel as string | undefined) ?? id
+      const targets: CaptureTarget[] = []
+      const labelsByContainer: Record<string, string> = {}
+      if (nodeInfo(edge.source)?.kind !== 'l2-switch' && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
+        targets.push({ containerName: edge.source, interfaceName: data.sourceIface })
+        labelsByContainer[edge.source] = `${shortLabelOf(edge.source)}(${data.sourceIface}) ↔ ${shortLabelOf(edge.target)}`
+      }
+      if (nodeInfo(edge.target)?.kind !== 'l2-switch' && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
+        targets.push({ containerName: edge.target, interfaceName: data.targetIface })
+        labelsByContainer[edge.target] = `${shortLabelOf(edge.target)}(${data.targetIface}) ↔ ${shortLabelOf(edge.source)}`
+      }
+      setCaptureStatus({ kind: 'starting' })
+      try {
+        await startPacketCapture(deployedLab.labName, targets, labelsByContainer)
+        setCaptureStatus({ kind: 'idle' })
+      } catch (e) {
+        const message = e instanceof ApiError || e instanceof Error ? e.message : 'キャプチャの開始に失敗しました'
+        setCaptureStatus({ kind: 'error', message })
+      }
+    },
+    [edges, nodes, deployedLab],
+  )
+
+  // 既存接続の設定（I/F・VLAN・アドレス・ゲートウェイ・サブインターフェース）を編集する
+  // ポップアップを開く。新規接続時と同じポップアップを、保存済みのデータで埋めて再利用する
+  // （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応）
+  const editEdge = useCallback(
+    (edgeId: string) => {
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      setPendingConnection({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+        editingEdgeId: edge.id,
+      })
+      setPendingSourceIface(data.sourceIface ?? '')
+      setPendingTargetIface(data.targetIface ?? '')
+      const sourceVlan = vlanConfigToModeAndValue(data.sourceVlan)
+      const targetVlan = vlanConfigToModeAndValue(data.targetVlan)
+      setPendingSourceVlanMode(sourceVlan.mode)
+      setPendingSourceVlanValue(sourceVlan.value)
+      setPendingTargetVlanMode(targetVlan.mode)
+      setPendingTargetVlanValue(targetVlan.value)
+      setPendingSourceAddress(data.sourceAddress ?? '')
+      setPendingTargetAddress(data.targetAddress ?? '')
+      setPendingSourceGateway(data.sourceGateway ?? '')
+      setPendingTargetGateway(data.targetGateway ?? '')
+      const sourceHasSubIfaces = !!data.sourceSubInterfaces?.length
+      const targetHasSubIfaces = !!data.targetSubInterfaces?.length
+      setPendingSourceMode(sourceHasSubIfaces ? 'vlan-subif' : 'plain')
+      setPendingTargetMode(targetHasSubIfaces ? 'vlan-subif' : 'plain')
+      // 保存済みannotationsが想定外の形式（配列でない等）だった場合にクラッシュしないよう
+      // Array.isArray()で確認する（`??`はnull/undefinedしか拾わないため、2026-10-08レビュー指摘対応）
+      setPendingSourceSubIfaces(
+        (Array.isArray(data.sourceSubInterfaces) ? data.sourceSubInterfaces : []).map((s) => ({
+          vlan: String(s.vlan),
+          address: s.address,
+        })),
+      )
+      setPendingTargetSubIfaces(
+        (Array.isArray(data.targetSubInterfaces) ? data.targetSubInterfaces : []).map((s) => ({
+          vlan: String(s.vlan),
+          address: s.address,
+        })),
+      )
+      setContextMenu(null)
+    },
+    [edges],
+  )
 
   // トポロジエディタから直接、統合コンソールをワンタッチで開く（ラボ一覧に行かなくて済むように）。
   // deployedLabに載っているノード＝直近のdeployに含まれていたノードのみ開ける
@@ -657,12 +1015,18 @@ function TopologyEditorInner() {
       // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
       // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
       const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations, switchOriginalIds } = buildTopologyContent(
-        nodes,
-        edges,
-        username,
-        safeName,
-      )
+      const {
+        topologyContent,
+        vlanTasks,
+        switchPorts,
+        addressTasks,
+        subInterfaceTasks,
+        linuxNodeNames,
+        gatewayByNode,
+        routerClabNames,
+        portAnnotations,
+        switchOriginalIds,
+      } = buildTopologyContent(nodes, edges, username, safeName)
 
       // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
       // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
@@ -672,6 +1036,11 @@ function TopologyEditorInner() {
         .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
         .map((n) => toClabBridgeName(username, safeName, n.id))
       await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
+
+      // ルーターのFRR設定ファイル（daemons/frr.conf/vtysh.conf）をbind mount先に用意する
+      // （2026-10-07追加）。無いとdeploy自体がbind先不在で失敗する（実機確認済み）。
+      // 既に存在する場合は上書きしない（学生がvtyshで`write memory`した設定を保つため）
+      await Promise.all(routerClabNames.map((name) => ensureFrrConfig(safeName, name)))
 
       // ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、再deployすると
       // 必ず同じ名前になる。前回のdeployで作られたOVS側のインターフェースが残っていると、
@@ -700,10 +1069,7 @@ function TopologyEditorInner() {
       const addressResults = await Promise.allSettled(
         addressTasks.map(async (task) => {
           const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
-          const [firstResult] = Object.values(result).flat()
-          if (firstResult && firstResult['return-code'] !== 0) {
-            throw new Error((firstResult.stderr ?? '').trim() || 'アドレス設定に失敗しました')
-          }
+          assertExecOk(result, 'アドレス設定に失敗しました')
           return task
         }),
       )
@@ -714,9 +1080,75 @@ function TopologyEditorInner() {
         return [`${task.nodeName}:${task.iface} ${message}`]
       })
 
+      // router on a stick：VLANサブインターフェースのデバイス作成＋アドレス設定を
+      // まとめてここで行う（2026-10-08再変更。vtyshにはカーネルのVLANデバイスを作成する
+      // 機能が無いため作成自体はGUI側で必須だが、「デバイスだけGUIで作ってアドレスは
+      // 別途CLIで」という2段階運用は煩雑で誤解を生みやすいという指摘を受けて、
+      // GUIで完結させる方式に戻した。ルーターの通常のアドレス設定（「プレーン」モード）は
+      // 引き続きvtyshのCLIで行う。docs/direction.md参照）。
+      // execエンドポイントはシェルとして`&&`等を解釈するか未確認のため、安全側に倒して
+      // 1コマンドずつ順番にexecする（タスクをまたいだ並列化はPromise.allSettledで行う）
+      const subIfaceResults = await Promise.allSettled(
+        subInterfaceTasks.map(async (task) => {
+          const subIface = `${task.parentIface}.${task.vlan}`
+          const runStep = async (command: string) => {
+            const result = await execInLab(safeName, task.nodeName, command)
+            assertExecOk(result, 'サブインターフェース設定に失敗しました')
+          }
+          await runStep(`ip link add link ${task.parentIface} name ${subIface} type vlan id ${task.vlan}`)
+          await runStep(`ip link set ${subIface} up`)
+          await runStep(`ip addr add ${task.address} dev ${subIface}`)
+          return task
+        }),
+      )
+      const subIfaceFailures = subIfaceResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const task = subInterfaceTasks[i]
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'サブインターフェース設定に失敗しました'
+        return [`${task.nodeName}:${task.parentIface}.${task.vlan} ${message}`]
+      })
+
+      // containerlabはmgmt用のeth0に`default via <docker bridge gw>`を自動設定するため、
+      // ラボ内に意図した宛先への経路が無いと、そのままeth0経由で実際の外部ネットワークに
+      // 出てしまう（2026-10-07実機確認：`traceroute`が本物のISPまで到達した）。
+      // deploy後に全PC/ルーターでこのデフォルトルートを削除し、ゲートウェイが設定されている
+      // ノードだけ明示的に`ip route add default via <gateway>`で設定し直す。
+      // アドレス設定（上のaddressTasks/subInterfaceTasks）が先に終わっている必要がある
+      // （ゲートウェイの接続先サブネットがまだ無いとadd defaultが失敗するため）。
+      // `dev eth0`を明示して削除対象を絞る（2026-10-08レビュー指摘対応：`ip route del default`
+      // だけだと、ルーターがvtyshのCLI＋`write memory`で設定した別デバイス経由のデフォルトルート
+      // （FRR設定はdeploy時にzebraが読み込んで再設定する）まで誤って消してしまう恐れがあった。
+      // `dev eth0`を付けてもcontainerlab自動設定のmgmtルートだけを狙い撃ちできることを実機確認済み）
+      const routeResults = await Promise.allSettled(
+        linuxNodeNames.map(async (name) => {
+          // execは失敗してもHTTPとしては200で返ってくる（`return-code`で判定する必要がある、
+          // addressTasks/subInterfaceTasksと同じ仕組み）。「既にデフォルトルートが無い」場合は
+          // `ip route del default`が`No such process`で失敗するのが正常なので無視する
+          const delResult = await execInLab(safeName, name, 'ip route del default dev eth0')
+          const [delFirst] = Object.values(delResult).flat()
+          if (!delFirst || (delFirst['return-code'] !== 0 && !(delFirst.stderr ?? '').includes('No such process'))) {
+            throw new Error((delFirst?.stderr ?? '').trim() || 'デフォルトルートの削除に失敗しました')
+          }
+          const gateway = gatewayByNode.get(name)
+          if (gateway) {
+            const addResult = await execInLab(safeName, name, `ip route add default via ${gateway}`)
+            assertExecOk(addResult, 'ゲートウェイ設定に失敗しました')
+          }
+          return name
+        }),
+      )
+      const routeFailures = routeResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const name = linuxNodeNames[i]
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'ルート設定に失敗しました'
+        return [`${name}: ${message}`]
+      })
+
       const failureSuffixes = [
         vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
         addressFailures.length > 0 ? `アドレス設定に失敗: ${addressFailures.join(' / ')}` : '',
+        subIfaceFailures.length > 0 ? `サブインターフェース設定に失敗: ${subIfaceFailures.join(' / ')}` : '',
+        routeFailures.length > 0 ? `ルート設定に失敗: ${routeFailures.join(' / ')}` : '',
       ].filter(Boolean)
 
       setDeployStatus({
@@ -742,6 +1174,57 @@ function TopologyEditorInner() {
       setDeployStatus({ kind: 'error', message })
     }
   }, [nodes, edges, username, labName, isRedeploy])
+
+  // デプロイ済みラボのYAML（＋annotations）をダウンロードする（2026-10-08追加、
+  // 「授業で使うテンプレートを配布しやすく」指摘対応）。サーバーから改めて取得することで、
+  // 今の編集中の未deploy変更ではなく「実際にdeployされている内容」を正確にエクスポートする
+  const [exportStatus, setExportStatus] = useState<{ kind: 'idle' | 'exporting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onExport = useCallback(async () => {
+    if (!deployedLab) return
+    setExportStatus({ kind: 'exporting' })
+    try {
+      const yamlText = await getLabTopologyYaml(deployedLab.labName)
+      const annotationsText = await getLabAnnotations(deployedLab.labName).catch(() => null)
+      downloadTextFile(`${deployedLab.labName}.clab.yml`, yamlText)
+      if (annotationsText) downloadTextFile(`${deployedLab.labName}.clab.yml.annotations.json`, annotationsText)
+      setExportStatus({ kind: 'idle' })
+    } catch (e) {
+      const message = e instanceof ApiError || e instanceof Error ? e.message : 'エクスポートに失敗しました'
+      setExportStatus({ kind: 'error', message })
+    }
+  }, [deployedLab])
+
+  // YAML（＋任意でannotations）をローカルファイルからインポートしてキャンバスに読み込む
+  // （2026-10-08追加）。他の人がexportしたテンプレートを取り込んで新規ラボとして
+  // 使い始められるようにする。読み込むだけでdeployはしない（ユーザーが確認してから
+  // 自分のアカウントでdeployする）
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const onImportFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const fileList = Array.from(files)
+    const yamlFile = fileList.find((f) => /\.ya?ml$/i.test(f.name))
+    const annotationsFile = fileList.find((f) => /\.json$/i.test(f.name))
+    if (!yamlFile) {
+      setLoadStatus({ kind: 'error', message: 'YAMLファイル（.yml/.yaml）を選んでください' })
+      return
+    }
+    try {
+      const yamlText = await yamlFile.text()
+      const annotationsText = annotationsFile ? await annotationsFile.text() : null
+      const { nodes: importedNodes, edges: importedEdges, counters: importedCounters } = parseImportedTopology(
+        yamlText,
+        annotationsText,
+      )
+      setNodes(importedNodes)
+      setEdges(importedEdges)
+      counters.current = importedCounters
+      setLoadStatus({ kind: 'idle' })
+    } catch (e) {
+      setLoadStatus({ kind: 'error', message: e instanceof Error ? e.message : 'インポートに失敗しました' })
+    }
+  }, [])
 
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
 
@@ -783,6 +1266,31 @@ function TopologyEditorInner() {
           </button>
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".yml,.yaml,.json"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              void onImportFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() => importInputRef.current?.click()}
+            title="他の人がエクスポートしたYAML（＋annotations）を読み込んで新規ラボとして編集を始めます"
+          >
+            インポート
+          </button>
+          <button
+            onClick={onExport}
+            disabled={!deployedLab || exportStatus.kind === 'exporting'}
+            title={deployedLab ? 'deploy済みのYAML（＋annotations）をダウンロードします' : 'deployしてから使えます'}
+          >
+            {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
+          </button>
+          {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
           <div className="topology-editor__toolbar-spacer" />
           <button
             className="topology-editor__panel-toggle"
@@ -835,14 +1343,27 @@ function TopologyEditorInner() {
           )}
           {contextMenu?.kind === 'edge' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+              <button onClick={() => editEdge(contextMenu.edgeId)}>設定を編集</button>
+              <button
+                onClick={() => void onCaptureEdge(contextMenu.edgeId)}
+                disabled={!deployedLab || captureStatus.kind === 'starting'}
+                title={deployedLab ? 'このリンクのパケットキャプチャを別タブで開きます（L2スイッチ側は対象外）' : 'deployしてから使えます'}
+              >
+                {captureStatus.kind === 'starting' ? 'キャプチャ開始中...' : 'パケットキャプチャ'}
+              </button>
               <button onClick={() => disconnectEdge(contextMenu.edgeId)}>接続を解除</button>
+            </div>
+          )}
+          {captureStatus.kind === 'error' && (
+            <div className="topology-editor__context-menu-status topology-editor__status topology-editor__status--error">
+              {captureStatus.message}
             </div>
           )}
 
           {pendingConnection && (
             <div className="topology-editor__modal-overlay" onClick={cancelConnection}>
               <div className="topology-editor__modal" onClick={(e) => e.stopPropagation()}>
-                <h3>接続するインターフェースを選択</h3>
+                <h3>{pendingConnection.editingEdgeId ? '接続の設定を編集' : '接続するインターフェースを選択'}</h3>
                 <div className="topology-editor__modal-row">
                   <label>
                     {nodeLabel(pendingConnection.source)} 側
@@ -873,7 +1394,15 @@ function TopologyEditorInner() {
                       {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
                     </div>
                   )}
-                  {!sourceIsSwitch && (
+                  {!sourceIsSwitch && sourceIsRouterOnStick && (
+                    <div className="topology-editor__modal-vlan">
+                      <select value={pendingSourceMode} onChange={(e) => setPendingSourceMode(e.target.value as 'plain' | 'vlan-subif')}>
+                        <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
+                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
+                      </select>
+                    </div>
+                  )}
+                  {!sourceIsSwitch && !sourceIsRouter && pendingSourceMode === 'plain' && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingSourceAddress}
@@ -881,6 +1410,39 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.1/24）"
                       />
                       {sourceAddressResult.error && <span className="topology-editor__modal-warn">{sourceAddressResult.error}</span>}
+                      <input
+                        value={pendingSourceGateway}
+                        onChange={(e) => setPendingSourceGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.254）"
+                      />
+                      {sourceGatewayResult.error && <span className="topology-editor__modal-warn">{sourceGatewayResult.error}</span>}
+                    </div>
+                  )}
+                  {!sourceIsSwitch && sourceIsRouterOnStick && pendingSourceMode === 'vlan-subif' && (
+                    <div className="topology-editor__modal-vlan">
+                      {pendingSourceSubIfaces.map((row, i) => (
+                        <div key={i} className="topology-editor__modal-subif-row">
+                          <input
+                            value={row.vlan}
+                            onChange={(e) =>
+                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
+                            }
+                            placeholder="VLAN ID"
+                          />
+                          <input
+                            value={row.address}
+                            onChange={(e) =>
+                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
+                            }
+                            placeholder="10.10.0.1/24"
+                          />
+                          <button onClick={() => setPendingSourceSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
+                        </div>
+                      ))}
+                      <button onClick={() => setPendingSourceSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
+                        + サブインターフェースを追加
+                      </button>
+                      {sourceSubIfacesResult.error && <span className="topology-editor__modal-warn">{sourceSubIfacesResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -914,7 +1476,15 @@ function TopologyEditorInner() {
                       {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
                     </div>
                   )}
-                  {!targetIsSwitch && (
+                  {!targetIsSwitch && targetIsRouterOnStick && (
+                    <div className="topology-editor__modal-vlan">
+                      <select value={pendingTargetMode} onChange={(e) => setPendingTargetMode(e.target.value as 'plain' | 'vlan-subif')}>
+                        <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
+                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
+                      </select>
+                    </div>
+                  )}
+                  {!targetIsSwitch && !targetIsRouter && pendingTargetMode === 'plain' && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingTargetAddress}
@@ -922,6 +1492,39 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.2/24）"
                       />
                       {targetAddressResult.error && <span className="topology-editor__modal-warn">{targetAddressResult.error}</span>}
+                      <input
+                        value={pendingTargetGateway}
+                        onChange={(e) => setPendingTargetGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.1）"
+                      />
+                      {targetGatewayResult.error && <span className="topology-editor__modal-warn">{targetGatewayResult.error}</span>}
+                    </div>
+                  )}
+                  {!targetIsSwitch && targetIsRouterOnStick && pendingTargetMode === 'vlan-subif' && (
+                    <div className="topology-editor__modal-vlan">
+                      {pendingTargetSubIfaces.map((row, i) => (
+                        <div key={i} className="topology-editor__modal-subif-row">
+                          <input
+                            value={row.vlan}
+                            onChange={(e) =>
+                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
+                            }
+                            placeholder="VLAN ID"
+                          />
+                          <input
+                            value={row.address}
+                            onChange={(e) =>
+                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
+                            }
+                            placeholder="10.10.0.2/24"
+                          />
+                          <button onClick={() => setPendingTargetSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
+                        </div>
+                      ))}
+                      <button onClick={() => setPendingTargetSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
+                        + サブインターフェースを追加
+                      </button>
+                      {targetSubIfacesResult.error && <span className="topology-editor__modal-warn">{targetSubIfacesResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -934,11 +1537,15 @@ function TopologyEditorInner() {
                       targetIfaceConflict ||
                       (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
                       (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
-                      !!sourceAddressResult.error ||
-                      !!targetAddressResult.error
+                      (pendingSourceMode === 'plain'
+                        ? !!sourceAddressResult.error || !!sourceGatewayResult.error
+                        : !!sourceSubIfacesResult.error) ||
+                      (pendingTargetMode === 'plain'
+                        ? !!targetAddressResult.error || !!targetGatewayResult.error
+                        : !!targetSubIfacesResult.error)
                     }
                   >
-                    接続
+                    {pendingConnection.editingEdgeId ? '保存' : '接続'}
                   </button>
                 </div>
               </div>

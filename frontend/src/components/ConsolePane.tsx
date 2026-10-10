@@ -1,4 +1,5 @@
 import { useConsoleStore } from '../store/consoleStore'
+import { useUiStore } from '../store/uiStore'
 import ConsoleSession from './ConsoleSession'
 import './Console.css'
 
@@ -9,10 +10,23 @@ export default function ConsolePane() {
   const activeId = useConsoleStore((s) => s.activeId)
   const setActive = useConsoleStore((s) => s.setActive)
   const closeConsole = useConsoleStore((s) => s.closeConsole)
+  const closeAllConsoles = useConsoleStore((s) => s.closeAllConsoles)
+  const setConsolePanelDocked = useUiStore((s) => s.setConsolePanelDocked)
+
+  // パネル自体を閉じる（セッションも全部終了してからパネルも隠す）。
+  // 元々はトップバーのトグルボタンでしか隠せず、パネル自体には閉じるボタンが無かった
+  // （2026-10-07指摘：「コンソールタブ自体を消すボタンが欲しい」）
+  const closePanel = () => {
+    closeAllConsoles()
+    setConsolePanelDocked(false)
+  }
 
   if (sessions.length === 0) {
     return (
       <div className="console-pane console-pane--empty">
+        <button className="console-pane__panel-close" title="パネルを閉じる" onClick={closePanel}>
+          ✕ パネルを閉じる
+        </button>
         <p className="console-pane__hint">
           開いているコンソールはありません。ホームのノードの<strong>🖥ボタン</strong>、または
           このトポロジのノードを右クリックして<strong>「コンソールを開く」</strong>を押すと、ここにタブとして開きます。
@@ -49,6 +63,9 @@ export default function ConsolePane() {
             </button>
           </div>
         ))}
+        <button className="console-tabs__close-all" title="パネルを閉じる（全コンソールを終了）" onClick={closePanel}>
+          ✕ パネルを閉じる
+        </button>
       </div>
       <div className="console-manager__body">
         {sessions.map((s) => (

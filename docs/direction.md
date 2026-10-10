@@ -195,6 +195,216 @@ Containerlabをバックエンドにした「CML(Cisco Modeling Labs)のオー�
   ホスト分離を保証するものではない（あくまでsoft improvement）。将来さらに絞りたい場合は
   FRRをdaemon単位で分離する、またはFRR以外のルーティングスタックを検討する必要がある
 
+## 決定事項（2026-10-07追記）：deploy後にeth0のデフォルトルートを削除＋ゲートウェイ設定UI追加
+
+- **発覚の経緯**：router on a stickの実機テスト中、ラボ内に存在しない宛先IPへ`traceroute`したら
+  本物のISP（homenoc.ad.jp）まで到達してしまった。原因は、containerlabが各ノードのmgmt用
+  `eth0`に自動で`default via <dockerブリッジのgw>`を設定しており、ラボ内に意図した宛先への
+  経路が無い場合、そのままeth0経由で実際の外部ネットワークに出てしまうため（実機確認）。
+  これはcontainerlab自体の既定動作で今回の機能が原因ではないが、「PCのアドレシングUI」には
+  デフォルトゲートウェイ/ルートの設定項目が無く、router on a stickを含むルーティングの
+  検証が正しくできない状態だった
+- **対応方針の検討**：「eth0のデフォルトルートを削除すると、動いている機能（コンソール・exec等）が
+  壊れないか」という懸念が出たため、まず一時テストコンテナで実機検証した：
+  - コンソール（`terminal-sessions`）・exec機能は`docker exec`相当（Dockerデーモン経由、
+    コンテナのネットワークスタックを使わない）のため、デフォルトルート削除後も**問題なく動作**
+    することを確認（`docker exec`は通常どおり成功、`hostname`取得も成功）
+  - 削除後、外部（8.8.8.8）への通信は`Network unreachable`で**ブロック**されることを確認
+  - 管理ネットワーク内（dockerブリッジgateway）への到達性は維持されることを確認
+  - これは元々`CLAUDE.md`で「外部ネットワークへのブリッジ接続は実装しない（スコープ外）」と
+    決めていた方針とも整合する（むしろ今まで塞がっていなかったのが漏れだった）
+- **実装**：
+  1. 接続ポップアップのプレーンなアドレス設定（router on a stickでない場合）に
+     「デフォルトゲートウェイ（任意）」入力欄を追加（単純なIPv4アドレス、プレフィックス無し）
+  2. deploy後、全PC/ルーターで`ip route del default`を実行（既に無ければ`No such process`で
+     失敗するだけなので無視）。ゲートウェイが設定されているノードだけ、続けて
+     `ip route add default via <gateway>`を実行
+  3. アドレス/サブインターフェース設定が終わった**後**にこのルート処理を行う
+     （ゲートウェイの接続先サブネットがまだ無いとroute addが失敗するため、順序が重要）
+- **実機検証（一時テストラボ：PC-ルーター間でゲートウェイ設定）**：
+  - PC→ルーター（ゲートウェイ経由）の通信は成功（0% loss）
+  - PCから未定義の宛先（203.0.113.99）への通信は100% lossで外部に漏れないことを確認
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+
+## 決定事項（2026-10-07追記）：ルーターの設定はGUIではなくCLI（vtysh）で行う方針に変更
+
+- **発覚の経緯**：test2ラボでの実機テストで、PC側にゲートウェイを設定してもGUIでルーター側の
+  アドレス設定を忘れていたためping が通らず、ユーザーから「学習ツールとしては不適かも」という
+  指摘があった。根本的な懸念は「GUIが代わりに設定してしまうと、本来CLIで学ぶべき操作が
+  身につかない」という点。これを受けて、ユーザーから「FRRの機能としてVLANサブインターフェースを
+  CLIで設定できないか？ルーターはCLIで設定しないと意味がない」という要望が出た
+- **技術的な制約の確認（実機確認済み）**：vtyshで`interface eth1.10`→`ip address ...`と打つと
+  `running-config`には記録されるが、**カーネル上には実際のVLANデバイスが作られない**。
+  VLANタグ付きインターフェースの作成はLinuxカーネルの操作（`ip link add ... type vlan`）であり、
+  FRR/zebraはルーティング・既存インターフェースへのアドレス設定等を行うソフトウェアで、
+  リンクレイヤーのデバイス作成自体はスコープ外（vtysh自身が実装していない）。
+  つまり「VLANサブインターフェースの存在」はGUI/バックエンド側で用意するしかないが、
+  **一度デバイスが存在すれば、そこへのアドレス設定はvtyshのCLIで問題なく行える**
+  （zebraはカーネルのnetlinkイベントを監視しており、どうやって作られたデバイスかに関係なく
+  自動で認識してルーティングに使う）
+- **FRR設定の永続化を実機検証**：vtyshで設定して`write memory`すると`/etc/frr/frr.conf`に
+  書き込まれる。このファイルをホスト側にbind mountして永続化すれば、**コンテナを完全に
+  破棄・再作成する再deployを越えてCLI設定が残る**ことを一時テストラボで確認した
+  （書き込み直後はホスト側のファイル所有者がコンテナ内部のFRRデーモンのUIDに変わり
+  `labuser`では読めなくなるが、`existsSync`/`statSync`による存在確認は引き続き可能なことを確認。
+  containerlab自体はbind mount元のファイルが事前に存在しないとdeploy自体を
+  `Failed to verify bind path`で拒否するため、初回だけ最小構成のファイルを用意する必要がある）
+- **決定した役割分担**：
+  - **ルーター（FRR）**：IPアドレス設定・ルーティング設定は**100%CLI（vtysh）で行う**。
+    GUIからのプレーンな「IPv4アドレス/デフォルトゲートウェイ」入力欄は廃止（PCのみ残す）。
+    router on a stickのVLANサブインターフェースも、GUIが用意するのは**VLAN IDに基づく
+    「空のデバイス」のみ**（`ip link add ... type vlan` + `ip link set ... up`、アドレスは
+    設定しない）。アドレス設定は学生がデプロイ後にコンソールのvtyshで行う
+  - **PC（alpine）**：元々CLI学習の対象ではない（単純なエンドホスト役）ため、GUIでの
+    アドレス/ゲートウェイ設定はそのまま維持
+  - **FRR設定の永続化**：全ルーターに`frr-config/<routerClabName>/{daemons,frr.conf,vtysh.conf}`
+    をbind mount。初回のみ`backend/ovs-helper/`の新エンドポイント`POST /frr-config`で
+    最小構成を用意する（既存ファイルは上書きしない＝学生の設定を保護）。daemonsは学生が
+    自分で編集できない（コンソールはvtysh専用に制限済み）ため、大学の講義で扱う主要な
+    ルーティングプロトコル（zebra/staticd/ospfd/ospf6d/ripd/isisd/bgpd）を最初から
+    有効にしておく
+- **影響**：この変更により、deployは「トポロジの配線（物理リンク・VLANデバイスの存在）を
+  整える1回限りの操作」に近づき、実際のルーター設定作業はCLIで継続的に行える
+  （以前は`ip addr add`等をGUI側がexecで毎回再投入していたため、設定を変える度に
+  deployが必要だった）
+- 実機での最終確認（ルーターのVLANサブインターフェース作成→vtyshでのアドレス設定→
+  write memory→再deployでの設定保持の一連の流れ）は次回
+
+## 決定事項（2026-10-08追記）：VLANサブインターフェースの作成はGUIで完結させる（CLI分離は撤回）
+
+- ユーザーから「FRR自体がLinuxカーネルを使ってrouting出来てるから、VLANサブインターフェースの
+  作成もFRRの一部として取り込めないか」という提案があり、FRR公式ドキュメント
+  （docs.frrouting.org）で確認した。zebraは**VRFもVXLANもVLANサブインターフェースも
+  一切作成しない**（"FRR neither creates VRFs... FRR simply uses whatever is provided by
+  the OS"、VXLANも"must be done externally"と明記）。インターフェース作成は常に`ip link`等の
+  外部ツールに委ねる設計であることが公式に確定した
+- これにより「デバイス作成はGUI必須、アドレス設定だけCLI」という2026-10-07の方針は技術的には
+  可能だが、ユーザーから「2段階に分かれた今のやり方は煩雑すぎて誤解を生みかねない」という
+  判断があり、**サブインターフェース作成時に限り、VLAN ID＋アドレスの両方をGUIで一度に設定する
+  方式に戻した**（撤回）。実機テスト（test2）で「ルーター側の設定を忘れてping が通らない」
+  事象が実際に発生したことも、この判断の裏付けになっている
+- **現在の役割分担（最終）**：
+  - ルーターの**通常のアドレス設定（「プレーン」モード）は引き続きvtyshのCLIで行う**
+    （2026-10-07の決定は維持）
+  - **router on a stickのVLANサブインターフェースは、VLAN ID＋アドレスをGUIで一度に設定**
+    （2026-10-08で元に戻した部分）。デバイス作成＋アドレス設定を`ip link add`→
+    `ip link set up`→`ip addr add`の3段階でexec実行する
+  - FRR設定ファイルの永続化機構（`backend/ovs-helper/`の`POST /frr-config`）はそのまま維持
+    （プレーンモードのCLI設定や、OSPF/BGP等のルーティング設定の永続化に引き続き使う）
+
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能のためEdgeSharkを導入
+
+- CMLのような「リンクを右クリックしてパケットキャプチャ」機能を検討。clab-api-server側には
+  既にAPI（`POST /api/v1/labs/{labName}/capture/wireshark-vnc-sessions`でブラウザに
+  Wireshark GUIをnoVNC経由で表示、`/capture/packetflix`でローカルWireshark連携）が
+  実装されていたが、裏で動く[Siemens EdgeShark](https://github.com/siemens/edgeshark)
+  （`ghostwire`＋`packetflix`の2コンテナ構成）が無いと`503`になることが判明
+- clab-api-serverのソース（`internal/config/config.go`）を確認し、`CAPTURE_PACKETFLIX_PORT`の
+  デフォルト値（5001）がEdgeShark公式のデフォルトポートと一致していることを確認。
+  **clab-api-server側の設定変更は不要**と判断
+- 公式docker-compose（`backend/edgeshark/docker-compose.yaml`に保存）で導入。
+  `labuser`が`docker`グループに入っているため**sudo不要で起動できた**（実機確認済み：
+  `curl http://127.0.0.1:5001/version`が正常応答）
+- **権限についての整理**：`ghostwire`/`edgeshark`コンテナは、ホスト上の全コンテナの
+  ネットワーク名前空間を覗き見る必要があるため、`pid: host`・`CAP_SYS_PTRACE`・
+  `CAP_DAC_READ_SEARCH`等、学生が触るラボ用コンテナ（今回`privileged:false`に絞り込んだもの）
+  とは別次元の広い権限で動く。ただし`--privileged`ではなく具体的に列挙されたcapabilityのみ
+  （`cap_drop: ALL`→必要な分だけ`cap_add`）＋非root（uid 65534）＋読み取り専用rootfsという
+  設計（公式docker-compose自体がこの形）。これは「管理者が運用するホスト側の可視化・計測
+  インフラ」であり、学生が触る対象とは明確に別物という位置づけなので、学生向けコンテナの
+  権限を絞る方針とは矛盾しないと判断
+- **未確認**：EdgeShark自体の起動・`packetflix`の応答は確認したが、clab-api-server経由の
+  実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・フロントエンドのUIはまだ無い。次回対応
+
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能のフロントエンドUI＋中継プロキシ実装
+
+- 右クリック（リンクのコンテキストメニュー）→「パケットキャプチャ」→別タブでWiresharkの
+  noVNC画面を開く、という流れで実装（CMLと同じ操作感）
+- clab-api-serverのソース（`internal/api/capture_handlers.go`、`internal/api/middleware.go`）を
+  確認し、以下を把握：
+  - `POST /labs/{labName}/capture/wireshark-vnc-sessions`のリクエストボディは
+    `{"targets":[{"containerName":"...","interfaceName":"..."}]}`。`containerName`は
+    `resolveCaptureContainer()`がノード名の曖昧一致も受け付けるため、execInLab()と違って
+    **短いノード名のままで通る**（フルコンテナ名への変換は不要と判断）
+  - 作成直後は`ready:false`のことがあるため`GET /capture/wireshark-vnc-sessions/{id}/ready`を
+    ポーリングし、`ready:true`になったら返ってくる`url`を使って
+    `GET /capture/wireshark-vnc-sessions/{id}/vnc/{proxyPath}`を開く、という2段階が必要
+  - **この`/vnc/{proxyPath}`も含め、clab-api-serverの`AuthMiddleware`は
+    `Authorization: Bearer <jwt>`ヘッダーでしか認証できず、クエリパラメータ等の代替は
+    一切無い**（ソース確認済み）。一方`/vnc/{proxyPath}`はnoVNCのHTML/JS/CSS資産＋
+    VNC用WebSocketを中継する、複数ファイルからなる通常のWebアプリであり、ブラウザの
+    新規タブ（`window.open()`）やそこから発生するアセット読み込み・WebSocket接続は
+    カスタムヘッダーを一切設定できない。これは統合コンソール機能（`console-proxy`）で
+    既に経験した壁と同じ構造の問題
+  - L2スイッチはコンテナを持たないため、スイッチ側の接続端はキャプチャ対象から除外
+    （PC/ルーター側のみ対象。両端ともスイッチのリンクは今回は非対応）
+- **対応**：`console-proxy`と同じ発想で`backend/capture-proxy/`という新しい中継プロキシを
+  新設。ただしトークンの受け渡し方式は変えた：
+  - `console-proxy`は「WebSocket接続後、最初の1メッセージでトークンを送る」方式だが、
+    noVNCは素のGETで複数ファイルを読みに行く通常のWebアプリなので、そのハンドシェイクが
+    使えない
+  - 代わりに`capture-proxy`は**トークンをURLのパスに埋め込む**方式にした：
+    `http://<capture-proxy>/capture/<sessionId>/<jwt>/<相対パス>`を開くと、`<相対パス>`を
+    clab-api-serverの`/vnc/{proxyPath}`にAuthorizationヘッダー付きで転送する
+    （WebSocketアップグレードも同じパスパターンで中継。RFBプロトコルの生バイナリフレームを
+    そのまま双方向に流すだけでJSON等の解釈はしない）
+  - ポート8084（`console-proxy`=8082、`ovs-helper`=8083、`edgeshark`/packetflix=5001との
+    重複を避けた番号）。`console-proxy`と同じく`systemctl --user`での常駐を想定
+- **未確認・次回やること**：noVNC自身が生成するリンク/WebSocket接続先が、
+  この`/capture/<sessionId>/<jwt>/`というパス配下に正しく収まるかは実機確認がまだ。
+  noVNCが絶対パス（`/`始まり）でアセットを参照している場合、このプレフィックスが
+  落ちてしまい404になる可能性があり、その場合はHTMLレスポンスのbody rewriting等の
+  追加対応が必要になる見込み（`backend/capture-proxy/README.md`に明記済み）
+
+## 決定事項（2026-10-08追記）：パケットキャプチャ機能の実機テストで見つかった不具合・制約
+
+- **初回のWiresharkイメージpullが45秒タイムアウトに引っかかる**：clab-api-serverの
+  `CreateWiresharkVncSessionsHandler`は45秒の固定タイムアウトを持つが、初回の
+  `ghcr.io/srl-labs/wireshark-vnc-docker:latest`のpullはそれより時間がかかることがあり、
+  `signal: killed`で失敗する。**対応**：`docker pull`で事前にイメージをキャッシュしておけば
+  2回目以降は問題にならない。READMEに明記した方が良さそう（次回検討）
+- **noVNCのHTML/JS/CSS資産読み込み自体は想定通り動いた**：心配していた「noVNCが絶対パスで
+  アセットを参照していて404になる」問題は発生しなかった（capture-proxyのログで全資産が
+  200で返っていることを確認）
+- **肝心のVNC用WebSocket（`/vnc/websockify`）が`400 Bad Request`で拒否される不具合を発見・修正**：
+  Wireshark VNCコンテナ（ベースイメージ`jlesage/baseimage-gui`）内のnginxは、
+  `websockify_pass`という専用ディレクティブでVNCソケットに直結しており、**`ws`ライブラリが
+  デフォルトでは送らない`Sec-WebSocket-Protocol: binary`ヘッダーが無いとハンドシェイクを
+  拒否する**ことが実機確認で判明（curlで手動ヘッダーを全部指定した場合は101で通ったことから
+  特定）。capture-proxy側で、ブラウザ（noVNC）が送ってきた`Sec-WebSocket-Protocol`を
+  そのまま上流への接続にも伝える（`ws`の`protocols`引数として渡す）ように修正して解決
+- **「どこをキャプチャしてるか分からない」指摘への対応**：noVNCの画面は`window.open()`で
+  別タブに開くだけだとタブタイトルが汎用的（"noVNC"等）で、複数タブを開くと見分けがつかない。
+  capture-proxy側で、クエリパラメータ`?label=...`を受け取ったら、上流から返ってきたHTMLの
+  `<title>`をその場で書き換える（レスポンスボディをバッファして文字列置換→Content-Length再計算）
+  という対応を実装。フロントエンド側は「R1(eth1) ↔ SW1」のような、ノードの短縮表示名＋
+  インターフェース名＋相手ノード名の形式でラベルを組み立てて渡す
+- **未対応・今後の検討事項**：「コピペができない」という指摘は、noVNCが画面を転送している
+  だけ（VNC自体の構造的な制約）であり、クリップボード同期機能が無いと解決しない。
+  noVNCやVNCサーバー側がクリップボード同期をサポートしているか別途調査が必要
+  （優先度は要相談。パケットを読むだけなら必須ではないが、BPFフィルタ文字列を貼り付けたい
+  等のニーズがあれば対応を検討する）
+
+## 決定事項（2026-10-09追記）：パケットキャプチャ機能のタイトル不具合修正とHTTPS化
+
+- **タブタイトルが反映されない不具合を発見・修正**：実機確認したところ、単に`<title>`タグを
+  書き換えるだけでは効かなかった。原因は、Wireshark VNCコンテナのベースイメージ
+  （`jlesage/baseimage-gui`）のnoVNCアプリが、ページ読み込み後にJSで`document.title`を
+  `APP_NAME`（"Wireshark"）に上書きしてしまうこと。**対応**：`setInterval`で定期的に
+  `document.title`を強制的に書き戻すスクリプトをHTMLレスポンスに埋め込むよう修正
+- **「コピペが面倒」という指摘を受けてcapture-proxyをHTTPS化**：調査の結果、
+  noVNC（`jlesage/baseimage-gui`ベース）には**ブラウザのClipboard APIを使った
+  「ホストクリップボード自動同期」機能が標準で既に入っている**ことが判明
+  （`UI.webData.hostClipboardSync`、`RFB.isClipboardAutoSyncSupported()`）。
+  Wireshark側でコピーすると自動的にOS/ブラウザのクリップボードに反映される仕組みだが、
+  Clipboard APIの非同期read/writeは「secure context」（HTTPS、またはlocalhost）を要求する
+  仕様のため、capture-proxyが平文HTTPのままだとこの自動同期機能自体が有効化されなかった。
+  `certs/`に自己署名証明書を生成し`https.createServer`化して解決（自己署名のため
+  初回アクセス時にブラウザの警告は出る。他の自己署名TLSサービス（clab-api-server等）と
+  同様の割り切り）
+  - 手動での代替手段（noVNCサイドバーのクリップボードテキストエリア経由）も引き続き使える
+  - フロントエンドの`VITE_CAPTURE_PROXY_URL`も`https://`に変更
+
 ## 次に決めること
 1. ~~フロントエンド技術の最終確定~~ → **決定済み（React + React Flow + xterm.js）**
 2. ~~状態管理ライブラリ（Zustand/Reduxなど）~~ → **決定済み（Zustand）**
@@ -238,3 +448,38 @@ API仕様書を公開しているため、バックエンドの構築完了を�
 - サーバー上でClaude Codeを使う場合、各自が自分のLinuxアカウントと自分のAnthropicアカウントでログインする（アカウントは共有しない）
 - `CLAUDE.md`はリポジトリ直下にあるため、誰のLinuxアカウントで`claude`を起動しても同じプロジェクト文脈が自動で読み込まれる
 - GitHub認証はSSH鍵方式（HTTPSパスワード認証は廃止済みのため）
+
+## 決定事項（2026-10-09追記）：自動保存・BGP周知・テスト・公開の方針
+
+- **自動保存（CML風の継続保存）は実装しない**。保存は従来どおりDeploy起点（デプロイ時にサーバーへ自動保存され、
+  エクスポートでローカルにも落とせる）で割り切る。その旨を利用者向けマニュアルに明記する。
+- **BGPの`ebgp-requires-policy`は「FRRの仕様」として周知する**。FRRのデフォルト挙動を変えたり、UIで自動回避したりはしない
+  （学習者がFRRの実際の仕様に触れること自体を目的に含めるため）。周知先は利用者向けマニュアル／READMEに記載する。
+- **本番形態（フロントの配信方式など）は、各方式のメリット・デメリットを比較した上で実装する**予定。
+  比較は`docs/backlog.md`のC章にまとめた。未確定のため決定ではなく、決まったらここに追記する。
+- **テストは完全に内部で実施し、結果は担当者が直接ヒアリングして集める**。外部の不具合報告窓口（Issues等）は設けない。
+- **公開は限定公開を希望**（セキュリティ面で十分に自信を持てる状態ではないため）。時期は未定。
+  公開物は**動作に必要な部分のみ**とし、Claude Code関連の資料は含めない（個人的なやり取りが含まれうるため）。
+  具体的な含める/除くの範囲は`docs/backlog.md`のD章にチェックリスト化した。
+
+## 決定事項（2026-10-10追記）：本番形態（nginxで単一オリジン化、Docker化は段階的に）
+
+2026-10-09の「本番形態は比較してから決める」を受けた決定（比較表は`docs/backlog.md`のC-1）。
+
+- **第1段階：nginxを入口にして単一オリジン化する**。`vite build`した静的ファイルをnginxで配信し、
+  `/api`→clab-api-server(8090)、`/console`→console-proxy(8082)、`/ovs`→ovs-helper(8083)、
+  `/capture`→capture-proxy(8084)へリバースプロキシする。
+  - **理由**：CORS設定が不要になる、証明書の警告が1回で済む、ws://・http://の平文を解消できる
+    （クリップボード自動同期のsecure context要件も満たしやすい）、外部に見せるポートを1つに絞れる。
+  - 実施時の留意点：WebSocketのUpgrade設定と長時間接続のタイムアウト、clab-api-serverが自己署名のため
+    `proxy_ssl_verify off`相当が必要、フロントの`.env`（接続先URL）とコードの修正が入る。
+- **第2段階：Docker化は限定公開などで配布が必要になった時点で、nginxと3つのプロキシ
+  （console-proxy/ovs-helper/capture-proxy）のみを対象に検討する**。
+  - **clab-api-serverとcontainerlabはホストに残す**（PAM認証・docker.sock・netns操作などホスト依存が強く、
+    コンテナ化は現実的でないため）。
+  - ovs-helper（ホストのOVSを操作）とcapture-proxy（ホスト上のコンテナへ接続）は、
+    コンテナ化時にネットワーク/権限まわりの設計が必要。
+- 現状の`vite dev`運用は、第1段階の実施までの暫定とする。
+- **第1段階は実施・実機確認済み（2026-10-10）**：`backend/nginx/`に設定一式（`fnl.conf`/`install.sh`/`deploy-frontend.sh`）。
+  `https://fnl.sotsuken.net/`でログイン・コンソール・VLAN設定・パケットキャプチャが動作することをユーザーが確認。
+  nginx 1.24（Ubuntu 24.04）では`http2 on;`が使えず`listen ... http2`と書く必要があった。

@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-10-06 / kawase3（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
+最終更新: 2026-10-10 / kawase3（ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -504,15 +504,249 @@
      **元々の「eth0コマンドをソフトにブロック」は未実装**——host侵害経路を塞いだ分、
      残るリスクは「自分のコンテナのmgmt接続を自分で切る」程度に下がったため、
      追加でやるかは次回確認
-- **次の目標の1（router on a stick）はまだ未着手**
+- **【対応済み】次の目標の1（router on a stick）**：ルーターが、L2スイッチのトランクポートに
+  接続している時だけ、接続ポップアップに「プレーン/VLANサブインターフェース」のモード切替を
+  追加。VLANサブインターフェースモードでは、VLAN ID＋アドレスの行を複数追加できるUIにし、
+  deploy後にclab-api-serverのexec経由で`ip link add ... type vlan`→`ip link set ... up`→
+  `ip addr add`の3段階を順番に実行する（`TopologyEditor.tsx`の`SubInterfaceTask`/
+  `CONTAINER_CAPABILITIES`、execは`&&`等のシェル機能に頼らず1コマンドずつ送る設計）。
+  再読み込み時の復元も既存の`portAnnotations`機構を拡張して対応（`subInterfaces`フィールド追加）
+  - 実機検証（一時テストラボ：ルーター2台をL2スイッチ経由で接続、両方にVLAN10の
+    サブインターフェースを作成）：**トランク越しのVLAN10通信を確認（ping 0% loss）**。
+    物理I/F自体（eth1）にはIPv4が付かず、意図通り「トランクの運び役」のままであることも確認
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【対応済み】router on a stick検証中に発覚：ラボ内の未定義宛先が実際の外部ネットワークに
+  漏れる問題（2026-10-07）**：ユーザーが`traceroute`で本物のISPまで到達することを発見。
+  containerlabがmgmt用`eth0`に自動設定する`default via <dockerブリッジgw>`が原因。
+  「このルート自体を消して動いてる機能壊れないか」という懸念に対し一時テストコンテナで実機確認
+  （コンソール/execは`docker exec`相当でネットワークスタックを使わないため無影響、削除後は
+  外部への通信が`Network unreachable`でブロックされることを確認）。対応：
+  1. 接続ポップアップのプレーンなアドレス設定に「デフォルトゲートウェイ（任意）」欄を追加
+  2. deploy後、全PC/ルーターでeth0の自動デフォルトルートを削除し、ゲートウェイが設定されている
+     ノードだけ明示的に`ip route add default via <gateway>`で設定し直す
+     （アドレス/サブインターフェース設定が終わった後に実行、順序が重要）
+  - 実機検証（一時テストラボ：PC-ルーター間でゲートウェイ設定）：ゲートウェイ経由の通信は成功
+    （0% loss）、未定義の宛先への通信は100% lossで外部に漏れないことを確認
+  - 詳細は`docs/direction.md`の2026-10-07決定事項（2つ目）参照
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【対応済み】既存接続のI/F・VLAN・アドレス・ゲートウェイ・サブインターフェース設定を
+  後から編集できるように（2026-10-07指摘）**：router on a stickの実機テストで、
+  pc-1/pc-2にゲートウェイが設定されておらずVLAN間通信が失敗する問題を調査中に判明。
+  これらの設定項目は**新規接続時のポップアップにしか無く、既存の接続を後から編集する手段が
+  無かった**ため、GUIにゲートウェイ欄があっても実質使えなかった（「IPはGUIで設定できるのに
+  DGWを設定できないのはナンセンス」指摘）。エッジの右クリックメニューに「設定を編集」を追加し、
+  新規接続時と同じポップアップを既存データで埋めて再利用する形で対応
+  （`TopologyEditor.tsx`の`editEdge()`、`PendingConnection`に`editingEdgeId`を追加）。
+  編集中は自分自身のI/F割り当てを「使用中」と誤検知しないよう`usedInterfaces()`に
+  `excludeEdgeId`を追加。`npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【対応済み】「deployしたのに座標が復元されなかった」バグ修正（2026-10-07）**：
+  front-testの実際の保存データ（`*.clab.yml.annotations.json`）を直接確認したところ、
+  `positions`のキー（L2スイッチの古いハッシュ名）と`portAnnotations`のキー（最新の
+  ハッシュ名）が食い違っていた。原因は読み込み時の処理順序：`applyAnnotations()`
+  （座標の復元、node.idをキーに引く）が`restoreSwitchIdentities()`（node.idを
+  元の安定した値に戻す処理）より**先に**実行されていたため、L2スイッチの座標復元だけ
+  常に失敗してグリッド配置に戻ってしまっていた（PC/ルーターはnode.idがハッシュ化されない
+  ため影響なし）。`restoreSwitchIdentities()`→`applyAnnotations()`の順に修正
+  （`TopologyEditor.tsx`の読み込みuseEffect）
+- **【対応済み】エリア名の変更をワンクリックに変更（2026-10-07指摘）**：
+  今までダブルクリックが必要だった（`AreaNode.tsx`の`onDoubleClick`→`onClick`）
+- **【対応済み】統合コンソールに「すべて閉じる」ボタンを追加＋タブの×ボタンを拡大
+  （2026-10-07指摘：「コンソールタブ閉じたい」「×ボタンが機能していない/見つからない」）**：
+  既存の×ボタン自体のロジックは問題なさそうだったが、サイズが小さく見つけにくかった
+  可能性があるため、サイズ・当たり判定・hover時のコントラストを強化。タブが2つ以上ある時は
+  一括で閉じる「すべて閉じる」ボタンも追加（`ConsolePane.tsx`/`Console.css`）
+  - 「取ってこれなかった」については自由記入の内容がこちらに届かなかったため、
+    まだ対応できていない。詳細を次回確認する
+- **【追加対応】「コンソールタブ自体を消すボタンが欲しい」（2026-10-07再指摘）**：
+  元々パネル自体を閉じる手段はトップバーの離れた場所にあるトグルボタンのみで、パネル自体には
+  閉じるボタンが無かった。パネルのタブバー（タブが無い時は空状態の画面にも）に
+  「✕ パネルを閉じる」ボタンを追加。全セッションを終了してからパネルも隠す動作にした
+  （`closeAllConsoles()` + `setConsolePanelDocked(false)`）。トップバーのトグルとは異なり、
+  こちらは明示的にセッションも終了する。`npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+- **【大きな方針変更】ルーターの設定をGUIからCLI（vtysh）主体に変更（2026-10-07）**：
+  test2での実機テストで「GUIで設定し忘れるとping が通らない」ことをきっかけに、
+  「学習ツールとしてGUIが代わりに設定してしまうのはおかしい、ルーターはCLIで設定しないと
+  意味がない」という指摘を受けた。vtyshにVLANサブインターフェースの"デバイス作成"自体は
+  できない（カーネルのip link操作はFRRのスコープ外、実機確認済み）ことを前提に、役割分担を
+  変更：
+  - ルーターのIPアドレス/ルーティング設定は100%CLI（vtysh）。GUIのプレーンな
+    「IPv4アドレス/デフォルトゲートウェイ」入力欄はルーターからは廃止（PCのみ残す）
+  - router on a stickのVLANサブインターフェースは、GUIが用意するのはVLAN IDに基づく
+    「空のデバイス」のみ（`ip link add`+`up`、アドレス設定はしない）
+  - FRR設定ファイル（daemons/frr.conf/vtysh.conf）を`frr-config/<router>/`に
+    bind mountして永続化。`backend/ovs-helper/`に新エンドポイント`POST /frr-config`を追加
+    （既存ファイルは上書きしない＝学生の`write memory`を保護）。daemonsは学生が編集できない
+    （コンソールはvtysh専用）ため、主要プロトコル（zebra/staticd/ospfd/ospf6d/ripd/isisd/bgpd）
+    を最初から有効化
+  - 実機検証：`write memory`で保存したCLI設定が、コンテナを完全に破棄・再作成する
+    redeployを越えて残ることを一時テストラボで確認済み。`/frr-config`エンドポイント自体の
+    配線（偽トークンでの401応答）も確認済み
+  - 詳細は`docs/direction.md`の2026-10-07決定事項（3つ目）、`backend/ovs-helper/README.md`参照
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**実機での一連の流れ
+    （ルーター配置→VLANサブインターフェース作成→vtyshでアドレス設定→write memory→
+    再deployでの保持）の確認は次回**
+
+- **【一部撤回】VLANサブインターフェースの作成はGUIで完結させる方式に戻した（2026-10-08）**：
+  「FRR自体がLinuxカーネルで動いてるならVLANサブインターフェース作成も取り込めないか」という
+  提案を受けてFRR公式ドキュメントを確認したところ、zebraはVRF/VXLAN/VLANいずれも作成せず、
+  インターフェース作成は常に外部ツール（`ip link`等）に委ねる設計であることが公式に確定した
+  （詳細は`docs/direction.md`の2026-10-08決定事項参照）。この制約を踏まえ、「デバイス作成は
+  GUI必須・アドレス設定だけCLI」という前日の2段階運用について、ユーザーから
+  「煩雑すぎて誤解を生みかねない（test2で実際にルーター側の設定を忘れてping が通らない
+  事象が発生した）」との判断があり、**サブインターフェース作成時はVLAN ID＋アドレスを
+  GUIで一度に設定する方式に戻した**（撤回）。ルーターの通常のアドレス設定（「プレーン」
+  モード）・FRR設定の永続化機構はそのまま維持。
+  `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+
+- **`/code-review high`での自己レビュー対応（2026-10-08）**：`fe-be/router-on-a-stick`ブランチを
+  多角的にレビューし、10件の指摘から以下を修正：
+  1. **【重要】`ip route del default`が無条件すぎる問題**：ルーターがvtyshのCLI＋
+     `write memory`で別デバイス経由のデフォルトルートを設定していた場合、deploy後の
+     クリーンアップ処理が誤ってそれを消してしまう恐れがあった。`ip route del default
+     dev eth0`とcontainerlabのmgmtインターフェースに明示的に絞るよう修正し、実機で
+     「FRRが別デバイス経由で設定した静的デフォルトルートは生き残り、eth0側だけ消える」
+     ことを確認した
+  2. **execの戻り値が空の時に成功扱いになっていた問題**：対象コンテナが見つからず
+     execの結果が空オブジェクトになるケースで、エラー判定が素通りして静かに成功扱いに
+     なっていた（`addressTasks`/`subInterfaceTasks`/`routeResults`の4箇所で共通のパターン
+     だったため`assertExecOk()`に共通化して修正）
+  3. **方針変更前の古いルーター側アドレス/ゲートウェイ設定が再投入され続ける問題**：
+     ルーターのプレーンなアドレス設定はvtyshのCLIで行う方針（2026-10-07）にしたが、
+     GUIの入力欄を隠しただけで、方針変更前に保存されていた古いデータがあれば
+     deployのたびにexecで再投入され、学生がCLIで設定した内容と静かに競合する恐れが
+     あった。ルーター側は`addressTasks`/`gatewayByNode`の対象から常に除外するよう修正
+  4. 既存接続を編集してI/Fを変更すると、エッジidがI/F名由来のまま古くなり、同じI/F組み合わせの
+     新規接続と衝突する恐れがあった→ idをI/F名から組み立てず乱数ベースに変更
+  5. `ovs-helper`のユーザー名検証パターンが`.`を含むLinuxユーザー名を拒否してしまう
+     問題→ ユーザー名専用のパターンを追加して対応
+  6. 保存済みannotationsが想定外の形式だった場合に`editEdge()`がクラッシュする可能性
+     →`Array.isArray()`チェックを追加
+  - 見送った指摘（優先度が低いと判断）：router on a stick UIがトランク/アクセスの
+    実際のポート設定を見ずに出る点、同一ノードに複数ゲートウェイを設定した時の
+    サイレントな上書き、VLANサブインターフェースを0件のまま保存できる点
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア
+
+- **ルーティングプロトコルの実機テスト（2026-10-08）**：OSPFに加えてRIP/BGP/IS-IS/OSPFv3
+  （ospf6d）を2ルーター構成で一通り検証。全て最終的に疎通成功（0% loss）：
+  - RIP: `redistribute connected`で問題なく疎通
+  - IS-IS: `metric-style wide`が無いとSPFは計算されるがzebraにルートが入らなかった
+    （標準的なIS-IS設定なので対応不要、学習内容として妥当）
+  - OSPFv3: `router ospf6`のインスタンス自体を作らないと動かない点に注意（インターフェース側の
+    `ipv6 ospf6 area 0`だけでは不十分）
+  - **BGP: 要注意**。FRR 10.xはeBGP（AS番号が違う）セッションに対して
+    デフォルトで`bgp ebgp-requires-policy`が有効で、明示的なroute-map等のポリシーが
+    無いとprefixを一切交換しない（`show bgp summary`に`(Policy)`と表示されるだけで
+    原因が分かりにくい）。`no bgp ebgp-requires-policy`で解除すれば教科書通りの設定で動く。
+    `router bgp <AS番号>`はdeployより前にAS番号が決まらないため、デフォルトの`frr.conf`に
+    事前設定することはできない——学生がハマりやすい点として、何らかの形で周知する方法を
+    検討する必要がある（次回相談）
+
+- **YAML export/import機能を追加（2026-10-08、「授業で使うテンプレート共有」指摘対応）**：
+  - エクスポート：deploy済みラボのトポロジYAML＋annotations（座標・VLAN/アドレス設定）を
+    サーバーから取得し直してダウンロードする（今の編集中の未deploy変更ではなく、実際に
+    deployされている内容を正確に反映するため）
+  - インポート：ローカルのYAML（＋任意でannotations）ファイルを読み込んでキャンバスに
+    反映する（deployはしない、確認してから自分のアカウントでdeployしてもらう想定）
+  - 既存の「エディタで開く」時の復元ロジック（`applyPortAnnotations`→
+    `restoreSwitchIdentities`→`applyAnnotations`の順）を`parseImportedTopology()`として
+    共通化し、サーバー取得/ローカルファイルどちらでも同じ復元品質になるようにした
+  - `npx tsc --noEmit` / `npm run lint` / `npm run build`はクリア。**実機でのexport→import
+    往復テストは次回**
+
+- **パケットキャプチャ機能の前提：EdgeShark導入（2026-10-08）**：「リンクを右クリックして
+  パケットキャプチャ」機能を検討。clab-api-server側のAPIは実装済みだったが、裏で動く
+  Siemens EdgeShark（`ghostwire`＋`packetflix`）が無いと`503`になることが判明していた。
+  clab-api-serverのソース（`internal/config/config.go`）を確認し、デフォルトポート設定
+  （5001）がEdgeShark公式のデフォルトと一致することを確認（**clab-api-server側の設定変更は
+  不要**）。公式docker-composeを`backend/edgeshark/docker-compose.yaml`に保存して導入。
+  `labuser`が`docker`グループに入っているため**sudo不要で起動できた**（実機確認：
+  `curl http://127.0.0.1:5001/version`が正常応答）。権限についての整理（ghostwire/edgesharkは
+  `pid: host`等、学生用コンテナとは別次元の広い権限で動くが、具体的に列挙されたcapability
+  のみ＋非root＋読み取り専用rootfsという設計で、学生向けコンテナの権限を絞る方針とは
+  矛盾しないと判断）は`docs/direction.md`の2026-10-08決定事項参照。
+  **未確認**：clab-api-server経由の実際のキャプチャAPI（実ユーザーのJWTでの呼び出し）・
+  フロントエンドのUI実装はまだ無い。次回対応
+
+- **パケットキャプチャ機能：フロントエンドUI＋中継プロキシ実装（2026-10-08）**：
+  リンクを右クリック→「パケットキャプチャ」→別タブでWiresharkのnoVNC画面を開く、という
+  流れを実装。clab-api-serverのソースを確認し、`/vnc/{proxyPath}`（noVNCのHTML/JS/CSS資産＋
+  VNC用WebSocketを中継するエンドポイント）も`Authorization`ヘッダー必須（代替手段無し）だと
+  判明。これは統合コンソール機能（`console-proxy`）で経験した壁と同じ構造の問題のため、
+  同じ発想で`backend/capture-proxy/`（ポート8084）という新しい中継プロキシを新設した。
+  ただし`console-proxy`（最初の1メッセージでトークンを送る方式）とは違い、noVNCは素のGETで
+  複数ファイルを読みに行く通常のWebアプリなので、**トークンをURLのパスに埋め込む方式**
+  （`/capture/<sessionId>/<jwt>/<相対パス>`）にした。L2スイッチ側はコンテナを持たないため
+  キャプチャ対象から除外（PC/ルーター側のみ対象）。`npx tsc --noEmit` / `npm run lint` /
+  `npm run build`はクリア。**実機での動作確認（noVNC経由でWireshark画面が実際に開くか）は
+  まだ**。詳細は`docs/direction.md`の2026-10-08決定事項、`backend/capture-proxy/README.md`参照
+
+- **パケットキャプチャ機能：実機テストで見つかった不具合2件を修正＋動作確認（2026-10-08）**：
+  1. 初回のWiresharkイメージpullが clab-api-server側の45秒固定タイムアウトに引っかかり
+     `signal: killed`で失敗 → `docker pull ghcr.io/srl-labs/wireshark-vnc-docker:latest`を
+     事前実行してキャッシュしておくことで回避（2回目以降は問題なし）
+  2. VNC用WebSocket（`/vnc/websockify`）がWireshark VNCコンテナ内のnginxに`400`で拒否される
+     不具合を発見・修正：nginxの`websockify_pass`ディレクティブが`Sec-WebSocket-Protocol: binary`
+     ヘッダーを要求しており、`ws`ライブラリはデフォルトでこれを送らないため拒否されていた。
+     capture-proxy側でブラウザが送ってきたプロトコルをそのまま上流にも伝えるよう修正し解決
+  - 上記2点を直した上で**実機確認：noVNC経由でWiresharkの画面が実際に開き、動作することを
+    確認済み**（ユーザーのブラウザで動作確認。HTML/JS/CSS資産読み込みは最初から問題無かった）
+  - ユーザーから2件の使い勝手の指摘：(a) 複数タブを開くとどのリンクをキャプチャしているか
+    タブの見た目で分からない → capture-proxyが上流HTMLの`<title>`をラベル（例：
+    「R1(eth1) ↔ SW1」）に書き換える機能を追加して対応済み。(b) noVNC画面との間でコピペが
+    できない → VNC自体の構造的な制約（画面を転送しているだけ）で、クリップボード同期機能が
+    無いと解決しない。**未対応**（優先度は要相談、docs/direction.md参照）
+  - デバッグ中にWireshark VNCコンテナが複数（6個）溜まってしまい、掃除の際に誤って
+    ユーザーが開いていた可能性のあるセッションのコンテナも削除してしまった（実害は
+    「もう一度右クリックし直せば直る」程度だが、今後は稼働中セッションの有無を
+    確認してから掃除するよう注意）
+
+- **パケットキャプチャ：タブ名の不具合修正＋タブを閉じたらコンテナ削除（2026-10-09）**：タブ名が付かなかった原因は、`labelsByContainer`のキー（ノードID）とセッションの`containerName`（完全名`clab-<lab>-<node>`）の不一致で、末尾一致で照合するよう修正。また、タブを閉じてもWiresharkコンテナが動き続け積み上がっていたため、`window.open`の戻り値の`closed`をポーリングし、閉じたら`DELETE /capture/wireshark-vnc-sessions/{id}`で削除するようにした（`captureClient.ts`）。制約：キャプチャを開いたメイン画面を先にリロード/閉じるとポーリングが止まり、コンテナは残る。
+- **パケットキャプチャ機能：タブタイトル不具合修正＋HTTPS化（2026-10-09）**：
+  - タブタイトルが反映されない不具合を発見・修正：Wireshark VNCコンテナのベースイメージ
+    （`jlesage/baseimage-gui`）のnoVNCアプリがページ読み込み後にJSで`document.title`を
+    "Wireshark"に上書きしてしまうため、`<title>`タグの静的な書き換えだけでは効かなかった。
+    `setInterval`で定期的に強制上書きするスクリプトを埋め込むよう修正
+  - 「コピペが面倒」という指摘を受けて調査したところ、noVNCには**ブラウザのClipboard APIを
+    使ったホストクリップボード自動同期機能が標準で既に入っている**ことが判明。ただし
+    Clipboard APIが「secure context」（HTTPS）を要求するため、capture-proxyが平文HTTPの
+    ままでは有効化されなかった。自己署名TLS証明書を`certs/`に生成し、capture-proxyを
+    HTTPS化して解決（`frontend/.env`の`VITE_CAPTURE_PROXY_URL`も`https://`に変更済み、
+    vite devサーバーも再起動済み）
+  - 手動でのコピペ方法（noVNCサイドバーのクリップボードテキストエリア）も案内済み
+    （`backend/capture-proxy/README.md`参照）
+
+- **テストマニュアルとバックログを作成（2026-10-09）**：`docs/test-manual.md`（内部テスト用の手順と期待結果）、
+  `docs/backlog.md`（機能候補・運用・公開の検討事項）。方針決定（自動保存なし／BGPは仕様として周知／テストは内部ヒアリング／
+  限定公開希望）は`direction.md`に記録。本番形態の比較はbacklog.mdのC-1。マニュアルは画面を実際に通しては未確認。
+
+- **ホスト名`fnl` / `fnl.sotsuken.net`でのアクセスに対応（2026-10-10）**：viteの`allowedHosts`に追加
+  （`frontend/vite.config.ts`、追加は`.env`の`ALLOWED_HOSTS`）、ovs-helperとclab-api-serverの
+  `CORS_ALLOWED_ORIGINS`に`http://fnl:5173`・`http://fnl.sotsuken.net:5173`を追加（clab-api-server側はユーザーがsudoで実施、
+  再起動後にpreflightが204になることを確認）。API接続先（`frontend/.env`）はIPのまま。
+  ホスト名へ統一する場合はcapture-proxy等の証明書SANに`fnl.sotsuken.net`の追加が必要。
+
+- **本番形態を決定（2026-10-10）**：nginxで単一オリジン化（第1段階）→必要時にnginx＋3プロキシをDocker化（第2段階）。
+  clab-api-server/containerlabはホストに残す。詳細は`direction.md`。
+  **第1段階を実施し実機確認済み（2026-10-10）**：`backend/nginx/`（README参照）。`https://fnl.sotsuken.net/`で
+  ログイン・コンソール・VLAN設定・パケットキャプチャが動作。フロント更新は`backend/nginx/deploy-frontend.sh`（sudo不要）。
+  フロントの接続先は`frontend/.env.production`で相対パス化（開発用`.env`は従来どおり）。
+  今後の候補：8082/8083/8084/8090を外部から直接触れないようファイアウォールで閉じる（nginx経由のみにする）。
 
 **Blocked / 相手待ち**
-- 上記3の変更をfront-test等で実際にredeployし、PC/ルーターが正常に動くか最終確認してほしい
-  （一時テストラボでは確認済みだが、実運用のラボでの確認はまだ）
-- `backend/ovs-helper/link-delete.sh`のsudoersセットアップ（sudo必要、`README.md`の
-  「前提：veth削除用ラッパーのsudoers設定」参照）を実行してから再deployテストしてほしい
-- 上記「再読み込み時の文字化け」修正の実機確認（redeploy→再読み込みでI/F名・VLAN・アドレスが
-  正しく戻るか）
+- **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
+  privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
+  front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、
+  その後の指摘で判明したコードの不具合も含めて対応済み）
+- ルーターのCLI主体化＋FRR設定の永続化：一時テストラボで確認済み。長期運用ラボでの追加確認は不要と判断（2026-10-10、保存は学生が必要なときに`write memory`する運用）
+- **YAML export/import機能：実機確認済み（2026-10-10、ユーザー確認）**。エクスポートしたYAMLのインポートまで問題なく動作
+- **BGPの`ebgp-requires-policy`問題（上記で発見）への対応方針**：学生がハマりやすい点を
+  どう周知するか（READMEに書く／UIにヒント表示する等）、次回相談
+- **パケットキャプチャ機能（上記、実機動作確認済み。ARP/ICMPが見えることまで確認済み）**：
+  タブタイトル不具合の修正、HTTPS化によるクリップボード自動同期の有効化は対応済み。
+  **サービス再起動が必要**：`frontend/.env`の`VITE_CAPTURE_PROXY_URL`を`https://`に変更
+  したので、vite devサーバーの再起動が必要（既に再起動済み）。自己署名TLSのため、初回
+  `https://<server>:8084/`へのアクセス時にブラウザで証明書の警告を一度許可する必要あり
+  （clab-api-serverと同じ対応）。クリップボード自動同期が実際に機能するかは引き続き実機確認を
 
 ---
 

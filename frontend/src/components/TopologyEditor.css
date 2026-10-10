@@ -79,6 +79,17 @@
   color: var(--warn);
 }
 
+.topology-editor__context-menu-status {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  background: var(--panel-bg, #1f2430);
+  padding: 6px 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 50;
+}
+
 .topology-editor__canvas {
   flex: 1;
   min-width: 0;
@@ -187,6 +198,16 @@
   border-radius: 6px;
   background: var(--surface);
   color: var(--ink);
+}
+
+/* router on a stick：VLANサブインターフェース1行分（VLAN ID / 削除ボタン） */
+.topology-editor__modal-subif-row {
+  display: flex;
+  gap: 4px;
+}
+
+.topology-editor__modal-subif-row input:first-child {
+  width: 64px;
 }
 
 .topology-editor__modal-actions {
