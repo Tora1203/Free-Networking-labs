@@ -236,3 +236,25 @@ FE のパレット3種と containerlab kind の対応:
   | 403 | 非管理者が管理者専用APIを叩いた | `Superuser privileges required for this operation` |
   | 404 | 他人のラボ/存在しないラボを指定 | `lab '<name>' not found or not owned by user` |
   | 200 | 正常時のdestroy等 | `{"message": "..."}`（エラーとは別形状） |
+
+## 2.7 自動保存・差分反映（2026-10-13 kawase3 実機確認、clab-api-server v0.6.0 / 内蔵containerlab 0.78）
+
+- `PUT /api/v1/labs/{labName}/topology/yaml`：ボディは`text/plain`のトポロジYAML。**未deployの新規ラボ名にも書ける**
+  （200 `{"success":true}`、ラボディレクトリが作られる）。deploy不要の「保存」に使える。
+- `PUT /api/v1/labs/{labName}/topology/annotations`：未deployのラボにも書ける（200）。
+- `POST /api/v1/labs/{labName}/apply`：保存済みトポロジをラボに反映する。
+  - ラボが動いていなければdeployする（`"deployedLab":true`）。
+  - 動いていれば**差分だけ反映**し、既存ノードは作り直さない（コンテナIDも中の状態も保持を確認）。
+    ノード追加・削除、リンク追加・削除、スイッチコンテナ（`fnl/l2switch:1`）の追加すべて確認。
+  - `?dryRun=true`で反映せずに計画だけ返す。レスポンス例：
+    ```json
+    {"dryRun":false,"deployedLab":false,"labName":"zz-api-apply","addedNodes":["sw"],"deletedNodes":[],
+     "recreatedNodes":[],"startedNodes":[],"addedLinks":["n1:eth1 -- sw:eth1","n2:eth1 -- sw:eth2"],
+     "deletedEndpoints":[],"restartedNodes":[],"nodeChangeReasons":{}}
+    ```
+- `GET /api/v1/labs/topology/files`：保存済みラボ（未deploy含む）の一覧。各要素は
+  `{"labName","yamlFileName","annotationsFileName","hasAnnotations","deploymentState"}`。
+  `GET /api/v1/labs`は動いているラボ（コンテナがあるもの）しか返さないので、ホーム一覧はこちらと組み合わせる。
+  TODO(kawase3)：動作中のfront-testが`deploymentState:"undeployed"`と出た。判定基準を要確認。
+- 注意：`clab_admins`所属（superuser）のユーザーは`GET /api/v1/labs`で他ユーザーのラボも見える（labuserで`aaa`=labuser2のラボが出た）。
+
