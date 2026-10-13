@@ -34,6 +34,7 @@ import {
   deployLab,
   execInLab,
   getLabAnnotations,
+  getLabs,
   getLabTopologyYaml,
   putLabAnnotations,
   type ExecResponse,
@@ -1051,8 +1052,29 @@ function TopologyEditorInner() {
       // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
       // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
       // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
-      await deployLab(topologyContent, { reconfigure: isRedeploy })
+      // 画面内の記憶（isRedeploy）だけに頼らず、サーバー上に実際に同名のラボがあるかも確認する。
+      // 前回のdeployが途中で失敗した/別タブで作った等で、ラボは存在するのに画面が「未deploy」と
+      // 思い込んでいると、reconfigureなしで送って「already been deployed」で失敗する
+      // （2026-10-13、テスターから報告：編集したVLAN/スイッチが反映されないまま古い構成が動き続けた）
+      let reconfigure = isRedeploy
+      if (!reconfigure) {
+        try {
+          reconfigure = safeName in (await getLabs())
+        } catch {
+          // 一覧が取れなくても、従来どおり新規deployとして試す
+        }
+      }
+      await deployLab(topologyContent, { reconfigure })
       rememberLabDisplayName(safeName, displayName)
+      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
+      const consoleNodeIds = new Set(
+        nodes
+          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+          .map((n) => n.id),
+      )
+      // ラボはここで実際に存在するので、後続のVLAN/アドレス設定が失敗しても「deploy済み」として扱う
+      // （以前は最後まで成功しないとsetされず、次のDeployが「既に存在する」エラーになっていた）
+      setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
 
       // VLAN設定（アクセス/トランク）はcontainerlabのトポロジYAMLには無いため、
       // deploy成功後にbackend/ovs-helper/経由でovs-vsctlを実行して別途投入する
@@ -1154,16 +1176,9 @@ function TopologyEditorInner() {
       setDeployStatus({
         kind: 'success',
         message:
-          (isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`) +
+          (reconfigure ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`) +
           (failureSuffixes.length > 0 ? `（ただし${failureSuffixes.join(' / ')}）` : ''),
       })
-      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
-      const consoleNodeIds = new Set(
-        nodes
-          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
-          .map((n) => n.id),
-      )
-      setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
       // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
       // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
       putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations, switchOriginalIds)).catch((err: unknown) => {

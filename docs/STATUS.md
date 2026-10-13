@@ -738,6 +738,13 @@
   あわせて、ルーター設定は`write memory`必須のまま周知で対応と決定（direction.md）。画面に注記を追加。
   DNS：テスターがFQDNでアクセスできなかった件は、**タイプミスが原因で解決済み**（2026-10-13、`10.0.200.253`のBIND・nginx・サーバー側に問題なし）。
 
+- **「異なるVLAN同士でpingが通る」報告の原因と、deploy判定の修正（2026-10-13）**：実際に動いていたのは、編集前の古い構成
+  （スイッチ無し、ルーターにPC直結）だった。画面で編集した内容のdeployが「`lab-xxx` has already been deployed」で失敗し、
+  VLAN等が反映されていなかった。原因は、「Deploy」か「変更を反映」かを画面内の記憶(`deployedLab`)だけで決めており、
+  deploy後の工程が途中で失敗するとラボは存在するのに画面は未deployのままになること。
+  対応：deploy直前にサーバーの実際のラボ一覧(`GET /api/v1/labs`)で同名ラボの有無を確認して`reconfigure`を決め、
+  `deployLab`成功直後に`deployedLab`をセットするよう変更。OVSの孤立ブリッジ(21個)の掃除はbacklogに追加。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
