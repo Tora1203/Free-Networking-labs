@@ -22,8 +22,8 @@ import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
-import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
-import { applyVlanConfig, ensureBridge, ensureFrrConfig, resetPort, type VlanConfig } from '../api/ovsHelperClient'
+import { buildSwitchSyncCommand, type SwitchPort, type VlanConfig } from '../utils/switchConfig'
+import { ensureFrrConfig } from '../api/ovsHelperClient'
 import { startPacketCapture } from '../api/captureClient'
 import type { CaptureTarget } from '../api/client'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
@@ -241,6 +241,15 @@ const ROUTER_CONSOLE_AUTO_COMMAND = 'while true; do vtysh; done'
 const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privileged: false; capAdd: string[] }>> = {
   pc: { privileged: false, capAdd: ['NET_ADMIN'] },
   router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
+  // L2スイッチ（コンテナ内のLinuxブリッジ、2026-10-13〜）はブリッジ/VLANの操作にNET_ADMINが要る
+  'l2-switch': { privileged: false, capAdd: ['NET_ADMIN'] },
+}
+
+// コンテナを持つノードか。L2スイッチは2026-10-13からコンテナになったが、それ以前に作られた
+// ラボを開いた直後はまだホストのOVS（ovs-bridge kind）のままでコンテナが無い
+// （次にdeployした時点でコンテナのスイッチに置き換わる。buildTopologyContent参照）
+function hasContainer(data: Partial<TopoNodeData> | undefined): boolean {
+  return !(data?.kind === 'l2-switch' && data.clabKind === 'ovs-bridge')
 }
 
 // excludeEdgeIdは「このエッジ自身の既存のI/F割り当て」を使用中として数えないために使う
@@ -262,12 +271,8 @@ function nextAvailableIface(nodeId: string, edges: Edge[]): string {
 }
 
 // React Flowのノード/エッジから、POST /api/v1/labs に渡す topologyContent を組み立てる。
-// L2スイッチ(ovs-bridge kind)のノード名だけ、ホスト全体でのブリッジ名衝突を避けるため
-// toClabBridgeName() で短いハッシュ名に変換する（2026-09-24改訂、docs/direction.md参照）。
-interface VlanTask {
-  port: string
-  config: VlanConfig
-}
+// L2スイッチはコンテナになったため（2026-10-13）、ovs-bridge時代のようなホスト全体で共有の
+// ブリッジ名・ポート名のハッシュ化は不要になり、全ノードともnode.idとUI上のI/F名をそのまま使う。
 
 interface AddressTask {
   nodeName: string
@@ -360,12 +365,11 @@ function assertExecOk(result: ExecResponse, failureMessage: string) {
 function buildTopologyContent(
   nodes: Node[],
   edges: Edge[],
-  username: string,
   labName: string,
 ): {
   topologyContent: TopologyContent
-  vlanTasks: VlanTask[]
-  switchPorts: string[]
+  // L2スイッチごとのポート（I/F名とVLAN設定）。deploy後にbuildSwitchSyncCommand()で投入する
+  switchConfigs: Map<string, SwitchPort[]>
   addressTasks: AddressTask[]
   subInterfaceTasks: SubInterfaceTask[]
   // PC/ルーター（L2スイッチ以外）の全clabName。containerlabが自動設定するeth0の
@@ -384,10 +388,9 @@ function buildTopologyContent(
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
   const nodesMap: TopologyContent['topology']['nodes'] = {}
-  // L2スイッチのブリッジ名は node.id をハッシュ化して作る。再読み込み後にnode.idが元の値に
-  // 戻せていないと、ハッシュ済みの名前をさらにハッシュしてしまい、再deployのたびにブリッジ名・
-  // ポート名がズレていく（2026-10-07レビュー指摘）。ここでnode.id→ブリッジ名の対応を記録して
-  // annotationsに保存し、再読み込み時に元のnode.idへ戻せるようにする
+  // ovs-bridge時代はスイッチ名をハッシュ化していたため、node.id→実名の対応をannotationsに保存して
+  // 再読み込み時に戻していた（restoreSwitchIdentities）。今は実名＝node.idだが、古いラボの
+  // 読み込みと形式を揃えるため引き続き保存する（中身は恒等写像）
   const switchOriginalIds: Record<string, string> = {}
 
   // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
@@ -398,7 +401,10 @@ function buildTopologyContent(
     if (!data.kind || !data.clabKind) {
       throw new Error(`ノード「${node.id}」の種別情報が無く、deployできません（パレットから配置し直してください）`)
     }
-    const clabName = data.kind === 'l2-switch' ? toClabBridgeName(username, labName, node.id) : node.id
+    const clabName = node.id
+    // L2スイッチは常に現在のパレット定義（コンテナ）でdeployする。古いラボのovs-bridgeの
+    // スイッチもここでコンテナに置き換わる（2026-10-13）
+    const kindConfig = data.kind === 'l2-switch' ? PALETTE_NODE_CONFIGS['l2-switch'] : { clabKind: data.clabKind, image: data.image }
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
     const caps = CONTAINER_CAPABILITIES[data.kind]
@@ -416,8 +422,8 @@ function buildTopologyContent(
           ]
         : undefined
     nodesMap[clabName] = {
-      kind: data.clabKind,
-      ...(data.image ? { image: data.image } : {}),
+      kind: kindConfig.clabKind,
+      ...(kindConfig.image ? { image: kindConfig.image } : {}),
       ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
       ...(frrBinds ? { binds: frrBinds } : {}),
     }
@@ -439,8 +445,10 @@ function buildTopologyContent(
     .map((n) => clabNodeNames.get(n.id))
     .filter((name): name is string => !!name)
 
-  const vlanTasks: VlanTask[] = []
-  const switchPorts: string[] = []
+  const switchConfigs = new Map<string, SwitchPort[]>()
+  for (const node of deviceNodes) {
+    if ((node.data as Partial<TopoNodeData>).kind === 'l2-switch') switchConfigs.set(node.id, [])
+  }
   const addressTasks: AddressTask[] = []
   const subInterfaceTasks: SubInterfaceTask[] = []
   const gatewayByNode = new Map<string, string>()
@@ -454,21 +462,13 @@ function buildTopologyContent(
       throw new Error(`リンク「${edge.id}」のインターフェース情報が見つかりません`)
     }
 
-    // L2スイッチ側のポート名は、ブリッジ名と同じ理由（ホスト全体でグローバルな名前空間）で
-    // ハッシュ化した実名を使う。UI上はeth1等の分かりやすい名前のまま見せる
-    // （2026-10-06発見、docs/direction.md参照）。VLAN設定も同じ実名を使って後段で投入する
     const sourceIsSwitch = nodeKinds.get(edge.source) === 'l2-switch'
     const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
-    const sourcePort = sourceIsSwitch ? toClabPortName(username, labName, edge.source, iface.sourceIface) : iface.sourceIface
-    const targetPort = targetIsSwitch ? toClabPortName(username, labName, edge.target, iface.targetIface) : iface.targetIface
-
-    if (sourceIsSwitch) switchPorts.push(sourcePort)
-    if (targetIsSwitch) switchPorts.push(targetPort)
-    // trunkの「全VLAN許可」はovs-helperに送る必要がない（resetPort後のポートは
-    // デフォルトで全VLAN許可のトランクになっているため、何もしなくてよい）
-    const isAllTrunk = (v?: VlanConfig) => v?.mode === 'trunk' && v.vlans === 'all'
-    if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
-    if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
+    const sourcePort = iface.sourceIface
+    const targetPort = iface.targetIface
+    // スイッチ側のポートはVLAN設定（未設定含む）とともに記録し、deploy後にまとめて投入する
+    if (sourceIsSwitch) switchConfigs.get(sourceName)?.push({ iface: sourcePort, vlan: iface.sourceVlan })
+    if (targetIsSwitch) switchConfigs.get(targetName)?.push({ iface: targetPort, vlan: iface.targetVlan })
 
     // ルーターの通常のアドレス設定はvtyshのCLIで行う方針（2026-10-07決定）のため、GUIの
     // プレーンなアドレス/ゲートウェイ入力欄はルーターには出していない。ただし古い保存データ
@@ -517,8 +517,7 @@ function buildTopologyContent(
 
   return {
     topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
-    vlanTasks,
-    switchPorts,
+    switchConfigs,
     addressTasks,
     subInterfaceTasks,
     linuxNodeNames,
@@ -622,9 +621,7 @@ function TopologyEditorInner() {
         counters.current = parsedCounters
         setLabName(getLabDisplayName(targetLabName))
         const consoleNodeIds = new Set(
-          nodes
-            .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
-            .map((n) => n.id),
+          nodes.filter((n) => n.type === 'topoNode' && hasContainer(n.data as Partial<TopoNodeData>)).map((n) => n.id),
         )
         setDeployedLab({ labName: targetLabName, nodeIds: consoleNodeIds })
         setLoadStatus({ kind: 'idle' })
@@ -862,11 +859,11 @@ function TopologyEditorInner() {
       const shortLabelOf = (id: string) => (nodeInfo(id)?.shortLabel as string | undefined) ?? id
       const targets: CaptureTarget[] = []
       const labelsByContainer: Record<string, string> = {}
-      if (nodeInfo(edge.source)?.kind !== 'l2-switch' && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
+      if (hasContainer(nodeInfo(edge.source)) && data.sourceIface && deployedLab.nodeIds.has(edge.source)) {
         targets.push({ containerName: edge.source, interfaceName: data.sourceIface })
         labelsByContainer[edge.source] = `${shortLabelOf(edge.source)}(${data.sourceIface}) ↔ ${shortLabelOf(edge.target)}`
       }
-      if (nodeInfo(edge.target)?.kind !== 'l2-switch' && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
+      if (hasContainer(nodeInfo(edge.target)) && data.targetIface && deployedLab.nodeIds.has(edge.target)) {
         targets.push({ containerName: edge.target, interfaceName: data.targetIface })
         labelsByContainer[edge.target] = `${shortLabelOf(edge.target)}(${data.targetIface}) ↔ ${shortLabelOf(edge.source)}`
       }
@@ -1019,8 +1016,7 @@ function TopologyEditorInner() {
       const safeName = toSafeLabName(displayName)
       const {
         topologyContent,
-        vlanTasks,
-        switchPorts,
+        switchConfigs,
         addressTasks,
         subInterfaceTasks,
         linuxNodeNames,
@@ -1028,27 +1024,12 @@ function TopologyEditorInner() {
         routerClabNames,
         portAnnotations,
         switchOriginalIds,
-      } = buildTopologyContent(nodes, edges, username, safeName)
-
-      // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
-      // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
-      // 「bridge "..." referenced in topology but does not exist」で失敗することが判明）。
-      // 既に存在していてもエラーにならないので、reconfigure時も毎回呼んで問題ない
-      const bridgeNames = nodes
-        .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
-        .map((n) => toClabBridgeName(username, safeName, n.id))
-      await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
+      } = buildTopologyContent(nodes, edges, safeName)
 
       // ルーターのFRR設定ファイル（daemons/frr.conf/vtysh.conf）をbind mount先に用意する
       // （2026-10-07追加）。無いとdeploy自体がbind先不在で失敗する（実機確認済み）。
       // 既に存在する場合は上書きしない（学生がvtyshで`write memory`した設定を保つため）
       await Promise.all(routerClabNames.map((name) => ensureFrrConfig(safeName, name)))
-
-      // ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、再deployすると
-      // 必ず同じ名前になる。前回のdeployで作られたOVS側のインターフェースが残っていると、
-      // containerlabが「already exists」で失敗する（2026-10-06実機確認）ため、
-      // deploy前に一度消してから作り直させる（存在しなければ何もしない）
-      await Promise.all(switchPorts.map((port) => resetPort(port)))
 
       // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
       // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
@@ -1082,25 +1063,27 @@ function TopologyEditorInner() {
       }
       await deployLab(topologyContent)
       rememberLabDisplayName(safeName, displayName)
-      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
-      const consoleNodeIds = new Set(
-        nodes
-          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
-          .map((n) => n.id),
-      )
+      // deployしたノードはスイッチを含め全てコンテナなのでコンソールの対象（2026-10-13〜）
+      const consoleNodeIds = new Set(nodes.filter((n) => n.type === 'topoNode').map((n) => n.id))
       // ラボはここで実際に存在するので、後続のVLAN/アドレス設定が失敗しても「deploy済み」として扱う
       // （以前は最後まで成功しないとsetされず、次のDeployが「既に存在する」エラーになっていた）
       setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
 
-      // VLAN設定（アクセス/トランク）はcontainerlabのトポロジYAMLには無いため、
-      // deploy成功後にbackend/ovs-helper/経由でovs-vsctlを実行して別途投入する
-      // （2026-10-06追加）。1件でも失敗したら成功メッセージにその旨を添える。
-      // ensureBridge/resetPortと同じくPromise.allで並列実行する（2026-10-07レビュー指摘：
-      // 直列だとポート数が増えるほどdeployが線形に遅くなっていた）
-      const vlanResults = await Promise.allSettled(vlanTasks.map((task) => applyVlanConfig(safeName, task.port, task.config)))
-      const vlanFailures = vlanResults
-        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-        .map((r) => (r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'VLAN設定に失敗しました'))
+      // L2スイッチのブリッジとVLAN（アクセス/トランク）をスイッチのコンテナ内に投入する
+      // （2026-10-13、ovs-helper経由のovs-vsctlから置き換え。utils/switchConfig.ts参照）。
+      // スイッチごとに並列実行し、1件でも失敗したら成功メッセージにその旨を添える
+      const switchEntries = [...switchConfigs.entries()]
+      const vlanResults = await Promise.allSettled(
+        switchEntries.map(async ([name, ports]) => {
+          const result = await execInLab(safeName, name, buildSwitchSyncCommand(ports))
+          assertExecOk(result, 'VLAN設定に失敗しました')
+        }),
+      )
+      const vlanFailures = vlanResults.flatMap((r, i) => {
+        if (r.status !== 'rejected') return []
+        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'VLAN設定に失敗しました'
+        return [`${switchEntries[i][0]}: ${message}`]
+      })
 
       // PC/ルーターのIPv4アドレスもトポロジYAMLには無いため、deploy成功後にclab-api-serverの
       // execで`ip addr add`して別途投入する（2026-10-07追加。「PCのアドレシングが面倒」指摘対応）
@@ -1262,8 +1245,9 @@ function TopologyEditorInner() {
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
   const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
   const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
-  // L2スイッチ（ovs-bridge kind）はコンテナを持たないためそもそもコンソールが無い（2026-10-07指摘）
-  const contextMenuIsSwitch = (contextMenuNode?.data as Partial<TopoNodeData> | undefined)?.kind === 'l2-switch'
+  // 古いラボのovs-bridgeのスイッチはコンテナを持たないためコンソールが無い（2026-10-07指摘）。
+  // 2026-10-13以降のスイッチはコンテナなのでコンソールを開ける（`bridge vlan show`等で確認できる）
+  const contextMenuIsSwitch = !hasContainer(contextMenuNode?.data as Partial<TopoNodeData> | undefined)
   const contextMenuCanOpenConsole =
     contextMenu?.kind === 'node' &&
     !contextMenuIsAnnotation &&
@@ -1383,7 +1367,7 @@ function TopologyEditorInner() {
               <button
                 onClick={() => void onCaptureEdge(contextMenu.edgeId)}
                 disabled={!deployedLab || captureStatus.kind === 'starting'}
-                title={deployedLab ? 'このリンクのパケットキャプチャを別タブで開きます（L2スイッチ側は対象外）' : 'deployしてから使えます'}
+                title={deployedLab ? 'このリンクのパケットキャプチャを別タブで開きます' : 'deployしてから使えます'}
               >
                 {captureStatus.kind === 'starting' ? 'キャプチャ開始中...' : 'パケットキャプチャ'}
               </button>

@@ -204,7 +204,7 @@ export function wipeNode(topologyContent: TopologyContent, nodeName: string) {
 }
 
 // コンテナ内でコマンドを実行する（api-contract.md 2.4）。PC/ルーターの固定IPアドレス設定に使う
-// （L2スイッチはコンテナを持たないためこの経路では届かず、backend/ovs-helper/を使う）。
+// （L2スイッチも2026-10-13からコンテナになったので、VLAN設定はこの経路で投入する）。
 // nodeFilterは短いノード名ではなく**コンテナのフルネーム**が必要（2026-10-07実機確認：
 // 短い名前だと`filter did not match any containers`で失敗した。execはdeploy済みコンテナを
 // 対象にするため、terminal-sessions（ConsoleSession.tsx）と同じ`clab-<labName>-<nodeName>`が

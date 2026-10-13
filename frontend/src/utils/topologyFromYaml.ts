@@ -8,7 +8,7 @@
 //   実際のフォーマットは未確認のため今回は見送り。docs/STATUS.md参照）
 // - ラベル/エリア（labelNode/areaNode）はcontainerlabのトポロジには存在しない注釈なので、
 //   既存ラボを開いた直後は復元されない
-// - l2-switch(ovs-bridge)のノード名は`toClabBridgeName()`でハッシュ化された名前のまま
+// - 2026-10-13以前のl2-switch(ovs-bridge)のノード名はハッシュ化された名前のまま
 //   （元のノード名は保存していないため復元できない）
 import { load as loadYaml } from 'js-yaml'
 import type { Node, Edge } from '@xyflow/react'
@@ -46,7 +46,8 @@ const GRID_SPACING_Y = 140
 // containerlab側はrouter/pcともkind:'linux'なので、imageで見分ける
 // （frontend/src/types/lab.tsのPALETTE_NODE_CONFIGSと対応）
 function guessPaletteKind(clabKind: string | undefined, image: string | undefined): PaletteNodeKind {
-  if (clabKind === 'ovs-bridge') return 'l2-switch'
+  if (clabKind === 'ovs-bridge') return 'l2-switch' // 2026-10-13以前のラボ
+  if (image === PALETTE_NODE_CONFIGS['l2-switch'].image) return 'l2-switch'
   if (image === PALETTE_NODE_CONFIGS.router.image) return 'router'
   return 'pc'
 }

@@ -62,7 +62,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
           <button
             className="lab-node-row__console"
             disabled={!hasConsole(n)}
-            title={n.kind === 'ovs-bridge' ? 'L2スイッチにはコンソールがありません' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
+            title={n.kind === 'ovs-bridge' ? '古い形式のL2スイッチにはコンソールがありません（一度deployし直すと使えます）' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
             onClick={() => openNodeConsole(n)}
           >
             🖥

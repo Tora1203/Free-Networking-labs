@@ -1,0 +1,56 @@
+// L2スイッチ（コンテナ、backend/l2switch/）の設定コマンドを組み立てる（2026-10-13、ovs-bridgeから移行）。
+//
+// スイッチはコンテナ内のVLAN対応Linuxブリッジ（br0）で実現する。設定はclab-api-serverのexecで
+// このコマンドを実行して投入する。毎回「ポートの全VLANを消してから、あるべき設定を入れ直す」ので、
+// 何度実行しても同じ結果になる（deploy直後・差分反映後・VLAN変更時のどれでも同じものを流せばよい）。
+//
+// VLANの意味はovs-bridge時代（ovs-vsctlのtag/trunks）と揃えている：
+// - 未設定／トランク（全VLAN許可）：タグなしはVLAN1として通し、VLAN2〜4094はタグ付きで通す
+//   （OVSの「tagもtrunksも無いポート」と同じく、未設定のポート同士はそのまま通信できる）
+// - アクセス：指定VLANのタグなしポート
+// - トランク（指定VLANのみ）：指定VLANだけタグ付きで通す（タグなしは通さない）
+//
+// execはシェルを介さず引数分割されるため、全体を`sh -c '...'`で包む（2026-10-13 CLIで確認）。
+// そのためコマンド内に`'`を含めてはいけない。インターフェース名とVLAN IDは形式を検証してから埋め込む。
+
+// ポートのVLAN設定。未設定（undefined）はトランク（全VLAN許可）と同じ扱い
+export type VlanConfig = { mode: 'access'; vlan: number } | { mode: 'trunk'; vlans: number[] | 'all' }
+
+export interface SwitchPort {
+  iface: string
+  vlan?: VlanConfig
+}
+
+const IFACE_PATTERN = /^eth[0-9]+$/
+
+function isVlanId(v: unknown): v is number {
+  return Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 4094
+}
+
+function vlanCommands(iface: string, vlan?: VlanConfig): string[] {
+  if (vlan?.mode === 'access' && isVlanId(vlan.vlan)) {
+    return [`bridge vlan add dev ${iface} vid ${vlan.vlan} pvid untagged`]
+  }
+  if (vlan?.mode === 'trunk' && vlan.vlans !== 'all') {
+    return vlan.vlans.filter(isVlanId).map((v) => `bridge vlan add dev ${iface} vid ${v}`)
+  }
+  return [`bridge vlan add dev ${iface} vid 1 pvid untagged`, `bridge vlan add dev ${iface} vid 2-4094`]
+}
+
+export function buildSwitchSyncCommand(ports: SwitchPort[]): string {
+  const valid = ports.filter((p) => IFACE_PATTERN.test(p.iface))
+  const lines = [
+    'set -e',
+    'ip link show br0 >/dev/null 2>&1 || ip link add br0 type bridge vlan_filtering 1',
+    'ip link set br0 up',
+  ]
+  for (const { iface, vlan } of valid) {
+    lines.push(
+      `ip link set ${iface} master br0`,
+      `ip link set ${iface} up`,
+      `bridge vlan del dev ${iface} vid 1-4094 2>/dev/null || true`,
+      ...vlanCommands(iface, vlan),
+    )
+  }
+  return `sh -c '${lines.join('; ')}'`
+}

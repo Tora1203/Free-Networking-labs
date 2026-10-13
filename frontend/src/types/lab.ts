@@ -30,6 +30,7 @@ export interface PaletteNodeConfig {
 
 export const PALETTE_NODE_CONFIGS: Record<PaletteNodeKind, PaletteNodeConfig> = {
   router: { kind: 'router', label: 'ルーター', clabKind: 'linux', image: 'quay.io/frrouting/frr:10.2.1' },
-  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'ovs-bridge', image: '' },
+  // L2スイッチはコンテナ内のLinuxブリッジ（backend/l2switch/、2026-10-13にovs-bridgeから変更）
+  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'linux', image: 'fnl/l2switch:1' },
   pc: { kind: 'pc', label: 'PC', clabKind: 'linux', image: 'alpine:3.20' },
 }

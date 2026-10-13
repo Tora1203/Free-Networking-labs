@@ -54,7 +54,7 @@ export async function startPacketCapture(
 ): Promise<void> {
   const token = getAuthToken()
   if (!token) throw new Error('ログインしていません')
-  if (targets.length === 0) throw new Error('キャプチャ対象のインターフェースがありません（L2スイッチはコンテナを持たないため対象外）')
+  if (targets.length === 0) throw new Error('キャプチャ対象のインターフェースがありません（古いラボのL2スイッチはコンテナを持たないため対象外です。一度deployし直してください）')
 
   const { sessions } = await createCaptureSessions(labName, targets)
   await Promise.all(

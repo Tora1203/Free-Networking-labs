@@ -754,7 +754,11 @@
 - **CML風の自動保存＋差分反映、L2スイッチのコンテナ化を決定（2026-10-13）**：containerlab 0.79の`apply`で差分反映できることを
   CLIで確認。ovs-bridgeは`apply`で追加できないため、スイッチをコンテナ化（`backend/l2switch/`、イメージ`fnl/l2switch:1`をビルド済み）。
   VLAN分離・トランク＋router on a stickもCLIで確認済み。**API経由の`apply`も検証済み**（未deployラボへの保存→apply起動→スイッチ追加→ノード削除、既存ノード保持。api-contract.md 2.7）。
-  次：スイッチのコンテナ化（フロント）→ 自動保存＋差分反映。
+  **スイッチのコンテナ化（手順2）を実装（2026-10-13）**：パレットのL2スイッチを`linux`+`fnl/l2switch:1`に変更、VLAN設定は
+  ovs-helperから`utils/switchConfig.ts`（ブリッジ＋`bridge vlan`を冪等に投入するコマンド）をexecで流す方式に置き換え。
+  スイッチもコンソール・パケットキャプチャ可能に。古いラボのovs-bridgeスイッチは次のdeployで自動的にコンテナへ置き換わる。
+  生成コマンドはCLIのテストラボでVLAN分離を確認済み。**ブラウザからの実機確認は未実施**。`clabNaming.ts`は削除。
+  次：自動保存＋差分反映（手順3）。
   **Bさんへ**：フロントのスイッチ・deploy周りが大きく変わる。CLAUDE.mdの確定方針も更新した。
 
 **Blocked / 相手待ち**
