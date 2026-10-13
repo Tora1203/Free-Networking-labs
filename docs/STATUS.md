@@ -751,6 +751,11 @@
   残骸：`labuser2`の`lab-4cb5e0cc`に`router-1`のコンテナだけが残っており、保存済みトポロジにもrouter-1が無いため
   画面からの削除では消えない。手動削除が必要（ユーザー確認待ち）。
 
+- **CML風の自動保存＋差分反映、L2スイッチのコンテナ化を決定（2026-10-13）**：containerlab 0.79の`apply`で差分反映できることを
+  CLIで確認。ovs-bridgeは`apply`で追加できないため、スイッチをコンテナ化（`backend/l2switch/`、イメージ`fnl/l2switch:1`をビルド済み）。
+  VLAN分離・トランク＋router on a stickもCLIで確認済み。次：clab-api-server API経由での`apply`検証（APIトークンが必要）。
+  **Bさんへ**：フロントのスイッチ・deploy周りが大きく変わる。CLAUDE.mdの確定方針も更新した。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は

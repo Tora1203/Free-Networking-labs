@@ -508,3 +508,26 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   破棄後の新規deployは「already exists」にならない。`cleanup=true`でもラボディレクトリ（`frr-config`＝
   `write memory`の内容、配置情報）は残る（ログ上`purgeLabDir=false`）。
 
+## 決定事項（2026-10-13追記）：CML風の自動保存＋差分反映へ移行、L2スイッチをコンテナ化
+
+2026-10-09の「自動保存はやらない」、および 2026-10-13 の「変更を反映＝破棄→新規deploy」を**見直す**。
+利用者から「deployのタイミングが分からない」「いちいちdeployするのが煩雑」との声が多数あったため。
+
+- **方針**：CMLと同じく「設計（トポロジ）は常に自動保存」「動いているラボには差分だけを反映（他ノードは作り直さない）」
+  にする。deployボタンはなくし、ラボ単位・ノード単位の起動/停止の操作にする。
+  - 自動保存：編集のたびにトポロジと配置をサーバーへ保存（`PUT /api/v1/labs/{name}/topology/yaml` 等）。
+  - 差分反映：containerlab 0.79の`apply`（clab-api-serverの`POST /api/v1/labs/{name}/apply`）。CLIで確認済み：
+    ノード/リンクの追加・削除が、既存ノードを作り直さずに反映される（コンテナIDも中の状態も保持）。
+    これにより、`write memory`していないルーター設定が編集のたびに消える問題も解消する。
+- **L2スイッチを`ovs-bridge`からコンテナに変更**（CLAUDE.mdの確定方針を変更）。
+  - 理由：`apply`は動いているラボへの`ovs-bridge`ノードの追加に対応していない（ブリッジが無いと
+    「referenced but does not exist」、先に作ると「externally managed ... config drift: Kind」で拒否。
+    containerlab `core/topology_reconcile.go`の仕様）。スイッチを普通のコンテナにすれば他ノードと同じく差分反映できる。
+  - 実装：`backend/l2switch/`（alpine＋iproute2、16MB）の中でVLAN対応Linuxブリッジを動かし、VLANは`bridge vlan`をexecで投入。
+    CLIでVLAN分離・トランク＋router on a stickを実機確認済み。
+  - 副次効果：ovs-helper（OVS操作・sudoラッパー）、ホスト全体で共有のブリッジ名、孤立OVSブリッジの問題が不要/解消。
+    スイッチにもコンソール・パケットキャプチャが使える。
+- **進め方**：(1) clab-api-server（内蔵containerlabは0.78）のAPI経由で`apply`とスイッチコンテナを検証
+  → (2) スイッチのコンテナ化 → (3) 自動保存＋差分反映、deployボタン廃止・起動/停止UI。
+- 未決：既存の`ovs-bridge`ラボの扱い（そのまま残す/変換する）。
+

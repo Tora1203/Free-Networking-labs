@@ -14,7 +14,8 @@ ContainerlabをバックエンドにしたOSS版CML(Cisco Modeling Labs)。CML�
 
 - **対応ノードタイプ**：
   - ルーター＝FRR（vrnetlab等のVMラップが不要な軽量コンテナ）
-  - L2スイッチ＝`ovs-bridge` kind（Open vSwitch。VLANタグ付け＝アクセス/トランクポートは`ovs-vsctl`の`tag`/`trunks`で対応可能）
+  - L2スイッチ＝コンテナ（`backend/l2switch/`、VLAN対応Linuxブリッジ。アクセス/トランクは`bridge vlan`で設定）。
+    当初は`ovs-bridge` kindだったが、差分反映（containerlab `apply`）に対応させるため2026-10-13に変更（docs/direction.md参照）
   - PC/ホスト＝`linux` kind（Alpine等の軽量コンテナ）
   - L3スイッチは今回は見送り（FRR＋VLAN対応ブリッジの組み合わせで実現可能だが実装コストが高いため、将来の拡張候補）
 - **外部ネットワークへのブリッジ接続（External Connector相当）は実装しない**（スコープ外）
@@ -22,6 +23,7 @@ ContainerlabをバックエンドにしたOSS版CML(Cisco Modeling Labs)。CML�
   - 各人に個別のLinuxアカウントを作成し`clab_api`/`clab_admins`グループに所属させる
   - clab-api-serverがラボを`$CLAB_LABS_ROOT/<username>/`にユーザーごとに自動分離・所有権管理する
 - **フロントエンドはReact + React Flow (xyflow)（トポロジエディタ）+ xterm.js（統合コンソール）**
+- **トポロジは自動保存し、動いているラボには差分だけを反映する（CML風、deployボタンなし）**（2026-10-13決定）
 - **ホスティングは共有Linuxサーバー1台**（Proxmox VE上のVM「lab-server」、Ubuntu Server 24.04 LTS、メモリ12GB固定割当）
 
 ## アーキテクチャ
