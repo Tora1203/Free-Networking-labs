@@ -43,8 +43,6 @@
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import https from 'node:https'
-import fs from 'node:fs'
-import path from 'node:path'
 
 const HELPER_PORT = Number(process.env.OVS_HELPER_PORT ?? 8083)
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
@@ -52,11 +50,8 @@ const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '').split(',').map(
 // `ip link delete`はCAP_NET_ADMINが要るため、labuser権限のこのプロセスからは直接呼べない。
 // sudoersで限定許可した専用ラッパー（link-delete.sh、要セットアップ）を`sudo -n`経由で呼ぶ。
 // 詳細はそのファイルを参照
+const FRR_CONFIG_INIT_BIN = process.env.OVS_HELPER_FRR_CONFIG_INIT_BIN ?? '/usr/local/sbin/ovs-helper-frr-config-init'
 const LINK_DELETE_BIN = process.env.OVS_HELPER_LINK_DELETE_BIN ?? '/usr/local/sbin/ovs-helper-link-delete'
-// ルーターのFRR設定（daemons/frr.conf/vtysh.conf）の永続化先ルート。
-// このプロセス（labuser等、各ユーザー自身の権限で動く）がそのまま書き込める、
-// 各ユーザー自身のラボディレクトリのルート（2026-10-07追加）
-const CLAB_LABS_ROOT = process.env.CLAB_LABS_ROOT ?? '/var/lib/containerlab/labs'
 
 // OVSのVLAN IDとして有効な範囲（802.1Q）
 const MIN_VLAN = 1
@@ -298,6 +293,20 @@ async function handlePortReset(req, res, token) {
 //
 // 既に存在するファイルは絶対に上書きしない（学生が書いた設定を消してしまうため）。
 // 無い時だけ、主要なルーティングプロトコルを一通り有効化した最小構成で新規作成する
+function initFrrConfig(username, labName, routerName) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      'sudo',
+      ['-n', FRR_CONFIG_INIT_BIN, username, labName, routerName],
+      (error, _stdout, stderr) => {
+        if (error) reject(new Error(`FRR設定の用意に失敗しました: ${String(stderr).trim() || error.message}`))
+        else resolve()
+      },
+    )
+    child.stdin.end(FRR_DEFAULT_DAEMONS)
+  })
+}
+
 async function handleFrrConfig(req, res, token) {
   const payload = await readJsonBody(req)
   const { labName, routerName } = payload ?? {}
@@ -321,18 +330,9 @@ async function handleFrrConfig(req, res, token) {
     return
   }
 
-  const dir = path.join(CLAB_LABS_ROOT, username, labName, 'frr-config', routerName)
-  fs.mkdirSync(dir, { recursive: true })
-
-  const files = {
-    daemons: FRR_DEFAULT_DAEMONS,
-    'frr.conf': `frr version 10.2.1\nfrr defaults traditional\nhostname ${routerName}\n!\nline vty\n!\n`,
-    'vtysh.conf': 'service integrated-vtysh-config\n',
-  }
-  for (const [name, content] of Object.entries(files)) {
-    const filePath = path.join(dir, name)
-    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, content)
-  }
+  // ラボのディレクトリは本人所有(0750)でovs-helper(labuser)からは書けないため、
+  // 限定ラッパー経由で作る（2026-10-13：別ユーザーのラボでEACCESになった。frr-config-init.sh参照）
+  await initFrrConfig(username, labName, routerName)
 
   sendJson(res, 200, { message: `router ${routerName} のFRR設定を用意しました` })
 }

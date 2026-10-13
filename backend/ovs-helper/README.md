@@ -35,6 +35,24 @@ JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有して
 このサーバーでは`labuser`に対して設定済み（`docs/direction.md`参照：
 `/etc/default/openvswitch-switch`に`--ovs-user=root:clab_admins`等）。
 
+## 前提：FRR設定用ラッパーのsudoers設定（初回のみ）
+
+`POST /frr-config`は、ラボのディレクトリ（ユーザーごとに`drwxr-x---`で分離）に書き込むため、
+`labuser`権限のovs-helperからは他ユーザーのラボに作れない（2026-10-13実機確認：
+`labuser2`のdeployが`EACCES: permission denied, mkdir .../frr-config/router-1`で失敗）。
+そこで「そのユーザーのラボ配下に`frr-config`を作り所有者を本人にする」だけを行うラッパー
+（`frr-config-init.sh`）をsudoersで限定許可する。入力（ユーザー名/ラボ名/ルーター名）は形式を検証し、
+シンボリックリンクは拒否、既存ファイルは上書きしない。
+
+```sh
+sudo cp backend/ovs-helper/frr-config-init.sh /usr/local/sbin/ovs-helper-frr-config-init
+sudo chown root:clab_admins /usr/local/sbin/ovs-helper-frr-config-init
+sudo chmod 750 /usr/local/sbin/ovs-helper-frr-config-init
+echo 'labuser ALL=(root) NOPASSWD: /usr/local/sbin/ovs-helper-frr-config-init' | sudo tee /etc/sudoers.d/ovs-helper-frr-config-init
+sudo chmod 440 /etc/sudoers.d/ovs-helper-frr-config-init
+sudo visudo -c
+```
+
 ## 前提：veth削除用ラッパーのsudoers設定（初回のみ）
 
 `POST /port/reset`は再deploy時のポート名衝突を防ぐため、OVSから切り離した後のvethデバイス
