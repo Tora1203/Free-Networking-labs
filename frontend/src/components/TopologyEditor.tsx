@@ -32,6 +32,7 @@ import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serial
 import {
   ApiError,
   deployLab,
+  destroyLab,
   execInLab,
   getLabAnnotations,
   getLabs,
@@ -1064,7 +1065,22 @@ function TopologyEditorInner() {
           // 一覧が取れなくても、従来どおり新規deployとして試す
         }
       }
-      await deployLab(topologyContent, { reconfigure })
+      // 「変更を反映」はreconfigureではなく「破棄→新規deploy」で行う（2026-10-13）。
+      // containerlabのreconfigure/destroyは「渡されたトポロジに書かれたノード」しか破棄しない。
+      // clab-api-serverは新トポロジを保存してからreconfigureするため、エディタでノードを削除して
+      // 反映すると、削除したノードのコンテナが残り「already been deployed」で失敗し続ける
+      // （テスター報告を受け、containerlab CLIで再現確認済み）。新トポロジを送る前に、
+      // サーバーに保存済みの旧トポロジ（削除前のノードを含む）でdestroyすれば確実に全部消える。
+      // destroyはcleanup=trueでもラボディレクトリ（frr-config＝write memoryの内容、配置情報）は残る。
+      if (reconfigure) {
+        try {
+          await destroyLab(safeName)
+        } catch (e) {
+          // 既に消えている（404）等は新規deployで続行してよい
+          console.warn('再deploy前のdestroyに失敗しました（新規deployで続行）', e)
+        }
+      }
+      await deployLab(topologyContent)
       rememberLabDisplayName(safeName, displayName)
       // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
       const consoleNodeIds = new Set(

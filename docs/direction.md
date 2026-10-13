@@ -494,3 +494,17 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   周知先：テストマニュアル（5・10章）、トポロジエディタの「変更を反映」ボタン付近の注記とツールチップ。
 - 変更のあるノードだけを作り直す方式（他ノードの状態を保つ）は、必要になれば別途検討（containerlab APIの制約を要調査）。
 
+## 決定事項（2026-10-13追記）：「変更を反映」は reconfigure ではなく「破棄→新規deploy」で行う
+
+- テスターのラボで「変更を反映」が`the '<lab>' lab has already been deployed`で失敗し続けた。
+  clab-api-serverのログとcontainerlab CLIでの再現（`zz-repro`）で原因を確定：
+  **containerlabの`deploy --reconfigure`も`destroy`も、渡されたトポロジに書かれたノードしか破棄しない**。
+  clab-api-serverは新トポロジを保存してから`reconfigure`するため、エディタでノードを削除して反映すると、
+  削除したノードのコンテナが残り、以後そのラボ名では永久にdeployできなくなる。
+- **対応**：フロントは「変更を反映」時に、新トポロジを送る**前に**`DELETE /api/v1/labs/{name}?cleanup=true`で
+  破棄し（サーバーに保存済みの旧トポロジ＝削除前のノードを含む、で破棄されるので全部消える）、
+  その後`reconfigure`なしで新規deployする。`reconfigure`も中身は全破棄→再作成なので挙動は同等。
+  clab-api-serverのラボ存在判定はコンテナの有無（`internal/api/helpers.go`の`getLabInfo`、v0.6.0）なので、
+  破棄後の新規deployは「already exists」にならない。`cleanup=true`でもラボディレクトリ（`frr-config`＝
+  `write memory`の内容、配置情報）は残る（ログ上`purgeLabDir=false`）。
+

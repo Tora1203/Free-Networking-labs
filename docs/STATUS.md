@@ -745,6 +745,12 @@
   対応：deploy直前にサーバーの実際のラボ一覧(`GET /api/v1/labs`)で同名ラボの有無を確認して`reconfigure`を決め、
   `deployLab`成功直後に`deployedLab`をセットするよう変更。OVSの孤立ブリッジ(21個)の掃除はbacklogに追加。
 
+- **「変更を反映」が`already been deployed`で失敗し続ける不具合を修正（2026-10-13）**：ノードを削除して反映すると、
+  containerlabが削除ノードのコンテナを破棄せず残すのが原因（CLIで再現確認）。反映前に旧トポロジで破棄→新規deployに変更
+  （詳細はdirection.md）。直前の「deploy判定をラボ一覧で補強」修正は、この件の原因ではなかった（判定自体は正しかった）。
+  残骸：`labuser2`の`lab-4cb5e0cc`に`router-1`のコンテナだけが残っており、保存済みトポロジにもrouter-1が無いため
+  画面からの削除では消えない。手動削除が必要（ユーザー確認待ち）。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
