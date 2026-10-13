@@ -734,7 +734,7 @@
 
 - **マルチユーザーでのdeploy不具合を修正（2026-10-13）**：`labuser2`のdeployが`EACCES: mkdir .../frr-config/router-1`で失敗。
   原因はovs-helper(labuser権限)が他ユーザーのラボ(0750)に書けないこと。`backend/ovs-helper/frr-config-init.sh`
-  （sudoers限定のラッパー）経由に変更し、設置・動作確認済み（`labuser2`のdeploy再試験はテスター確認待ち）。
+  （sudoers限定のラッパー）経由に変更し、設置・動作確認済み（`labuser2`のdeployも成功を確認、2026-10-13）。
   あわせて、ルーター設定は`write memory`必須のまま周知で対応と決定（direction.md）。画面に注記を追加。
   DNS：テスターがFQDNでアクセスできなかった件は、**タイプミスが原因で解決済み**（2026-10-13、`10.0.200.253`のBIND・nginx・サーバー側に問題なし）。
 
