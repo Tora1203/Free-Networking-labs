@@ -1261,9 +1261,14 @@ function TopologyEditorInner() {
               実際の名前: {toSafeLabName(labName)}
             </span>
           )}
-          <button onClick={onDeploy} disabled={!canDeploy} title={isRedeploy ? '既にdeploy済みのラボに変更を反映します' : undefined}>
+          <button onClick={onDeploy} disabled={!canDeploy} title={isRedeploy ? '既にdeploy済みのラボに変更を反映します（ラボ全体を作り直すため、write memoryしていないルーター設定は消えます）' : undefined}>
             {deployStatus.kind === 'deploying' ? (isRedeploy ? '反映中...' : 'deploy中...') : isRedeploy ? '変更を反映' : 'Deploy'}
           </button>
+          {isRedeploy && deployStatus.kind !== 'deploying' && (
+            <span className="topology-editor__status" title="実機のルーターと同じく、保存（write memory）していない設定は再deployで消えます">
+              ※ ルーター設定はwrite memoryで保存
+            </span>
+          )}
           {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
           {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
           <input

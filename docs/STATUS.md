@@ -732,6 +732,13 @@
   フロントの接続先は`frontend/.env.production`で相対パス化（開発用`.env`は従来どおり）。
   今後の候補：8082/8083/8084/8090を外部から直接触れないようファイアウォールで閉じる（nginx経由のみにする）。
 
+- **マルチユーザーでのdeploy不具合を修正（2026-10-13）**：`labuser2`のdeployが`EACCES: mkdir .../frr-config/router-1`で失敗。
+  原因はovs-helper(labuser権限)が他ユーザーのラボ(0750)に書けないこと。`backend/ovs-helper/frr-config-init.sh`
+  （sudoers限定のラッパー）経由に変更し、設置・動作確認済み（`labuser2`のdeploy再試験はテスター確認待ち）。
+  あわせて、ルーター設定は`write memory`必須のまま周知で対応と決定（direction.md）。画面に注記を追加。
+  DNS：テスターの`nslookup`がタイムアウト（`10.0.200.253`のBIND ACLは`10.0.200.0/24`・`192.168.200.0/24`のみ許可、
+  `named`ログに拒否なし→経路かFWの可能性、`tcpdump`での切り分け待ち）。
+
 **Blocked / 相手待ち**
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
