@@ -531,3 +531,17 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   → (2) スイッチのコンテナ化 → (3) 自動保存＋差分反映、deployボタン廃止・起動/停止UI。
 - 未決：既存の`ovs-bridge`ラボの扱い（そのまま残す/変換する）。
 
+
+## 決定事項（2026-10-14追記）：VLANサブインターフェースをvtyshでCisco風に設定する（GUIの入力欄は廃止）
+
+- 「subintが`show running-config`に出ないのは違和感がすごい」「subintの設定もCisco likeで
+  （`int eth1.10` / `ip add x.x.x.x/xx`）」という要望を受けて、10-08の「GUIで完結」方式をやめた。
+- FRRはVLANデバイスを作れないが、存在しないインターフェースにも設定は入れられ、デバイスができた時点で
+  アドレス等を適用することを確認した。そこでルーターのイメージをFRR公式＋エージェント（`backend/frr-router/`、
+  `fnl/frr:1`）に変え、エージェントがrunning-configの`interface ethN.V`を見てVLANデバイスを自動で作る/消す。
+  vtyshの省略形（`int` / `ip add`）もそのまま使える。`sh run`に出て、`write memory`で保存される。
+- 制約：VLAN IDは名前（`.`の後ろ）で決まる（Ciscoの`encapsulation dot1Q`は無い）。削除は`no ip address`で
+  設定を空にする（FRRは動いているインターフェースを`no interface`できない）。
+- 既存ラボ：ルーターのイメージが変わるため、動いているラボは「作り直す」まで自動反映を止める
+  （黙ってルーターを作り直してwrite memoryしていない設定を消さないため）。GUIで入れていたサブIFは引き継がない。
+- L2スイッチも同様にCLI（Cisco風の専用CLI）で設定する方向（実装は次）。PCのアドレス/GWはGUIのまま。

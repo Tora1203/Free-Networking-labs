@@ -27,30 +27,12 @@ export interface EdgeIfaceData {
   // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
   sourceAddress?: string
   targetAddress?: string
-  // PC/ルーターがプレーンなアドレス設定（router on a stickではない）の時だけ意味がある。
-  // デフォルトゲートウェイ（単純なIPv4アドレス、プレフィックス無し）。設定するとdeploy後に
+  // PC側だけ意味がある。デフォルトゲートウェイ（単純なIPv4アドレス、プレフィックス無し）。設定するとdeploy後に
   // `ip route add default via <gateway>`を実行する（2026-10-07追加。「ラボ内の宛先が
   // 自動的に外部に飛んでしまう」指摘対応。docs/direction.md参照）
   sourceGateway?: string
   targetGateway?: string
-  // ルーター側がL2スイッチのトランクポートに接続している時だけ意味がある（router on a stick、
-  // 2026-10-07追加）。物理I/F自体にはアドレスを持たせず、VLANごとのサブインターフェース
-  // （例: eth1.10）を作ってそれぞれにアドレスを振る。sourceAddress/targetAddressとは
-  // 排他（モードで切り替える。UI側のpendingSourceMode/pendingTargetMode参照）
-  sourceSubInterfaces?: SubInterfaceConfig[]
-  targetSubInterfaces?: SubInterfaceConfig[]
   [key: string]: unknown
-}
-
-// router on a stick用のVLANサブインターフェース。
-// ルーターの通常のアドレス設定（「プレーン」モード）はvtyshのCLIで行う方針のままだが、
-// サブインターフェースの作成はVLAN ID＋アドレスの両方をGUIで一度に設定する方式に戻した
-// （2026-10-08再変更：デバイス作成はCLIでは不可能なためGUI必須、かつ「デバイスだけGUIで
-// 作ってアドレスは別途CLIで」という2段階の運用は煩雑で誤解を生みやすいという指摘を受けて、
-// サブインターフェース作成時はGUIで完結させることにした。詳細はdocs/direction.md参照）
-export interface SubInterfaceConfig {
-  vlan: number
-  address: string
 }
 
 // containerlabの`linux` kindはデフォルトでDockerの`--privileged`相当（全capability付与・
@@ -92,20 +74,6 @@ export interface AddressTask {
   address: string
 }
 
-// router on a stick用：VLANサブインターフェース（例: eth1.10）の作成タスク。
-// デバイス作成（`ip link add ... type vlan`→`ip link set ... up`）とアドレス設定
-// （`ip addr add`）の両方をここで行う（2026-10-08再変更：デバイス作成はvtyshでは
-// 不可能なためGUI側で用意するしかなく、「デバイスだけGUIで作ってアドレスは別途CLIで」という
-// 2段階運用は煩雑で誤解を生みやすいという指摘を受けて、サブインターフェース作成時は
-// GUIで完結させる方式に戻した。ルーターの通常のアドレス設定（「プレーン」モード）は
-// 引き続きvtyshのCLIで行う。docs/direction.md参照）
-export interface SubInterfaceTask {
-  nodeName: string
-  parentIface: string
-  vlan: number
-  address: string
-}
-
 // デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
 // ブリッジ名・ポート名）から、UI上で使っていた分かりやすい名前・VLAN・アドレス設定を
 // 引き戻すためのマップ。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
@@ -119,8 +87,6 @@ export interface PortAnnotation {
   address?: string
   // デフォルトゲートウェイ（2026-10-07追加）
   gateway?: string
-  // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
-  subInterfaces?: SubInterfaceConfig[]
 }
 
 // containerlabのトポロジYAML（＋任意でannotations JSON）からReact Flowのnodes/edgesを復元する。
@@ -151,7 +117,7 @@ export function parseImportedTopology(
 }
 
 // execInLab()の結果を見てエラーなら投げる。execはコマンド自体が失敗してもHTTPとしては200で
-// 返ってくるため`return-code`で判定する必要がある（addressTasks/subInterfaceTasks/
+// 返ってくるため`return-code`で判定する必要がある（ノードごとの設定コマンド等/
 // routeResultsで共通して必要なロジックなのでまとめた、2026-10-08レビュー指摘対応）。
 // 対象ノードが見つからず`result`が空オブジェクトになるケース（firstResultがundefined）も
 // 「結果が取れなかった＝失敗」として扱う（以前はここが抜けていて、execが実質的に
@@ -172,7 +138,6 @@ export function buildTopologyContent(
   // L2スイッチごとのポート（I/F名とVLAN設定）。deploy後にbuildSwitchSyncCommand()で投入する
   switchConfigs: Map<string, SwitchPort[]>
   addressTasks: AddressTask[]
-  subInterfaceTasks: SubInterfaceTask[]
   // PC/ルーター（L2スイッチ以外）の全clabName。containerlabが自動設定するeth0の
   // デフォルトルートはmgmtネットワークのゲートウェイを指しており、ラボ内に存在しない
   // 宛先への経路が無いとそのまま実際の外部ネットワークに出てしまう（2026-10-07実機確認）。
@@ -203,9 +168,10 @@ export function buildTopologyContent(
       throw new Error(`ノード「${node.id}」の種別情報が無く、deployできません（パレットから配置し直してください）`)
     }
     const clabName = node.id
-    // L2スイッチは常に現在のパレット定義（コンテナ）でdeployする。古いラボのovs-bridgeの
-    // スイッチもここでコンテナに置き換わる（2026-10-13）
-    const kindConfig = data.kind === 'l2-switch' ? PALETTE_NODE_CONFIGS['l2-switch'] : { clabKind: data.clabKind, image: data.image }
+    // L2スイッチとルーターは常に現在のパレット定義のイメージで起動する。古いラボのovs-bridgeの
+    // スイッチ（2026-10-13〜）や、エージェントの無いFRR公式イメージのルーター（2026-10-14〜）もここで置き換わる
+    const kindConfig =
+      data.kind === 'l2-switch' || data.kind === 'router' ? PALETTE_NODE_CONFIGS[data.kind] : { clabKind: data.clabKind, image: data.image }
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
     const caps = CONTAINER_CAPABILITIES[data.kind]
@@ -251,7 +217,6 @@ export function buildTopologyContent(
     if ((node.data as Partial<TopoNodeData>).kind === 'l2-switch') switchConfigs.set(node.id, [])
   }
   const addressTasks: AddressTask[] = []
-  const subInterfaceTasks: SubInterfaceTask[] = []
   const gatewayByNode = new Map<string, string>()
   const portAnnotations: Record<string, PortAnnotation> = {}
 
@@ -291,26 +256,18 @@ export function buildTopologyContent(
     // デフォルトゲートウェイ（2026-10-07追加）。プレーンなアドレス設定の時だけ意味がある
     if (!sourceIsSwitch && !sourceIsRouter && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
     if (!targetIsSwitch && !targetIsRouter && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
-    for (const sub of iface.sourceSubInterfaces ?? []) {
-      subInterfaceTasks.push({ nodeName: sourceName, parentIface: iface.sourceIface, vlan: sub.vlan, address: sub.address })
-    }
-    for (const sub of iface.targetSubInterfaces ?? []) {
-      subInterfaceTasks.push({ nodeName: targetName, parentIface: iface.targetIface, vlan: sub.vlan, address: sub.address })
-    }
 
     portAnnotations[`${sourceName}:${sourcePort}`] = {
       iface: iface.sourceIface,
       vlan: iface.sourceVlan,
       address: iface.sourceAddress,
       gateway: iface.sourceGateway,
-      subInterfaces: iface.sourceSubInterfaces,
     }
     portAnnotations[`${targetName}:${targetPort}`] = {
       iface: iface.targetIface,
       vlan: iface.targetVlan,
       address: iface.targetAddress,
       gateway: iface.targetGateway,
-      subInterfaces: iface.targetSubInterfaces,
     }
 
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
@@ -320,7 +277,6 @@ export function buildTopologyContent(
     topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
     switchConfigs,
     addressTasks,
-    subInterfaceTasks,
     linuxNodeNames,
     gatewayByNode,
     routerClabNames,
@@ -368,30 +324,11 @@ function buildPcSyncCommand(ifaces: { iface: string; address?: string }[], gatew
   return `sh -c '${lines.join('; ')}'`
 }
 
-// ルーター：eth0のデフォルトルート削除と、router on a stickのVLANサブインターフェースの作成。
-// 通常のアドレス・ルートはvtyshで学生が設定するので触らない（`dev eth0`に限定して消すのも
-// そのため。2026-10-08レビュー指摘）。不要になったサブインターフェースは削除する
-function buildRouterSyncCommand(subIfaces: { parentIface: string; vlan: number; address: string }[]): string {
-  const valid = subIfaces.filter(
-    (s) => IFACE_PATTERN.test(s.parentIface) && Number.isInteger(s.vlan) && CIDR_PATTERN.test(s.address),
-  )
-  const names = valid.map((s) => `${s.parentIface}.${s.vlan}`)
-  const lines = ['set -e', 'ip route del default dev eth0 2>/dev/null || true']
-  // `/sys/class/net/*.*`はVLANサブインターフェース（eth1.10等）だけに一致する。
-  // 一致が無いとパターン文字列そのものが来るので`[ -e ]`で除く
-  const keep = names.length > 0 ? `${names.join('|')}) ;; ` : ''
-  lines.push(`for d in /sys/class/net/*.*; do n=\${d##*/}; case $n in ${keep}*) [ -e $d ] && ip link del $n ;; esac; done`)
-  valid.forEach((s, i) => {
-    const name = names[i]
-    lines.push(
-      `ip link show ${name} >/dev/null 2>&1 || ip link add link ${s.parentIface} name ${name} type vlan id ${s.vlan}`,
-      `ip link set ${name} up`,
-      `ip -4 addr flush dev ${name}`,
-      `ip addr add ${s.address} dev ${name}`,
-    )
-  })
-  return `sh -c '${lines.join('; ')}'`
-}
+// ルーター：containerlabがeth0に付けるデフォルトルートの削除だけ。アドレス・ルート・
+// VLANサブインターフェースはすべて学生がvtyshで設定する（2026-10-14〜。サブインターフェースの
+// デバイスはルーターのイメージ内のエージェントが作る、backend/frr-router/）。
+// `dev eth0`に限定するのは、vtyshで設定した別のデフォルトルートを消さないため（2026-10-08レビュー指摘）
+const ROUTER_SYNC_COMMAND = `sh -c 'ip route del default dev eth0 2>/dev/null || true'`
 
 // buildTopologyContent()の結果から、ノード（node.id）ごとの設定コマンドを作る
 export function buildNodeSyncCommands(built: ReturnType<typeof buildTopologyContent>): Map<string, string> {
@@ -399,7 +336,7 @@ export function buildNodeSyncCommands(built: ReturnType<typeof buildTopologyCont
   for (const [name, ports] of built.switchConfigs) commands.set(name, buildSwitchSyncCommand(ports))
   const routers = new Set(built.routerClabNames)
   for (const name of routers) {
-    commands.set(name, buildRouterSyncCommand(built.subInterfaceTasks.filter((t) => t.nodeName === name)))
+    commands.set(name, ROUTER_SYNC_COMMAND)
   }
   for (const name of built.linuxNodeNames) {
     if (routers.has(name)) continue

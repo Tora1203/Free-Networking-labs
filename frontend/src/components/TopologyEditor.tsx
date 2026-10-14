@@ -33,7 +33,6 @@ import {
   parseImportedTopology,
   topologyToYaml,
   type EdgeIfaceData,
-  type SubInterfaceConfig,
 } from '../utils/labTopology'
 import { errorMessage, freshNodesOf, prepareRouters, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
 import {
@@ -109,26 +108,6 @@ function parseIpv4Cidr(value: string): { address?: string; error?: string } {
   return { address: trimmed }
 }
 
-// router on a stick用：VLANサブインターフェースの行（VLAN ID＋アドレス）をまとめて検証する。
-// 行が0件なら「未設定」として扱う（2026-10-08再変更：デバイス作成がGUI必須な以上、
-// 同じタイミングでアドレスも設定してしまう方がシンプルで誤解が無いという判断）
-function parseSubInterfaceRows(rows: { vlan: string; address: string }[]): { configs?: SubInterfaceConfig[]; error?: string } {
-  if (rows.length === 0) return {}
-  const isValidVlanId = isUserVlanId
-  const configs: SubInterfaceConfig[] = []
-  const seenVlans = new Set<number>()
-  for (const row of rows) {
-    const vlan = Number(row.vlan)
-    if (!isValidVlanId(vlan)) return { error: `VLAN IDは1〜${MAX_USER_VLAN}の整数で指定してください` }
-    if (seenVlans.has(vlan)) return { error: `VLAN ${vlan} が重複しています` }
-    seenVlans.add(vlan)
-    const { address, error } = parseIpv4Cidr(row.address)
-    if (error) return { error }
-    if (!address) return { error: 'サブインターフェースにはIPv4アドレスが必要です' }
-    configs.push({ vlan, address })
-  }
-  return { configs }
-}
 
 // デフォルトゲートウェイ入力欄の検証。プレフィックス無しの単純なIPv4アドレスのみ
 // （2026-10-07追加。「ラボ内の宛先が自動的に外部に飛んでしまう」指摘対応：
@@ -216,6 +195,18 @@ function downloadTextFile(filename: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
+const OLD_FORMAT_MESSAGE =
+  '古い形式のラボのため、編集は保存のみで反映されません。「作り直す」で今の形式にできます（write memoryしていないルーター設定は消えます）'
+
+// 今のパレット定義と違う古い形式のノードか（ovs-bridgeのスイッチ、エージェント無しのイメージのルーター）
+function needsUpgrade(node: Node): boolean {
+  if (node.type !== 'topoNode') return false
+  const data = node.data as Partial<TopoNodeData>
+  if (data.kind === 'l2-switch') return !hasContainer(data)
+  if (data.kind === 'router') return data.image !== PALETTE_NODE_CONFIGS.router.image
+  return false
+}
+
 // ラボの実行状態（GET /api/v1/labs から判定）。none＝一度も起動していない（コンテナが無い）
 type LabRunState = { kind: 'unknown' | 'none' | 'stopped' | 'running'; nodeStates: Record<string, string> }
 // 自動保存・差分反映・起動/停止の状態表示
@@ -263,13 +254,6 @@ function TopologyEditorInner() {
   // プレーンなアドレス設定の時だけ表示するデフォルトゲートウェイの入力欄（2026-10-07追加）
   const [pendingSourceGateway, setPendingSourceGateway] = useState('')
   const [pendingTargetGateway, setPendingTargetGateway] = useState('')
-  // ルーターがL2スイッチのトランクポートに接続している時だけ表示するrouter on a stick設定
-  // （2026-10-07追加）。'plain'ならpendingSource/targetAddressのプレーンなアドレス設定、
-  // 'vlan-subif'ならVLANごとのサブインターフェース一覧を使う（排他）
-  const [pendingSourceMode, setPendingSourceMode] = useState<'plain' | 'vlan-subif'>('plain')
-  const [pendingTargetMode, setPendingTargetMode] = useState<'plain' | 'vlan-subif'>('plain')
-  const [pendingSourceSubIfaces, setPendingSourceSubIfaces] = useState<{ vlan: string; address: string }[]>([])
-  const [pendingTargetSubIfaces, setPendingTargetSubIfaces] = useState<{ vlan: string; address: string }[]>([])
   // 既存ラボをエディタで開く時のYAML取得状態（ホームからの「エディタで開く」導線、2026-10-05追加）
   const [loadStatus, setLoadStatus] = useState<{ kind: 'idle' | 'loading' | 'error'; message?: string }>({ kind: 'idle' })
   const { screenToFlowPosition } = useReactFlow()
@@ -303,6 +287,9 @@ function TopologyEditorInner() {
   const syncQueuedRef = useRef(false)
   // 未保存の変更があるか（ホームに戻る・タブを閉じる時の確認用）
   const dirtyRef = useRef(false)
+  // 古い形式のまま動いているラボは、作り直すまで保存だけして反映しない（反映するとルーターが
+  // 黙って作り直され、write memoryしていない設定が消えるため）
+  const applyBlockedRef = useRef(false)
   // 既存ラボを開く時は、読み込みが終わるまで自動保存しない（空のキャンバスで上書きしないため）
   const loadedRef = useRef(editorTarget.mode === 'new')
 
@@ -387,6 +374,10 @@ function TopologyEditorInner() {
         setSyncStatus({ kind: 'ok', message: '保存済み' })
         return
       }
+      if (applyBlockedRef.current) {
+        setSyncStatus({ kind: 'error', message: `保存済み（${OLD_FORMAT_MESSAGE}）`, canRebuild: true })
+        return
+      }
 
       let fresh: string[] = []
       if (yamlText !== lastAppliedYaml.current) {
@@ -468,6 +459,7 @@ function TopologyEditorInner() {
         await applyLab(name)
       }
       lastAppliedYaml.current = topologyToYaml(built.topologyContent)
+      applyBlockedRef.current = false
       await refreshRunState(name)
       lastSynced.current.clear()
       const commands = buildNodeSyncCommands(built)
@@ -643,15 +635,16 @@ function TopologyEditorInner() {
         }
         const parsed = parseImportedTopology(yamlText, annotationsText)
         const { edges, counters: parsedCounters } = parsed
-        // 2026-10-13以前の形式（スイッチがovs-bridge）のラボは、キャンバス上は今の形式（コンテナ）の
-        // スイッチとして扱い、次の保存で書き直す（動いているラボは「作り直す」で反映する）
-        const isOldFormat = parsed.nodes.some((n) => n.type === 'topoNode' && !hasContainer(n.data as Partial<TopoNodeData>))
-        const switchConfig = PALETTE_NODE_CONFIGS['l2-switch']
-        const nodes = parsed.nodes.map((n) =>
-          n.type === 'topoNode' && !hasContainer(n.data as Partial<TopoNodeData>)
-            ? { ...n, data: { ...n.data, clabKind: switchConfig.clabKind, image: switchConfig.image } }
-            : n,
-        )
+        // 古い形式のノード（2026-10-13以前のovs-bridgeのスイッチ、2026-10-14以前のエージェント無しの
+        // ルーター）は、キャンバス上は今の形式として扱い、次の保存で書き直す。
+        // 動いているラボは作り直さないと反映できないので、「作り直す」まで自動反映を止める
+        const isOldFormat = parsed.nodes.some((n) => needsUpgrade(n))
+        const nodes = parsed.nodes.map((n) => {
+          const kind = (n.data as Partial<TopoNodeData>).kind
+          if (!needsUpgrade(n) || !kind) return n
+          const config = PALETTE_NODE_CONFIGS[kind]
+          return { ...n, data: { ...n.data, clabKind: config.clabKind, image: config.image } }
+        })
         setNodes(nodes)
         setEdges(edges)
         counters.current = parsedCounters
@@ -681,11 +674,8 @@ function TopologyEditorInner() {
         loadedRef.current = true
         setLoadStatus({ kind: 'idle' })
         if (isOldFormat && state.kind === 'running') {
-          setSyncStatus({
-            kind: 'error',
-            message: '古い形式のラボです（L2スイッチがコンテナではありません）。「作り直す」で今の形式に変換できます',
-            canRebuild: true,
-          })
+          applyBlockedRef.current = true
+          setSyncStatus({ kind: 'error', message: OLD_FORMAT_MESSAGE, canRebuild: true })
         }
 
         // ホームの🖥ボタンから来た場合、読み込み完了後にそのノードのコンソールを自動で開く
@@ -733,10 +723,6 @@ function TopologyEditorInner() {
       setPendingTargetAddress('')
       setPendingSourceGateway('')
       setPendingTargetGateway('')
-      setPendingSourceMode('plain')
-      setPendingTargetMode('plain')
-      setPendingSourceSubIfaces([])
-      setPendingTargetSubIfaces([])
     },
     [edges],
   )
@@ -753,14 +739,6 @@ function TopologyEditorInner() {
   const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
   const sourceGatewayResult = useMemo(() => parseIpv4Gateway(pendingSourceGateway), [pendingSourceGateway])
   const targetGatewayResult = useMemo(() => parseIpv4Gateway(pendingTargetGateway), [pendingTargetGateway])
-  const sourceSubIfacesResult = useMemo(
-    () => (pendingSourceMode === 'vlan-subif' ? parseSubInterfaceRows(pendingSourceSubIfaces) : {}),
-    [pendingSourceMode, pendingSourceSubIfaces],
-  )
-  const targetSubIfacesResult = useMemo(
-    () => (pendingTargetMode === 'vlan-subif' ? parseSubInterfaceRows(pendingTargetSubIfaces) : {}),
-    [pendingTargetMode, pendingTargetSubIfaces],
-  )
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
@@ -770,13 +748,10 @@ function TopologyEditorInner() {
       targetIface: pendingTargetIface,
       sourceVlan: sourceVlanResult.config,
       targetVlan: targetVlanResult.config,
-      // router on a stick（'vlan-subif'）の時はプレーンなアドレス/ゲートウェイは設定しない（排他）
-      sourceAddress: pendingSourceMode === 'plain' ? sourceAddressResult.address : undefined,
-      targetAddress: pendingTargetMode === 'plain' ? targetAddressResult.address : undefined,
-      sourceGateway: pendingSourceMode === 'plain' ? sourceGatewayResult.gateway : undefined,
-      targetGateway: pendingTargetMode === 'plain' ? targetGatewayResult.gateway : undefined,
-      sourceSubInterfaces: pendingSourceMode === 'vlan-subif' ? sourceSubIfacesResult.configs : undefined,
-      targetSubInterfaces: pendingTargetMode === 'vlan-subif' ? targetSubIfacesResult.configs : undefined,
+      sourceAddress: sourceAddressResult.address,
+      targetAddress: targetAddressResult.address,
+      sourceGateway: sourceGatewayResult.gateway,
+      targetGateway: targetGatewayResult.gateway,
     }
     if (editingEdgeId) {
       // 既存接続の編集：idはそのまま、dataだけ入れ替える（2026-10-07追加）
@@ -810,10 +785,6 @@ function TopologyEditorInner() {
     targetAddressResult,
     sourceGatewayResult,
     targetGatewayResult,
-    pendingSourceMode,
-    pendingTargetMode,
-    sourceSubIfacesResult,
-    targetSubIfacesResult,
   ])
 
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
@@ -828,10 +799,6 @@ function TopologyEditorInner() {
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
   const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
   const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
-  // router on a stickのUIは「ルーター側が、L2スイッチに接続している時だけ」出す
-  // （PC側には出さない。PCは通常インターVLANルーティングをしないため、2026-10-07追加）
-  const sourceIsRouterOnStick = pendingConnection ? nodeKind(pendingConnection.source) === 'router' && targetIsSwitch : false
-  const targetIsRouterOnStick = pendingConnection ? nodeKind(pendingConnection.target) === 'router' && sourceIsSwitch : false
   // ルーターはIPアドレス設定をvtyshのCLIで行う方針にしたため、GUIのプレーンなアドレス/
   // ゲートウェイ入力欄はPCにしか出さない（2026-10-07方針変更：「ルーターはCLIで設定しないと
   // 意味がない」指摘対応。docs/direction.md参照）
@@ -970,24 +937,6 @@ function TopologyEditorInner() {
       setPendingTargetAddress(data.targetAddress ?? '')
       setPendingSourceGateway(data.sourceGateway ?? '')
       setPendingTargetGateway(data.targetGateway ?? '')
-      const sourceHasSubIfaces = !!data.sourceSubInterfaces?.length
-      const targetHasSubIfaces = !!data.targetSubInterfaces?.length
-      setPendingSourceMode(sourceHasSubIfaces ? 'vlan-subif' : 'plain')
-      setPendingTargetMode(targetHasSubIfaces ? 'vlan-subif' : 'plain')
-      // 保存済みannotationsが想定外の形式（配列でない等）だった場合にクラッシュしないよう
-      // Array.isArray()で確認する（`??`はnull/undefinedしか拾わないため、2026-10-08レビュー指摘対応）
-      setPendingSourceSubIfaces(
-        (Array.isArray(data.sourceSubInterfaces) ? data.sourceSubInterfaces : []).map((s) => ({
-          vlan: String(s.vlan),
-          address: s.address,
-        })),
-      )
-      setPendingTargetSubIfaces(
-        (Array.isArray(data.targetSubInterfaces) ? data.targetSubInterfaces : []).map((s) => ({
-          vlan: String(s.vlan),
-          address: s.address,
-        })),
-      )
       setContextMenu(null)
     },
     [edges],
@@ -1310,15 +1259,7 @@ function TopologyEditorInner() {
                       {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
                     </div>
                   )}
-                  {!sourceIsSwitch && sourceIsRouterOnStick && (
-                    <div className="topology-editor__modal-vlan">
-                      <select value={pendingSourceMode} onChange={(e) => setPendingSourceMode(e.target.value as 'plain' | 'vlan-subif')}>
-                        <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
-                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
-                      </select>
-                    </div>
-                  )}
-                  {!sourceIsSwitch && !sourceIsRouter && pendingSourceMode === 'plain' && (
+                  {!sourceIsSwitch && !sourceIsRouter && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingSourceAddress}
@@ -1332,33 +1273,6 @@ function TopologyEditorInner() {
                         placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.254）"
                       />
                       {sourceGatewayResult.error && <span className="topology-editor__modal-warn">{sourceGatewayResult.error}</span>}
-                    </div>
-                  )}
-                  {!sourceIsSwitch && sourceIsRouterOnStick && pendingSourceMode === 'vlan-subif' && (
-                    <div className="topology-editor__modal-vlan">
-                      {pendingSourceSubIfaces.map((row, i) => (
-                        <div key={i} className="topology-editor__modal-subif-row">
-                          <input
-                            value={row.vlan}
-                            onChange={(e) =>
-                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
-                            }
-                            placeholder="VLAN ID"
-                          />
-                          <input
-                            value={row.address}
-                            onChange={(e) =>
-                              setPendingSourceSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
-                            }
-                            placeholder="10.10.0.1/24"
-                          />
-                          <button onClick={() => setPendingSourceSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
-                        </div>
-                      ))}
-                      <button onClick={() => setPendingSourceSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
-                        + サブインターフェースを追加
-                      </button>
-                      {sourceSubIfacesResult.error && <span className="topology-editor__modal-warn">{sourceSubIfacesResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -1392,15 +1306,7 @@ function TopologyEditorInner() {
                       {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
                     </div>
                   )}
-                  {!targetIsSwitch && targetIsRouterOnStick && (
-                    <div className="topology-editor__modal-vlan">
-                      <select value={pendingTargetMode} onChange={(e) => setPendingTargetMode(e.target.value as 'plain' | 'vlan-subif')}>
-                        <option value="plain">プレーン（追加設定なし、IPはCLIで）</option>
-                        <option value="vlan-subif">VLANサブインターフェース（router on a stick）</option>
-                      </select>
-                    </div>
-                  )}
-                  {!targetIsSwitch && !targetIsRouter && pendingTargetMode === 'plain' && (
+                  {!targetIsSwitch && !targetIsRouter && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingTargetAddress}
@@ -1416,33 +1322,6 @@ function TopologyEditorInner() {
                       {targetGatewayResult.error && <span className="topology-editor__modal-warn">{targetGatewayResult.error}</span>}
                     </div>
                   )}
-                  {!targetIsSwitch && targetIsRouterOnStick && pendingTargetMode === 'vlan-subif' && (
-                    <div className="topology-editor__modal-vlan">
-                      {pendingTargetSubIfaces.map((row, i) => (
-                        <div key={i} className="topology-editor__modal-subif-row">
-                          <input
-                            value={row.vlan}
-                            onChange={(e) =>
-                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, vlan: e.target.value } : r)))
-                            }
-                            placeholder="VLAN ID"
-                          />
-                          <input
-                            value={row.address}
-                            onChange={(e) =>
-                              setPendingTargetSubIfaces((rows) => rows.map((r, j) => (j === i ? { ...r, address: e.target.value } : r)))
-                            }
-                            placeholder="10.10.0.2/24"
-                          />
-                          <button onClick={() => setPendingTargetSubIfaces((rows) => rows.filter((_, j) => j !== i))}>×</button>
-                        </div>
-                      ))}
-                      <button onClick={() => setPendingTargetSubIfaces((rows) => rows.concat({ vlan: '', address: '' }))}>
-                        + サブインターフェースを追加
-                      </button>
-                      {targetSubIfacesResult.error && <span className="topology-editor__modal-warn">{targetSubIfacesResult.error}</span>}
-                    </div>
-                  )}
                 </div>
                 <div className="topology-editor__modal-actions">
                   <button onClick={cancelConnection}>キャンセル</button>
@@ -1453,12 +1332,10 @@ function TopologyEditorInner() {
                       targetIfaceConflict ||
                       (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
                       (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
-                      (pendingSourceMode === 'plain'
-                        ? !!sourceAddressResult.error || !!sourceGatewayResult.error
-                        : !!sourceSubIfacesResult.error) ||
-                      (pendingTargetMode === 'plain'
-                        ? !!targetAddressResult.error || !!targetGatewayResult.error
-                        : !!targetSubIfacesResult.error)
+                      !!sourceAddressResult.error ||
+                      !!sourceGatewayResult.error ||
+                      !!targetAddressResult.error ||
+                      !!targetGatewayResult.error
                     }
                   >
                     {pendingConnection.editingEdgeId ? '保存' : '接続'}

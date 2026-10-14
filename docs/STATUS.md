@@ -775,6 +775,10 @@
   動いている場合は「作り直す」で反映。確認：生成YAML＋各ノードのコマンドをCLIラボで（VLAN間ルーティング・VLAN1・
   外部遮断・冪等・VLAN変更時の旧サブIF削除）、ライフサイクルAPIをトークンで（api-contract 2.7.1）。
   **ブラウザでの通し確認はユーザー待ち**。
+- **ルーターのサブインターフェースをvtyshでCisco風に設定できるようにした（2026-10-14）**：ルーターのイメージを
+  `fnl/frr:1`（FRR＋`fnl-subif-agent`、`backend/frr-router/`）に変更。`int eth1.10`/`ip add`でVLANデバイスが自動で
+  作られ、`sh run`に出る。GUIのサブIF入力欄は廃止。既存ラボは開くと古い形式として「作り直す」まで自動反映を停止。
+  CLIラボで疎通・write memory→再起動・`no ip add`での削除を確認。次：L2スイッチのCisco風CLI。
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
   front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、

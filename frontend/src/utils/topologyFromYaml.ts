@@ -49,6 +49,7 @@ function guessPaletteKind(clabKind: string | undefined, image: string | undefine
   if (clabKind === 'ovs-bridge') return 'l2-switch' // 2026-10-13以前のラボ
   if (image === PALETTE_NODE_CONFIGS['l2-switch'].image) return 'l2-switch'
   if (image === PALETTE_NODE_CONFIGS.router.image) return 'router'
+  if (image?.startsWith('quay.io/frrouting/frr')) return 'router' // 2026-10-14以前のラボ（エージェント無し）
   return 'pc'
 }
 
