@@ -4,6 +4,12 @@ import Home from './components/Home'
 import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import Brand from './components/Brand'
+import ServerStatusBar, {
+  SERVER_STATUS_ITEMS,
+  readServerStatusItems,
+  saveServerStatusItems,
+  type ServerStatusItem,
+} from './components/ServerStatusBar'
 import { useAuthStore } from './store/authStore'
 import { useUiStore } from './store/uiStore'
 import './App.css'
@@ -34,6 +40,25 @@ function App() {
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
   const resizingRef = useRef(false)
+  // 画面下部に出すサーバーの使用状況（2026-10-14追加、components/ServerStatusBar.tsx）
+  const [statusItems, setStatusItems] = useState<ServerStatusItem[]>(readServerStatusItems)
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false)
+  const statusMenuRef = useRef<HTMLDivElement>(null)
+  const toggleStatusItem = (key: ServerStatusItem) => {
+    setStatusItems((prev) => {
+      const next = SERVER_STATUS_ITEMS.map((i) => i.key).filter((k) => (k === key ? !prev.includes(k) : prev.includes(k)))
+      saveServerStatusItems(next)
+      return next
+    })
+  }
+  useEffect(() => {
+    if (!statusMenuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (!statusMenuRef.current?.contains(e.target as Node)) setStatusMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [statusMenuOpen])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -77,6 +102,31 @@ function App() {
       <nav className="app-nav">
         <Brand size="nav" onClick={() => setView('home')} />
         <div className="app-nav__spacer" />
+        <div className="server-status-menu" ref={statusMenuRef}>
+          <button
+            className="app-nav__btn"
+            onClick={() => setStatusMenuOpen((v) => !v)}
+            title="画面下部に出すサーバーの使用状況を選ぶ"
+            aria-expanded={statusMenuOpen}
+          >
+            📊
+          </button>
+          {statusMenuOpen && (
+            <div className="server-status-menu__panel">
+              <h4>サーバーの使用状況を表示</h4>
+              {SERVER_STATUS_ITEMS.map((item) => (
+                <label key={item.key}>
+                  <input
+                    type="checkbox"
+                    checked={statusItems.includes(item.key)}
+                    onChange={() => toggleStatusItem(item.key)}
+                  />
+                  {item.label}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           className="app-nav__btn"
           onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
@@ -108,6 +158,7 @@ function App() {
           <ConsolePane />
         </div>
       </div>
+      <ServerStatusBar items={statusItems} />
     </div>
   )
 }

@@ -288,3 +288,11 @@ TODO(kawase3)：APIを直接叩いた時のレスポンス本文は未確認。�
 - **ノードを停止→起動すると、そのノードの端の設定は消える**（相手側の端は残る）。フロントは起動のたびに入れ直す。
 - ケーブルの抜き差しはnetemではなく、ノードごとの設定コマンド（exec）で片方の端をdownにする（`frontend/src/utils/linkCondition.ts`）。
 
+### 2.9 サーバーの使用状況（2026-10-14 kawase3、ソースで確認・フロント実装）
+
+- `GET /api/v1/health/metrics`：`{"serverInfo":{...},"metrics":{"cpu":{"usagePercent","numCPU","loadAvg1","loadAvg5","loadAvg15","processPercent"},"mem":{"totalMem","usedMem","availableMem","usagePercent",...},"disk":{"path":"/","totalDisk","usedDisk","freeDisk","usagePercent"}}}`（バイト単位）。
+- clab-api-server v0.6.0（bdbd2ec）の`routes.go`のコメントは「superuser only」だが、`SystemMetricsHandler`に権限の確認は無く、
+  **ログインしていれば誰でも呼べる**（ソースで確認）。CPU使用率は1秒測ってから返す（`cpu.Percent(time.Second)`）ので応答に約1秒かかる。
+- メモリの`usagePercent`はキャッシュを除いた使用率（gopsutilの`UsedPercent`）。ディスクは`/`だけ。
+- TODO(kawase3)：実レスポンスは未確認（ブラウザの確認で見る）。
+

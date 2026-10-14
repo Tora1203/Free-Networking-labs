@@ -357,3 +357,17 @@ export function showNetem(labName: string, nodeName: string) {
     `/api/v1/tools/netem/show?containerName=${encodeURIComponent(containerName)}`,
   )
 }
+
+// サーバーのCPU・メモリ・ディスクの使用量（2026-10-14追加、画面下部のステータスバー用）。
+// clab-api-server v0.6.0のソースで、ログインしていれば誰でも呼べることを確認
+// （routes.goのコメントは「superuser only」だが、ハンドラに権限の確認は無い）。
+// CPU使用率は1秒間測ってから返すので、応答に1秒ほどかかる。ディスクは「/」
+export interface SystemMetrics {
+  cpu?: { usagePercent?: number; numCPU?: number; loadAvg1?: number; loadAvg5?: number; loadAvg15?: number }
+  mem?: { usagePercent?: number; totalMem?: number; usedMem?: number; availableMem?: number }
+  disk?: { usagePercent?: number; totalDisk?: number; usedDisk?: number; freeDisk?: number; path?: string }
+}
+
+export function getSystemMetrics() {
+  return request<{ metrics?: SystemMetrics }>('/api/v1/health/metrics')
+}
