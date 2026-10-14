@@ -35,6 +35,7 @@ import {
   type EdgeIfaceData,
 } from '../utils/labTopology'
 import { describeHistoryChange } from '../utils/historyDiff'
+import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
 import { errorMessage, freshNodesOf, prepareNodeConfigs, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
 import {
   ApiError,
@@ -181,6 +182,19 @@ function needsUpgrade(node: Node): boolean {
   return false
 }
 
+// 一部のノードだけ止めている時は「起動中（3/4）」のように数を添える
+function runningSummary(state: LabRunState): string {
+  const states = Object.values(state.nodeStates)
+  const running = states.filter((s) => s === 'running').length
+  return running < states.length ? `（${running}/${states.length}）` : ''
+}
+
+function runStateTitle(state: LabRunState): string {
+  const entries = Object.entries(state.nodeStates)
+  if (entries.length === 0) return 'まだ一度も起動していません'
+  return entries.map(([id, s]) => `${id}: ${s === 'running' ? '起動中' : '停止中'}`).join('\n')
+}
+
 // 元に戻すの履歴の上限
 const HISTORY_LIMIT = 100
 
@@ -228,6 +242,8 @@ function TopologyEditorInner() {
   const [runState, setRunState] = useState<LabRunState>({ kind: 'unknown', nodeStates: {} })
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ kind: 'idle' })
   const [labBusy, setLabBusy] = useState(false)
+  // 起動・停止の処理中のノード（'all'＝ラボ全体の起動/停止/作り直し中）。キャンバスのランプを点滅させる
+  const [busyNodes, setBusyNodes] = useState<'all' | string[]>([])
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
   // 接続ダイアログを開いている間はCtrl+Zで裏のトポロジを戻さない（キー処理から参照する）
@@ -576,6 +592,7 @@ function TopologyEditorInner() {
       const name = savedNameRef.current
       if (!name) return
       setLabBusy(true)
+      setBusyNodes('all')
       setSyncStatus({ kind: 'busy', message: 'ラボを起動中...（初回はしばらくかかります）' })
       try {
         const failures = await startWholeLab(name, runStateRef.current.kind === 'stopped')
@@ -589,6 +606,7 @@ function TopologyEditorInner() {
         await refreshRunState(name).catch(() => undefined)
       } finally {
         setLabBusy(false)
+        setBusyNodes([])
       }
     })
   }, [enqueue, syncOnce, startWholeLab, refreshRunState])
@@ -599,6 +617,7 @@ function TopologyEditorInner() {
       const name = savedNameRef.current
       if (!name) return
       setLabBusy(true)
+      setBusyNodes('all')
       setSyncStatus({ kind: 'busy', message: 'ラボを停止中...' })
       try {
         await stopLab(name)
@@ -609,6 +628,7 @@ function TopologyEditorInner() {
         setSyncStatus({ kind: 'error', message: errorMessage(e, '停止に失敗しました') })
       } finally {
         setLabBusy(false)
+        setBusyNodes([])
       }
     })
   }, [enqueue, refreshRunState])
@@ -620,6 +640,7 @@ function TopologyEditorInner() {
       const name = savedNameRef.current
       if (!name) return
       setLabBusy(true)
+      setBusyNodes('all')
       setSyncStatus({ kind: 'busy', message: 'ラボを作り直し中...' })
       try {
         await destroyLab(name).catch(() => undefined)
@@ -635,6 +656,7 @@ function TopologyEditorInner() {
         setSyncStatus({ kind: 'error', message: errorMessage(e, '作り直しに失敗しました') })
       } finally {
         setLabBusy(false)
+        setBusyNodes([])
       }
     })
   }, [enqueue, syncOnce, startWholeLab, refreshRunState])
@@ -647,6 +669,7 @@ function TopologyEditorInner() {
         const name = savedNameRef.current
         if (!name) return
         setSyncStatus({ kind: 'busy', message: action === 'start' ? 'ノードを起動中...' : 'ノードを停止中...' })
+        setBusyNodes((prev) => (prev === 'all' ? prev : [...prev, nodeId]))
         try {
           await (action === 'start' ? startLabNode : stopLabNode)(name, nodeId)
           lastSynced.current.delete(nodeId)
@@ -666,11 +689,46 @@ function TopologyEditorInner() {
           )
         } catch (e) {
           setSyncStatus({ kind: 'error', message: errorMessage(e, action === 'start' ? '起動に失敗しました' : '停止に失敗しました') })
+        } finally {
+          setBusyNodes((prev) => (prev === 'all' ? prev : prev.filter((id) => id !== nodeId)))
         }
       })
     },
     [enqueue, refreshRunState],
   )
+
+  // キャンバスのノードに出す起動状態（2026-10-14、「on/offが見た目で分からない」指摘対応）
+  const nodeRunStatus = useCallback(
+    (nodeId: string): NodeRunStatus => {
+      if (!savedLabName || runState.kind === 'unknown' || runState.kind === 'none') {
+        return busyNodes === 'all' ? 'busy' : 'none'
+      }
+      if (busyNodes === 'all' || busyNodes.includes(nodeId)) return 'busy'
+      const state = runState.nodeStates[nodeId]
+      if (state === 'running') return 'running'
+      if (state === 'created' || state === 'restarting') return 'busy'
+      if (state) return 'stopped'
+      // まだコンテナが無いノード：動いているラボなら次の自動反映で作られる
+      return runState.kind === 'running' ? 'pending' : 'none'
+    },
+    [savedLabName, runState, busyNodes],
+  )
+
+  // 他の画面（ホームの起動/停止、別のタブ）での変化や、落ちたノードも映すよう、10秒ごとに状態を取り直す。
+  // 保存・反映と同じ列に並べ、処理の途中の状態で上書きしないようにする
+  useEffect(() => {
+    if (!savedLabName) return
+    let queued = false
+    const timer = setInterval(() => {
+      if (queued || document.hidden) return
+      queued = true
+      void enqueue(async () => {
+        queued = false
+        await refreshRunState(savedLabName).catch(() => undefined)
+      })
+    }, 10000)
+    return () => clearInterval(timer)
+  }, [savedLabName, enqueue, refreshRunState])
 
   // 保存済みのYAML（＋annotations）をダウンロードする（2026-10-08追加、
   // 「授業で使うテンプレートを配布しやすく」指摘対応）。サーバーから改めて取得する
@@ -1184,8 +1242,17 @@ function TopologyEditorInner() {
             </span>
           )}
           {savedLabName && runState.kind !== 'unknown' && (
-            <span className={`topology-editor__run-state topology-editor__run-state--${runState.kind}`}>
-              {runState.kind === 'running' ? '● 起動中' : runState.kind === 'stopped' ? '● 停止中' : '● 未起動'}
+            <span
+              className={`topology-editor__run-state topology-editor__run-state--${labBusy ? 'busy' : runState.kind}`}
+              title={runStateTitle(runState)}
+            >
+              {labBusy
+                ? '● 処理中...'
+                : runState.kind === 'running'
+                  ? `● 起動中${runningSummary(runState)}`
+                  : runState.kind === 'stopped'
+                    ? '● 停止中'
+                    : '● 未起動'}
             </span>
           )}
           {runState.kind === 'running' ? (
@@ -1270,6 +1337,7 @@ function TopologyEditorInner() {
               </ul>
             </div>
           )}
+          <NodeRuntimeContext.Provider value={nodeRunStatus}>
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}
@@ -1294,6 +1362,7 @@ function TopologyEditorInner() {
             <Controls />
             <MiniMap />
           </ReactFlow>
+          </NodeRuntimeContext.Provider>
 
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>

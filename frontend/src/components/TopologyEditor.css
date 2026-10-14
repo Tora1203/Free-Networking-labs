@@ -82,12 +82,33 @@
 /* ラボの実行状態（起動中/停止中/未起動、2026-10-14） */
 .topology-editor__run-state {
   font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 999px;
   color: var(--ink-soft);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: default;
 }
 
+/* ノードの状態ランプと同じ色（TopologyNode.css）：緑＝起動中、灰＝停止中、黄＝処理中 */
 .topology-editor__run-state--running {
-  color: var(--accent);
+  color: #fff;
+  background: #1f9d55;
+  border-color: #1f9d55;
+}
+
+.topology-editor__run-state--stopped {
+  color: #fff;
+  background: #8a8f98;
+  border-color: #8a8f98;
+}
+
+.topology-editor__run-state--busy {
+  color: #1f1300;
+  background: #e3a008;
+  border-color: #e3a008;
 }
 
 .topology-editor__context-menu-status {
