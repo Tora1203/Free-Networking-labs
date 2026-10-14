@@ -2,8 +2,8 @@
 // 「今のリンクは何bpsで動いているのか」から始まった、CMLのリンク品質設定に当たる機能）。
 //
 // リンクはvethで、そのままでは帯域の制限が無い（実測で直結約8.5Gbps）。共有サーバー（CPU 4コア）で
-// 1人のiperf等がCPUを使い切らないよう、またルーターのGigabitEthernetらしく、何も設定しないリンクも
-// **既定で1Gbps**に絞る（2026-10-14決定。「無制限」は明示的に選んだ時だけ）。品質の設定は
+// 1人のiperf等がCPUを使い切らないよう、何も設定しないリンクも**既定で100Mbps**に絞る（2026-10-14決定。
+// 最大40人程度で使う想定で、iperf3 1本あたりのCPUが1Gbpsの約8.6%→約3%になる。「無制限」は明示的に選んだ時だけ）。品質の設定は
 // clab-api-serverのnetem API（POST /api/v1/tools/netem/set）で、リンクの両端のI/Fに同じ値を入れる。
 // netemは送信側にしか効かないので、両端に入れることで「行き」と「帰り」の両方に効く
 // （遅延50msなら往復で100ms、ロス1%なら片道ごとに1%）。
@@ -38,13 +38,13 @@ export const LIMITS = {
 }
 
 // 何も設定しないリンクの帯域（kbit/s）
-export const DEFAULT_RATE_KBIT = 1_000_000
+export const DEFAULT_RATE_KBIT = 100_000
 
 // 帯域の選択肢（kbit/s）。undefined＝既定、0＝無制限
 export const RATE_PRESETS: { label: string; kbit: number | undefined }[] = [
-  { label: '1 Gbps（既定）', kbit: undefined },
+  { label: '100 Mbps（既定）', kbit: undefined },
   { label: '無制限', kbit: 0 },
-  { label: '100 Mbps', kbit: 100_000 },
+  { label: '1 Gbps', kbit: 1_000_000 },
   { label: '10 Mbps', kbit: 10_000 },
   { label: '1.5 Mbps（T1）', kbit: 1_544 },
   { label: '512 kbps', kbit: 512 },
@@ -54,7 +54,7 @@ export const RATE_PRESETS: { label: string; kbit: number | undefined }[] = [
 
 // よくある回線をまとめて選べるひな形
 export const CONDITION_PRESETS: { label: string; description: string; condition: LinkCondition }[] = [
-  { label: '既定に戻す', description: '1Gbps・遅延やロスなし', condition: {} },
+  { label: '既定に戻す', description: '100Mbps・遅延やロスなし', condition: {} },
   { label: '拠点間WAN', description: '10Mbps・片道10ms', condition: { rateKbit: 10_000, delayMs: 10 } },
   { label: '海外回線', description: '片道100ms±10ms', condition: { delayMs: 100, jitterMs: 10 } },
   { label: '衛星回線', description: '1Mbps・片道300ms', condition: { rateKbit: 1_000, delayMs: 300 } },

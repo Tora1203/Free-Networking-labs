@@ -143,7 +143,7 @@ export default function LinkConditionDialog({ linkName, initial, running, onAppl
           <div className="topology-editor__modal-warn">{error}</div>
         ) : (
           <div className="link-condition__note">
-            {preview ? `設定：${preview}` : '既定（帯域1Gbps、遅延・ロスなし）'}
+            {preview ? `設定：${preview}` : '既定（帯域100Mbps、遅延・ロスなし）'}
             {fields.rate === '0' && (
               <>
                 <br />
