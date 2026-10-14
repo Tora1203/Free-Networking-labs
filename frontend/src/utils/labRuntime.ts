@@ -14,6 +14,9 @@ import {
   getLabTopologyYaml,
   putLabAnnotations,
   putLabTopologyYaml,
+  resetNetem,
+  setNetem,
+  showNetem,
   startNode,
   stopNode,
   type ApplyResponse,
@@ -21,6 +24,9 @@ import {
 import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, parseImportedTopology, topologyToYaml } from './labTopology'
+import { netemKey, netemKeyFromShow } from './linkCondition'
+
+type BuiltTopology = ReturnType<typeof buildTopologyContent>
 
 export function errorMessage(e: unknown, fallback: string): string {
   return e instanceof ApiError || e instanceof Error ? e.message : fallback
@@ -95,7 +101,120 @@ export async function startSavedLab(labName: string): Promise<{ commands: Map<st
   }
   const commands = buildNodeSyncCommands(built)
   const { succeeded, failures } = await runNodeSyncs(labName, commands, commands.keys())
-  return { commands, synced: succeeded, failures }
+  const allNodes = [...built.neighbors.keys(), ...commands.keys()]
+  const linkFailures = await applyLinkConditions(labName, built, new Set(allNodes), allNodes, newLinkRuntimeState())
+  return { commands, synced: succeeded, failures: [...failures, ...linkFailures] }
+}
+
+// ---------------------------------------------------------------------------
+// リンクの品質（netem）とケーブルの抜き差し（2026-10-14追加、utils/linkCondition.ts）
+// ---------------------------------------------------------------------------
+
+// 最後に入れたリンクの状態。netem：`${node}:${iface}`→netemKey（''＝設定なし）、
+// routerUnplugged：downにしたルーターの端（`${node}:${iface}`）
+export interface LinkRuntimeState {
+  netem: Map<string, string>
+  routerUnplugged: Set<string>
+}
+
+export function newLinkRuntimeState(): LinkRuntimeState {
+  return { netem: new Map(), routerUnplugged: new Set() }
+}
+
+function splitPortKey(key: string): [string, string] {
+  const i = key.lastIndexOf(':')
+  return [key.slice(0, i), key.slice(i + 1)]
+}
+
+function routerUnpluggedOf(built: BuiltTopology): Set<string> {
+  const routers = new Set(built.routerClabNames)
+  const result = new Set<string>()
+  for (const [node, ifaces] of built.unpluggedByNode) {
+    if (routers.has(node)) for (const iface of ifaces) result.add(`${node}:${iface}`)
+  }
+  return result
+}
+
+// 動いているノードのリンクの端に、品質の設定を入れる（前回入れた値と違う端だけ）。
+// freshは中身が初期状態に戻ったノード（新しく作られた・起動し直した）で、その隣のノードも
+// リンクの相手側の端が作り直されていることがあるので一緒に入れ直す。
+// ケーブルのdownはノードごとの設定コマンド（buildNodeSyncCommands）が入れるので、ここでは
+// ルーターの端を差し直した時に上げるだけ。stateは呼び出し側が持ち続け、ここで更新する
+export async function applyLinkConditions(
+  labName: string,
+  built: BuiltTopology,
+  running: Set<string>,
+  fresh: Iterable<string>,
+  state: LinkRuntimeState,
+): Promise<string[]> {
+  const freshSet = new Set<string>()
+  for (const node of fresh) {
+    freshSet.add(node)
+    for (const neighbor of built.neighbors.get(node) ?? []) freshSet.add(neighbor)
+  }
+  const tasks: Promise<void>[] = []
+  const failures: string[] = []
+  const linkPorts = new Set(Object.keys(built.portAnnotations))
+  for (const key of state.netem.keys()) {
+    if (!linkPorts.has(key) || !running.has(splitPortKey(key)[0])) state.netem.delete(key)
+  }
+  for (const key of linkPorts) {
+    const [node, iface] = splitPortKey(key)
+    if (!running.has(node)) continue
+    const params = built.netemByNode.get(node)?.[iface] ?? null
+    const wanted = netemKey(params)
+    const previous = freshSet.has(node) ? '' : (state.netem.get(key) ?? '')
+    if (previous === wanted) {
+      state.netem.set(key, wanted)
+      continue
+    }
+    tasks.push(
+      (params ? setNetem(labName, node, iface, params) : resetNetem(labName, node, iface).catch(() => undefined)).then(
+        () => void state.netem.set(key, wanted),
+        (e) => void failures.push(`${node} ${iface}: ${errorMessage(e, 'リンクの品質を設定できませんでした')}`),
+      ),
+    )
+  }
+  const routerUnplugged = routerUnpluggedOf(built)
+  for (const key of state.routerUnplugged) {
+    const [node, iface] = splitPortKey(key)
+    if (routerUnplugged.has(key) || !running.has(node) || freshSet.has(node) || !/^eth[0-9]+$/.test(iface)) continue
+    tasks.push(
+      execInLab(labName, node, `sh -c 'ip link set ${iface} up'`).then(
+        (r) => assertExecOk(r, 'ケーブルを差し直せませんでした'),
+        (e) => void failures.push(`${node} ${iface}: ${errorMessage(e, 'ケーブルを差し直せませんでした')}`),
+      ),
+    )
+  }
+  state.routerUnplugged = routerUnplugged
+  await Promise.all(tasks)
+  return failures
+}
+
+// エディタでラボを開いた時に、今入っている品質の設定を読む（ラボの外でノードが起動し直されて
+// 消えている等の食い違いを、続くapplyLinkConditionsで直すため）。品質を設定したリンクがある
+// ノードだけ問い合わせ、それ以外のノードは設定なしとみなす
+export async function readLinkRuntimeState(labName: string, built: BuiltTopology, running: Set<string>): Promise<LinkRuntimeState> {
+  const state = newLinkRuntimeState()
+  state.routerUnplugged = routerUnpluggedOf(built)
+  for (const key of Object.keys(built.portAnnotations)) {
+    if (running.has(splitPortKey(key)[0])) state.netem.set(key, '')
+  }
+  await Promise.all(
+    [...built.netemByNode.keys()]
+      .filter((node) => running.has(node))
+      .map(async (node) => {
+        try {
+          const result = await showNetem(labName, node)
+          for (const info of Object.values(result).flat()) {
+            if (info) state.netem.set(`${node}:${info.interface}`, netemKeyFromShow(info))
+          }
+        } catch {
+          // 読めなければ設定なしとみなす（入れ直しになるだけ）
+        }
+      }),
+  )
+  return state
 }
 
 // ノード単位の起動/停止。nodeNameは短いノード名でよい（2026-10-14実機確認。コンテナの

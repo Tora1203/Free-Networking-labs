@@ -24,6 +24,21 @@ index 21b82e6..eeff2d7 100644
      if(ret < 0)
      {
          ERROR("mnl_socket_recvfrom failed: %m");
+diff --git a/ctl_socket_server.c b/ctl_socket_server.c
+index 28ce639..d98635b 100644
+--- a/ctl_socket_server.c
++++ b/ctl_socket_server.c
+@@ -253,6 +253,10 @@ static void ctl_rcv_handler(uint32_t events, struct epoll_event_handler *p)
+     iov[1].iov_len = mhdr.lout;
+     iov[2].iov_base = msg_logbuf;
+     iov[2].iov_len = mhdr.llog;
++    /* fnl: 受け取った相手の資格情報（相手のpid）をそのまま送り返すと、CAP_SYS_ADMINの無い
++       コンテナではEPERMになり、mstpctlが応答を待ち続ける。応答には資格情報を付けない */
++    msg.msg_control = NULL;
++    msg.msg_controllen = 0;
+     l = sendmsg(p->fd, &msg, MSG_NOSIGNAL);
+     if(0 > l)
+         ERROR("CTL: Couldn't send response: %m");
 diff --git a/driver_deps.c b/driver_deps.c
 index 6990292..0dc73da 100644
 --- a/driver_deps.c

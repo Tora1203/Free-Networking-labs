@@ -8,6 +8,7 @@ import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { parseTopologyYaml } from './topologyFromYaml'
 import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities } from './annotations'
 import type { ExecResponse, TopologyContent } from '../api/client'
+import { linkDownEnd, netemParams, normalizeCondition, type LinkCondition, type NetemParams } from './linkCondition'
 
 // リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
 // 実際のインターフェース名を保持する（CMLのようにユーザーが接続時に選べるようにするため、
@@ -28,6 +29,8 @@ export interface EdgeIfaceData {
   // 自動的に外部に飛んでしまう」指摘対応。docs/direction.md参照）
   sourceGateway?: string
   targetGateway?: string
+  // リンクの品質・ケーブルの抜き差し（2026-10-14追加、utils/linkCondition.ts）
+  condition?: LinkCondition
   [key: string]: unknown
 }
 
@@ -82,6 +85,8 @@ export interface PortAnnotation {
   address?: string
   // デフォルトゲートウェイ（2026-10-07追加）
   gateway?: string
+  // リンクの品質・ケーブルの抜き差し（2026-10-14追加）。リンクのsource側のポートにだけ入れる
+  link?: LinkCondition
 }
 
 // containerlabのトポロジYAML（＋任意でannotations JSON）からReact Flowのnodes/edgesを復元する。
@@ -145,6 +150,13 @@ export function buildTopologyContent(
   switchClabNames: string[]
   portAnnotations: Record<string, PortAnnotation>
   switchOriginalIds: Record<string, string>
+  // リンクの品質（netem）。ノード（clabName）→ I/F → 入れる値（2026-10-14追加）
+  netemByNode: Map<string, Record<string, NetemParams>>
+  // ケーブルを抜いたリンクで、downにする端のI/F。ノード（clabName）→ I/Fの一覧
+  unpluggedByNode: Map<string, string[]>
+  // ノード（clabName）の隣のノード。作り直されたノードの相手側の端もvethが新しくなるので、
+  // netemを入れ直す対象を広げるのに使う
+  neighbors: Map<string, Set<string>>
 } {
   const clabNodeNames = new Map<string, string>()
   const nodeKinds = new Map<string, PaletteNodeKind>()
@@ -215,6 +227,13 @@ export function buildTopologyContent(
   const addressTasks: AddressTask[] = []
   const gatewayByNode = new Map<string, string>()
   const portAnnotations: Record<string, PortAnnotation> = {}
+  const netemByNode = new Map<string, Record<string, NetemParams>>()
+  const unpluggedByNode = new Map<string, string[]>()
+  const neighbors = new Map<string, Set<string>>()
+  const endKind = (id: string) => {
+    const kind = nodeKinds.get(id)
+    return kind === 'l2-switch' ? 'switch' : kind === 'pc' ? 'pc' : kind === 'router' ? 'router' : undefined
+  }
 
   const links = edges.map((edge) => {
     const sourceName = clabNodeNames.get(edge.source)
@@ -250,15 +269,39 @@ export function buildTopologyContent(
     if (!sourceIsSwitch && !sourceIsRouter && iface.sourceGateway) gatewayByNode.set(sourceName, iface.sourceGateway)
     if (!targetIsSwitch && !targetIsRouter && iface.targetGateway) gatewayByNode.set(targetName, iface.targetGateway)
 
+    const condition = normalizeCondition(iface.condition)
     portAnnotations[`${sourceName}:${sourcePort}`] = {
       iface: iface.sourceIface,
       address: iface.sourceAddress,
       gateway: iface.sourceGateway,
+      ...(condition ? { link: condition } : {}),
     }
     portAnnotations[`${targetName}:${targetPort}`] = {
       iface: iface.targetIface,
       address: iface.targetAddress,
       gateway: iface.targetGateway,
+    }
+
+    for (const [a, b] of [
+      [sourceName, targetName],
+      [targetName, sourceName],
+    ]) {
+      if (!neighbors.has(a)) neighbors.set(a, new Set())
+      neighbors.get(a)!.add(b)
+    }
+    const params = netemParams(condition)
+    if (params) {
+      for (const [name, port] of [
+        [sourceName, sourcePort],
+        [targetName, targetPort],
+      ]) {
+        netemByNode.set(name, { ...netemByNode.get(name), [port]: params })
+      }
+    }
+    if (condition?.down) {
+      const [name, port] =
+        linkDownEnd(endKind(edge.source), endKind(edge.target)) === 'source' ? [sourceName, sourcePort] : [targetName, targetPort]
+      unpluggedByNode.set(name, [...(unpluggedByNode.get(name) ?? []), port])
     }
 
     return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
@@ -276,6 +319,9 @@ export function buildTopologyContent(
       .filter((name): name is string => !!name),
     portAnnotations,
     switchOriginalIds,
+    netemByNode,
+    unpluggedByNode,
+    neighbors,
   }
 }
 
@@ -325,10 +371,13 @@ const IPV4_PATTERN = /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/
 // PC：リンクのI/Fのアドレスを入れ直し、デフォルトルートを設定し直す。
 // containerlabがeth0に付けるデフォルトルート（mgmt経由で本物の外部に出てしまう、2026-10-07）も
 // ここで消える。PCのイメージ（alpine）のipはbusybox版なので`-f inet`で書く
-function buildPcSyncCommand(ifaces: { iface: string; address?: string }[], gateway?: string): string {
+// ケーブルを抜いたリンクのI/F（unplugged）はdownにし、それ以外は上げる（PCにはshutdownの設定が無いので、
+// 常に上げてよい）
+function buildPcSyncCommand(ifaces: { iface: string; address?: string }[], gateway?: string, unplugged: string[] = []): string {
   const lines = ['set -e', 'while ip route del default 2>/dev/null; do :; done']
   for (const { iface, address } of ifaces) {
     if (!IFACE_PATTERN.test(iface)) continue
+    lines.push(`ip link set ${iface} ${unplugged.includes(iface) ? 'down' : 'up'}`)
     lines.push(`ip -f inet addr flush dev ${iface}`)
     if (address && CIDR_PATTERN.test(address)) lines.push(`ip addr add ${address} dev ${iface}`)
   }
@@ -340,21 +389,41 @@ function buildPcSyncCommand(ifaces: { iface: string; address?: string }[], gatew
 // VLANサブインターフェースはすべて学生がvtyshで設定する（2026-10-14〜。サブインターフェースの
 // デバイスはルーターのイメージ内のエージェントが作る、backend/frr-router/）。
 // `dev eth0`に限定するのは、vtyshで設定した別のデフォルトルートを消さないため（2026-10-08レビュー指摘）
-const ROUTER_SYNC_COMMAND = `sh -c 'ip route del default dev eth0 2>/dev/null || true'`
+// ケーブルを抜いたリンクの端（ルーター同士のリンクだけ）はdownにする。差し直した時に上げるのは
+// ここではなく、その時に一度だけ行う（labRuntime.applyLinkConditions）。毎回上げるコマンドにすると、
+// 学生がvtyshでshutdownしたI/Fまで起動のたびに上げてしまうため
+function buildRouterSyncCommand(unplugged: string[] = []): string {
+  const lines = ['ip route del default dev eth0 2>/dev/null || true']
+  for (const iface of unplugged) {
+    if (IFACE_PATTERN.test(iface)) lines.push(`ip link set ${iface} down`)
+  }
+  return `sh -c '${lines.join('; ')}'`
+}
+
+// L2スイッチ：ケーブルを抜いたポートの一覧をエージェントに渡す（エージェントがdownのままにする、
+// backend/l2switch/swcli.py）。VLAN・STP等の設定はスイッチのCLIで行うので、ここでは扱わない
+export const SWITCH_UNPLUGGED_FILE = '/run/fnl-switch/unplugged'
+function buildSwitchSyncCommand(unplugged: string[] = []): string {
+  const ports = unplugged.filter((iface) => IFACE_PATTERN.test(iface))
+  return `sh -c 'mkdir -p /run/fnl-switch; ${ports.length > 0 ? `echo ${ports.join(' ')}` : ':'} > ${SWITCH_UNPLUGGED_FILE}'`
+}
 
 // buildTopologyContent()の結果から、ノード（node.id）ごとの設定コマンドを作る
 export function buildNodeSyncCommands(built: ReturnType<typeof buildTopologyContent>): Map<string, string> {
   const commands = new Map<string, string>()
   const routers = new Set(built.routerClabNames)
   for (const name of routers) {
-    commands.set(name, ROUTER_SYNC_COMMAND)
+    commands.set(name, buildRouterSyncCommand(built.unpluggedByNode.get(name)))
+  }
+  for (const name of built.switchClabNames) {
+    commands.set(name, buildSwitchSyncCommand(built.unpluggedByNode.get(name)))
   }
   for (const name of built.linuxNodeNames) {
     if (routers.has(name)) continue
     const ifaces = Object.entries(built.portAnnotations)
       .filter(([key]) => key.startsWith(`${name}:`))
       .map(([, port]) => ({ iface: port.iface, address: port.address }))
-    commands.set(name, buildPcSyncCommand(ifaces, built.gatewayByNode.get(name)))
+    commands.set(name, buildPcSyncCommand(ifaces, built.gatewayByNode.get(name), built.unpluggedByNode.get(name)))
   }
   return commands
 }

@@ -281,6 +281,21 @@ def save_errdisabled(names):
     save(ERRDISABLED, sorted(names))
 
 
+# GUIの「ケーブルを抜く」（2026-10-14〜）。抜かれたポート名を1行ずつ書いたファイルで、GUIがexecで書き換える。
+# vethはどちらかの端をdownにすると相手側がNO-CARRIERになるので、ここに書かれたポートはdownのままにする
+# （エージェントは普段shutdownしていないポートを上げ直すため、別に覚えておく必要がある）。
+# 表示はshutdown（disabled）ではなく、ケーブルが抜けた時と同じnotconnectにする
+UNPLUGGED = f'{RUN_DIR}/unplugged'
+
+
+def load_unplugged():
+    try:
+        with open(UNPLUGGED) as f:
+            return set(f.read().split())
+    except OSError:
+        return set()
+
+
 class StpAgent:
     """running-configのSTP設定をmstpdとカーネルに反映する（swcli --agentから毎秒呼ぶ）"""
 
@@ -468,6 +483,7 @@ def agent():
                 last_vlan_check, last_mtime, last_ports = time.time(), mtime, ports
             errdisabled = load_errdisabled()
             errdisabled_before = set(errdisabled)
+            unplugged = load_unplugged()
             changed = False
             for name in system_ports():
                 p = port_view(cfg, name)
@@ -481,6 +497,9 @@ def agent():
                     if name in errdisabled:  # Ciscoと同じく shutdown → no shutdown でerr-disabledから戻す
                         errdisabled.discard(name)
                         recovering.add(name)
+                    if is_up:
+                        sh('ip', 'link', 'set', name, 'down')
+                elif name in unplugged:
                     if is_up:
                         sh('ip', 'link', 'set', name, 'down')
                 elif not is_up and name not in errdisabled:
@@ -510,6 +529,8 @@ def link_status(name, p):
         return 'disabled'
     if name in load_errdisabled():
         return 'err-disabled'
+    if name in load_unplugged():
+        return 'notconnect'
     try:
         with open(f'/sys/class/net/{name}/carrier') as f:
             return 'connected' if f.read().strip() == '1' else 'notconnect'

@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-10-14 / kawase3（L2スイッチにSTP/RSTP/MSTP（mstpd）、スイッチのwrite memoryをホスト側に保存、元に戻す/やり直すの変更内容表示、自動保存＋差分反映・起動/停止UIを実装、router on a stickのVLAN1不具合修正、ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
+最終更新: 2026-10-14 / kawase3（リンクの品質（netem）・ケーブルの抜き差し、STPの既定をrapid-stpに、L2スイッチにSTP/RSTP/MSTP（mstpd）、スイッチのwrite memoryをホスト側に保存、元に戻す/やり直すの変更内容表示、自動保存＋差分反映・起動/停止UIを実装、router on a stickのVLAN1不具合修正、ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -807,6 +807,12 @@
   試験ラボ（スイッチ3台のループ＋PC2台）でストームなし・ルート変更・約49秒での迂回を確認。イメージ`fnl/l2switch:2`を再ビルド。
   調査：リンクは無制限（直結8.5Gbps）、netemはclab-api-serverのAPIで使える（片方向のみ・ノード再起動で消える）。
   スイッチのエージェントは外からの`ip link set down`を1秒で戻すので、リンク断はスイッチ側の対応が要る。次：リンクの品質変更。
+- **リンクの品質・ケーブルの抜き差し（2026-10-14、fe-be/link-quality、be/stpの上）**：リンクを右クリック→「リンクの品質...」で
+  帯域・遅延・ゆらぎ・ロス・破損（netem API、両端に同じ値）、「ケーブルを抜く/差す」で本当にリンクダウン。紫/赤の線で表示、
+  元に戻す対象、ノード・ラボの起動のたびに入れ直す。スイッチは`fnl/l2switch:4`（抜いたポートをnotconnectのまま保持）。
+  **非特権スイッチでmstpdが応答できずSTPが動いていなかった不具合を発見・修正**（:3は特権コンテナでしか試していなかった）。
+  CLIのラボで、非特権スイッチ3台のループでRSTPが収束・ケーブル抜きで迂回（portfastありで無停止、なしで約12秒）、
+  PC側・ルーター側の抜き差し、netemの値と停止→起動で消えることを確認。netem APIをブラウザ経由で叩く確認はまだ。
 - **STPをmstpdに置き換え、RSTP/MSTPにも対応（2026-10-14、be/stp）**：`fnl/l2switch:3`。mstpdをコンテナ向けに改修
   （`backend/l2switch/mstpd/fnl.patch`：カーネルのMSTの状態を使う、BPDUはtcで止めてタップで受ける、netlink受信の不具合修正）。
   swcliに `spanning-tree mode stp/rapid-stp/mstp`（既定は当初stp→同日rapid-stpに変更：最近の機種の既定に合わせる）、portfast、bpduguard（err-disabled）、bpdufilter、guard root、

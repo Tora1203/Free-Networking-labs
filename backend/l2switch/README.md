@@ -8,7 +8,8 @@ L2スイッチを、ホストのOVS（`ovs-bridge` kind）ではなく**普通�
 | --- | --- |
 | `fnl/l2switch:1`（2026-10-13） | alpine + iproute2。VLANはGUIの設定をexecで`bridge vlan`投入 |
 | `fnl/l2switch:2`（2026-10-14） | alpine + iproute2 + python3。**Cisco風CLI（`swcli`）で設定**し、エージェントがbr0に反映 |
-| `fnl/l2switch:3`（2026-10-14〜） | alpine 3.22（iproute2 6.15、MST対応）＋ mstpd。STP/RSTP/MSTP |
+| `fnl/l2switch:3`（2026-10-14） | alpine 3.22（iproute2 6.15、MST対応）＋ mstpd。STP/RSTP/MSTP |
+| `fnl/l2switch:4`（2026-10-14〜） | GUIの「ケーブルを抜く」に対応（`/run/fnl-switch/unplugged`に書かれたポートをdownのままにし、notconnectと表示）。非特権コンテナでmstpdが応答できずSTPが動いていなかった不具合を修正 |
 
 ## Cisco風CLI（swcli）
 
@@ -100,7 +101,7 @@ VLANの意味はCiscoに合わせている：
 ## ビルド
 
 ```sh
-docker build -t fnl/l2switch:3 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
+docker build -t fnl/l2switch:4 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
 ```
 
 ## 実機確認
