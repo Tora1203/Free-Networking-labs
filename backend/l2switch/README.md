@@ -48,7 +48,7 @@ sw#wr
 ### スパニングツリー（2026-10-14〜、`fnl/l2switch:3`）
 
 [mstpd](https://github.com/mstpd/mstpd)（RSTP/MSTPのデーモン）をソースからビルドして入れ、
-**STP（802.1D）/ RSTP（802.1w）/ MSTP（802.1s）**を動かす。既定は `stp` で有効（Ciscoと同じく有効。
+**STP（802.1D）/ RSTP（802.1w）/ MSTP（802.1s）**を動かす。既定は `rapid-stp` で有効（2026-10-14にstpから変更。最近の機種はRSTP系が既定のため。
 STPなしでループを組むと1ポートあたり毎秒約29万パケットのストームになり、共有サーバーのload averageが
 0.5→3に上がるのを実測したため）。モード名はCiscoのpvst/rapid-pvstではなく `stp / rapid-stp / mstp`
 （PVSTはCisco独自でLinuxでは動かず、名前が混ざると紛らわしいため）。

@@ -809,7 +809,7 @@
   スイッチのエージェントは外からの`ip link set down`を1秒で戻すので、リンク断はスイッチ側の対応が要る。次：リンクの品質変更。
 - **STPをmstpdに置き換え、RSTP/MSTPにも対応（2026-10-14、be/stp）**：`fnl/l2switch:3`。mstpdをコンテナ向けに改修
   （`backend/l2switch/mstpd/fnl.patch`：カーネルのMSTの状態を使う、BPDUはtcで止めてタップで受ける、netlink受信の不具合修正）。
-  swcliに `spanning-tree mode stp/rapid-stp/mstp`（既定stp）、portfast、bpduguard（err-disabled）、bpdufilter、guard root、
+  swcliに `spanning-tree mode stp/rapid-stp/mstp`（既定は当初stp→同日rapid-stpに変更：最近の機種の既定に合わせる）、portfast、bpduguard（err-disabled）、bpdufilter、guard root、
   MSTの設定モードと `show spanning-tree mst`。試験ラボで stp 約49秒／rapid-stp 無停止の迂回、MSTPでインスタンスごとの
   ルート、BPDU Guardのerr-disabled→復旧、wr→再起動で設定復元、CPU約0.6%/台を確認。ブラウザでの確認はまだ。
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの

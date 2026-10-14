@@ -16,7 +16,7 @@ ContainerlabをバックエンドにしたOSS版CML(Cisco Modeling Labs)。CML�
   - ルーター＝FRR（vrnetlab等のVMラップが不要な軽量コンテナ）。VLANサブインターフェースもvtyshで
     Cisco風に設定できるよう、エージェント入りのイメージ（`backend/frr-router/`）を使う（2026-10-14）
   - L2スイッチ＝コンテナ（`backend/l2switch/`、VLAN対応Linuxブリッジ）。VLANはCisco風CLI（swcli）で設定する（2026-10-14〜）。
-    STP/RSTP/MSTPはmstpd（コンテナ向けに改修、`backend/l2switch/mstpd/fnl.patch`）で動かし、既定はstpで有効
+    STP/RSTP/MSTPはmstpd（コンテナ向けに改修、`backend/l2switch/mstpd/fnl.patch`）で動かし、既定はrapid-stpで有効
     当初は`ovs-bridge` kindだったが、差分反映（containerlab `apply`）に対応させるため2026-10-13に変更（docs/direction.md参照）
   - PC/ホスト＝`linux` kind（Alpine等の軽量コンテナ）
   - L3スイッチは今回は見送り（FRR＋VLAN対応ブリッジの組み合わせで実現可能だが実装コストが高いため、将来の拡張候補）

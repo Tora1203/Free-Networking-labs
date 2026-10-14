@@ -15,7 +15,8 @@ VLANの意味はCiscoに合わせる：
 
 STP（2026-10-14）：mstpd（RSTP/MSTPのデーモン、mstpd/fnl.patchでコンテナ向けに改修）で
 STP（802.1D）/ RSTP（802.1w）/ MSTP（802.1s）を動かす。モードは spanning-tree mode stp | rapid-stp | mstp
-（Ciscoのpvst/rapid-pvstは独自方式でLinuxでは動かないため、名前も標準規格に合わせた）。既定は stp で有効。
+（Ciscoのpvst/rapid-pvstは独自方式でLinuxでは動かないため、名前も標準規格に合わせた）。
+既定は rapid-stp で有効（最近の機種はRSTP系が既定：Juniper EXはRSTP、AristaはMSTP、Nexusはrapid-pvst）。
 コンテナではカーネルのユーザーSTPモードが使えないため、カーネルのSTPは切り（stp_state 0）、
 mstpdが決めたポート状態をカーネルのMST（mst_enabled）のポート状態として設定する。
 カーネルのMSTI 0は設定できないので、CISTはカーネルのMSTI 4094に対応させる（利用者のMSTIは1-4093）。
@@ -90,7 +91,7 @@ def port_view(cfg, name):
 
 
 STP_MODES = ('stp', 'rapid-stp', 'mstp')
-STP_DEFAULTS = {'enabled': True, 'mode': 'stp', 'priority': 32768, 'hello': 2, 'forward': 15, 'max_age': 20,
+STP_DEFAULTS = {'enabled': True, 'mode': 'rapid-stp', 'priority': 32768, 'hello': 2, 'forward': 15, 'max_age': 20,
                 'portfast_default': False, 'bpduguard_default': False}
 CIST_KMSTI = 4094  # CISTを対応させるカーネルのMSTI（mstpd/fnl.patchと揃える）
 MAX_MSTI = 4093
@@ -991,7 +992,7 @@ class Cli:
                 (['spanning-tree', 'mode', 'stp'], lambda a: self.set_stp_global(mode='stp'), 'IEEE 802.1D spanning tree'),
                 (['spanning-tree', 'mode', 'rapid-stp'], lambda a: self.set_stp_global(mode='rapid-stp'), 'IEEE 802.1w rapid spanning tree'),
                 (['spanning-tree', 'mode', 'mstp'], lambda a: self.set_stp_global(mode='mstp'), 'IEEE 802.1s multiple spanning tree'),
-                (['no', 'spanning-tree', 'mode'], lambda a: self.set_stp_global(mode=None), 'Reset the mode to stp'),
+                (['no', 'spanning-tree', 'mode'], lambda a: self.set_stp_global(mode=None), 'Reset the mode to rapid-stp'),
                 (['spanning-tree', 'portfast', 'default'], lambda a: self.set_stp_global(portfast_default=True), 'Enable portfast by default on all access ports'),
                 (['no', 'spanning-tree', 'portfast', 'default'], lambda a: self.set_stp_global(portfast_default=None), 'Disable portfast by default'),
                 (['spanning-tree', 'portfast', 'bpduguard', 'default'], lambda a: self.set_stp_global(bpduguard_default=True),

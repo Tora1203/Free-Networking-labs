@@ -113,14 +113,14 @@ wr
 - [ ] `wr` してからラボを「作り直す」（または停止→ホームで削除せずに起動し直す）と設定が残る（10/14〜ホスト側に保存）
 - [ ] 接続ダイアログにVLANの入力欄は出ない（10/14で廃止）
 
-**3-2b スパニングツリー（STP / RSTP / MSTP）**（10/14〜、スイッチは最初から `stp`（802.1D）で有効）
+**3-2b スパニングツリー（STP / RSTP / MSTP）**（10/14〜、スイッチは最初から `rapid-stp`（802.1w）で有効）
 
 例：スイッチ3台を三角形につなぎ（ループ）、2台にPCを1台ずつつなぐ
 ```
 sh spanning-tree                     ← Root ID / Bridge ID / 各ポートの Role・Sts（FWD/BLK）・Type（Edge等）
 conf t
 spanning-tree vlan 1 root primary    ← このスイッチをルートにする（priority 24576）
-spanning-tree mode rapid-stp         ← 802.1w に切り替える（stp / rapid-stp / mstp の3つ）
+spanning-tree mode stp               ← 古典STP（802.1D）に切り替える（stp / rapid-stp / mstp の3つ、既定はrapid-stp）
 int eth3
 spanning-tree portfast               ← PCをつなぐポートはすぐ転送する（Edge）
 spanning-tree bpduguard enable       ← BPDUを受けたらerr-disabledにする
@@ -128,8 +128,8 @@ end
 ```
 - [ ] ループを組んでもPC同士の `ping` が通り、どれか1ポートが `Altn BLK` になる（サーバーが重くならない）
 - [ ] `root primary` や `priority` でルートが変わり、`sh spanning-tree` に反映される。`sh run` に設定が出る
-- [ ] `stp` のまま通信中の経路のポートを `shutdown` すると、**約50秒後**に迂回路で通信が戻る（古典STP）
-- [ ] 全スイッチを `rapid-stp` にして同じことをすると、**ほぼ止まらずに**切り替わる（実測：0.2秒間隔のpingが1つも欠けない）
+- [ ] 既定（`rapid-stp`）のまま通信中の経路のポートを `shutdown` すると、**ほぼ止まらずに**切り替わる（実測：0.2秒間隔のpingが1つも欠けない）
+- [ ] 全スイッチを `spanning-tree mode stp` にして同じことをすると、**約50秒後**に迂回路で通信が戻る（古典STP）
 - [ ] `portfast` を入れたポートは `sh spanning-tree` で `P2p Edge` になり、リンクアップ直後から通信できる
       （入れていないポートは、Ciscoと同じく起動直後や接続直後に約30秒待つ）
 - [ ] BPDUが届くポート（スイッチ同士の `Altn` のポートなど）で `bpduguard enable` すると、`sh int status` で
