@@ -179,6 +179,21 @@ function needsUpgrade(node: Node): boolean {
   return false
 }
 
+// 元に戻すの履歴の上限
+const HISTORY_LIMIT = 100
+
+// 履歴に積む状態。選択中・ドラッグ中・サイズ計測の結果は見た目だけの情報なので外す
+// （keyで「意味のある変更か」を比べる）
+function takeSnapshot(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[]; key: string } {
+  const cleanNodes = nodes.map((n) => ({ ...n, selected: false, dragging: false }))
+  const cleanEdges = edges.map((e) => ({ ...e, selected: false }))
+  const key = JSON.stringify([
+    cleanNodes.map(({ measured: _measured, ...rest }) => rest),
+    cleanEdges,
+  ])
+  return { nodes: cleanNodes, edges: cleanEdges, key }
+}
+
 // ラボの実行状態（GET /api/v1/labs から判定）。none＝一度も起動していない（コンテナが無い）
 type LabRunState = { kind: 'unknown' | 'none' | 'stopped' | 'running'; nodeStates: Record<string, string> }
 // 自動保存・差分反映・起動/停止の状態表示
@@ -213,6 +228,9 @@ function TopologyEditorInner() {
   const [labBusy, setLabBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
+  // 接続ダイアログを開いている間はCtrl+Zで裏のトポロジを戻さない（キー処理から参照する）
+  const pendingConnectionRef = useRef<PendingConnection>(null)
+  pendingConnectionRef.current = pendingConnection
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
   // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
@@ -407,6 +425,92 @@ function TopologyEditorInner() {
     // 間を置いている途中の変更も保存してから戻る
     void enqueue(syncOnce).then(() => setView('home'))
   }, [enqueue, syncOnce, setView])
+
+  // ---------------------------------------------------------------------------
+  // 元に戻す／やり直す（2026-10-14、テスターの要望「Ctrl+Zで1つ戻したい」）
+  //
+  // ノード・接続の状態のスナップショットを履歴に積む。ドラッグ等の連続した変更は0.3秒の間を置いて
+  // 1件にまとめる。選択状態などの見た目だけの変化は履歴にしない。戻した結果も通常の編集と同じく
+  // 自動保存され、ラボが動いていれば反映される（削除したノードを戻すと新しく作られる）。
+  // ---------------------------------------------------------------------------
+  type Snapshot = { nodes: Node[]; edges: Edge[]; key: string }
+  const historyRef = useRef<{ past: Snapshot[]; future: Snapshot[]; current: Snapshot | null }>({
+    past: [],
+    future: [],
+    current: editorTarget.mode === 'new' ? takeSnapshot(initialNodes, initialEdges) : null,
+  })
+  // ボタンの有効/無効の表示用（履歴そのものはhistoryRefにある）
+  const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0 })
+  const syncHistoryCounts = useCallback(() => {
+    const h = historyRef.current
+    setHistoryCounts({ past: h.past.length, future: h.future.length })
+  }, [])
+
+  // 今の状態が履歴の最新と違えば積む（undo直前に、まだ積まれていない直近の変更を拾うためにも使う）
+  const commitHistory = useCallback((nodes: Node[], edges: Edge[]) => {
+    const h = historyRef.current
+    if (!h.current) return
+    const snap = takeSnapshot(nodes, edges)
+    if (snap.key === h.current.key) return
+    h.past.push(h.current)
+    if (h.past.length > HISTORY_LIMIT) h.past.shift()
+    h.future = []
+    h.current = snap
+    syncHistoryCounts()
+  }, [syncHistoryCounts])
+
+  useEffect(() => {
+    const timer = setTimeout(() => commitHistory(nodes, edges), 300)
+    return () => clearTimeout(timer)
+  }, [nodes, edges, commitHistory])
+
+  const restoreSnapshot = useCallback((snap: Snapshot) => {
+    historyRef.current.current = snap
+    setNodes(snap.nodes)
+    setEdges(snap.edges)
+    setContextMenu(null)
+  }, [])
+
+  const undo = useCallback(() => {
+    const { nodes, edges } = latestRef.current
+    commitHistory(nodes, edges)
+    const h = historyRef.current
+    const prev = h.past.pop()
+    if (!prev || !h.current) return
+    h.future.push(h.current)
+    restoreSnapshot(prev)
+    syncHistoryCounts()
+  }, [commitHistory, restoreSnapshot, syncHistoryCounts])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    const next = h.future.pop()
+    if (!next || !h.current) return
+    h.past.push(h.current)
+    restoreSnapshot(next)
+    syncHistoryCounts()
+  }, [restoreSnapshot, syncHistoryCounts])
+
+  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y（Macは⌘）。入力欄やコンソール（xterm）の中では奪わない
+  // （コンソールのCtrl+Zはルーター・スイッチのCLIで「特権モードに戻る」に使うため）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .xterm')) return
+      if (pendingConnectionRef.current) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [undo, redo])
 
   // ラボ全体を起動する（未起動ならdeploy、停止中なら起動）。起動後は全ノードに設定を流す
   const startWholeLab = useCallback(
@@ -639,6 +743,7 @@ function TopologyEditorInner() {
           if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
         }
         loadedRef.current = true
+        historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, edges) }
         setLoadStatus({ kind: 'idle' })
         if (isOldFormat && state.kind === 'running') {
           applyBlockedRef.current = true
@@ -1012,6 +1117,12 @@ function TopologyEditorInner() {
         <div className="topology-editor__toolbar">
           <button className="topology-editor__back" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
             ← ホーム
+          </button>
+          <button onClick={undo} disabled={historyCounts.past === 0} title="元に戻す（Ctrl+Z）">
+            ↶
+          </button>
+          <button onClick={redo} disabled={historyCounts.future === 0} title="やり直す（Ctrl+Shift+Z / Ctrl+Y）">
+            ↷
           </button>
           <input
             className="topology-editor__lab-name"

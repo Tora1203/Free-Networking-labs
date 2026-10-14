@@ -783,6 +783,9 @@
   `swcli --agent`＝running-configをbr0に反映するメインプロセス）。コンソールは`while true; do swcli; done`。
   GUIのVLAN欄と`utils/switchConfig.ts`を削除。CLIラボで access/trunk設定→ルーター経由のVLAN間疎通、
   `wr`→停止/起動での保存/破棄、`?`・Tab・省略形を確認。backlog候補：スイッチのstartup-configをホスト側に置く。
+- **トポロジエディタに元に戻す/やり直す（2026-10-14、テスター要望）**：Ctrl+Z / Ctrl+Shift+Z・Ctrl+Y と↶↷ボタン。
+  ノード・接続のスナップショットを0.3秒の間でまとめて履歴に積む（選択・ドラッグ中・サイズ計測は除外、上限100件）。
+  入力欄・コンソール（xterm）・接続ダイアログ表示中はキーを奪わない。戻した結果も自動保存・反映される。
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
   front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、
