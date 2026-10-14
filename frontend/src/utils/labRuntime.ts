@@ -73,13 +73,19 @@ export async function startSavedLab(labName: string): Promise<{ commands: Map<st
   const annotationsText = await getLabAnnotations(labName).catch(() => null)
   const { nodes, edges } = parseImportedTopology(yamlText, annotationsText)
   const built = buildTopologyContent(nodes, edges, labName)
-  // 古い形式（ovs-bridgeのスイッチ）のラボはここで今の形式に書き直してから起動する
-  await putLabTopologyYaml(labName, topologyToYaml(built.topologyContent))
+  // 古い形式（ovs-bridgeのスイッチ、設定の保存先の無いスイッチ等）のラボはここで今の形式に書き直してから起動する
+  const normalizedYaml = topologyToYaml(built.topologyContent)
+  const isOldFormat = normalizedYaml !== yamlText
+  await putLabTopologyYaml(labName, normalizedYaml)
   await putLabAnnotations(
     labName,
     serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, readLabTitle(annotationsText)),
   )
   await prepareNodeConfigs(labName, built)
+  // 停止中のコンテナが古い定義のままだと、applyはそれをそのまま起動するだけのことがある
+  // （例：switch-configのbind mountが付かず、スイッチのwrite memoryがホストに残らない）。
+  // 停止中のラボを破棄しても失うものは無い（ルーターのwrite memoryはfrr-configに残る）ので作り直す
+  if (isOldFormat) await destroyLab(labName).catch(() => undefined)
   try {
     await applyLab(labName)
   } catch (e) {

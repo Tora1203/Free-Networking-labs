@@ -293,6 +293,8 @@ function TopologyEditorInner() {
   // 古い形式のまま動いているラボは、作り直すまで保存だけして反映しない（反映するとルーターが
   // 黙って作り直され、write memoryしていない設定が消えるため）
   const applyBlockedRef = useRef(false)
+  // 開いたラボが古い形式だったか。停止中なら起動時に一度破棄して今の定義で作り直す（labRuntime.startSavedLab参照）
+  const oldFormatRef = useRef(false)
   // 既存ラボを開く時は、読み込みが終わるまで自動保存しない（空のキャンバスで上書きしないため）
   const loadedRef = useRef(editorTarget.mode === 'new')
 
@@ -563,6 +565,9 @@ function TopologyEditorInner() {
       const { nodes, edges } = latestRef.current
       const built = buildTopologyContent(nodes, edges, name)
       await prepareNodeConfigs(name, built)
+      if (oldFormatRef.current && runStateRef.current.kind === 'stopped') {
+        await destroyLab(name).catch(() => undefined)
+      }
       try {
         await applyLab(name)
       } catch (e) {
@@ -576,6 +581,7 @@ function TopologyEditorInner() {
       }
       lastAppliedYaml.current = topologyToYaml(built.topologyContent)
       applyBlockedRef.current = false
+      oldFormatRef.current = false
       await refreshRunState(name)
       lastSynced.current.clear()
       const commands = buildNodeSyncCommands(built)
@@ -835,6 +841,7 @@ function TopologyEditorInner() {
         loadedRef.current = true
         historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, edges) }
         setLoadStatus({ kind: 'idle' })
+        oldFormatRef.current = isOldFormat
         if (isOldFormat && state.kind === 'running') {
           applyBlockedRef.current = true
           setSyncStatus({ kind: 'error', message: OLD_FORMAT_MESSAGE, canRebuild: true })
