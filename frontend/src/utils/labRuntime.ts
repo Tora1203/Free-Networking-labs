@@ -85,17 +85,7 @@ export async function startSavedLab(labName: string): Promise<{ commands: Map<st
   return { commands, synced: succeeded, failures }
 }
 
-// ノード単位の起動/停止。nodeNameに短いノード名とコンテナのフルネームのどちらを渡すべきか
-// Swaggerに記載が無いため、短い名前で404ならフルネームで試し直す
-// TODO(kawase3): 実機でどちらが正しいか確認してフォールバックを外す
-async function nodePower(labName: string, nodeName: string, action: 'start' | 'stop') {
-  const call = action === 'start' ? startNode : stopNode
-  try {
-    await call(labName, nodeName)
-  } catch (e) {
-    if (!(e instanceof ApiError) || e.status !== 404) throw e
-    await call(labName, `clab-${labName}-${nodeName}`)
-  }
-}
-export const startLabNode = (labName: string, nodeName: string) => nodePower(labName, nodeName, 'start')
-export const stopLabNode = (labName: string, nodeName: string) => nodePower(labName, nodeName, 'stop')
+// ノード単位の起動/停止。nodeNameは短いノード名でよい（2026-10-14実機確認。コンテナの
+// フルネームでも通る）。containerlabの「seamless dataplane」でリンクは保たれる
+export const startLabNode = (labName: string, nodeName: string) => startNode(labName, nodeName)
+export const stopLabNode = (labName: string, nodeName: string) => stopNode(labName, nodeName)

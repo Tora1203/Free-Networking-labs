@@ -255,6 +255,20 @@ FE のパレット3種と containerlab kind の対応:
 - `GET /api/v1/labs/topology/files`：保存済みラボ（未deploy含む）の一覧。各要素は
   `{"labName","yamlFileName","annotationsFileName","hasAnnotations","deploymentState"}`。
   `GET /api/v1/labs`は動いているラボ（コンテナがあるもの）しか返さないので、ホーム一覧はこちらと組み合わせる。
-  TODO(kawase3)：動作中のfront-testが`deploymentState:"undeployed"`と出た。判定基準を要確認。
+  `deploymentState`は**常に`"undeployed"`**（Swaggerの説明：実行状態はイベントストリームから得る想定）。
+  動いているかどうかは`GET /api/v1/labs`と突き合わせて判定する（2026-10-14確認）。
+
+### 2.7.1 ライフサイクル（2026-10-14 kawase3 実機確認）
+
+- `POST /api/v1/labs/{labName}/nodes/{nodeName}/stop|start`：`nodeName`は**短いノード名**（`pc-2`）で通る
+  （コンテナのフルネームでも通る）。200 `{"message":"Node 'pc-2' stopped successfully."}`。
+  リンクは保たれる（seamless dataplane）が、**コンテナ内の設定（ブリッジ・アドレス・VLANサブIF）は消える**ので
+  起動後に入れ直す必要がある。
+- `POST /api/v1/labs/{labName}/stop`：全ノードが`exited`になる。`GET /api/v1/labs`には`state:"exited"`で残る。
+- 停止中のラボに`POST /apply`すると全ノードを起動する（`"startedNodes":[...]`、`"deployedLab":false`）。
+- `DELETE /api/v1/labs/{labName}?cleanup=true&purgeLabDir=true`：コンテナ破棄＋ラボディレクトリごと削除
+  （保存済みトポロジ・frr-configも消え、`topology/files`からも消える）。**一度も起動していないラボは404**
+  （`lab 'x' not found`）。その場合は`DELETE /api/v1/labs/{labName}/topology/file?path=<file>`で
+  YAMLとannotationsを消す（空のラボディレクトリは残るが一覧には出ない）。
 - 注意：`clab_admins`所属（superuser）のユーザーは`GET /api/v1/labs`で他ユーザーのラボも見える（labuserで`aaa`=labuser2のラボが出た）。
 
