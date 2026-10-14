@@ -47,7 +47,7 @@ const GRID_SPACING_Y = 140
 // （frontend/src/types/lab.tsのPALETTE_NODE_CONFIGSと対応）
 function guessPaletteKind(clabKind: string | undefined, image: string | undefined): PaletteNodeKind {
   if (clabKind === 'ovs-bridge') return 'l2-switch' // 2026-10-13以前のラボ
-  if (image === PALETTE_NODE_CONFIGS['l2-switch'].image) return 'l2-switch'
+  if (image?.startsWith('fnl/l2switch')) return 'l2-switch' // :1（2026-10-13）も含む
   if (image === PALETTE_NODE_CONFIGS.router.image) return 'router'
   if (image?.startsWith('quay.io/frrouting/frr')) return 'router' // 2026-10-14以前のラボ（エージェント無し）
   return 'pc'

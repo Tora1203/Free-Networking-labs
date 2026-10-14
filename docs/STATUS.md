@@ -779,6 +779,10 @@
   `fnl/frr:1`（FRR＋`fnl-subif-agent`、`backend/frr-router/`）に変更。`int eth1.10`/`ip add`でVLANデバイスが自動で
   作られ、`sh run`に出る。GUIのサブIF入力欄は廃止。既存ラボは開くと古い形式として「作り直す」まで自動反映を停止。
   CLIラボで疎通・write memory→再起動・`no ip add`での削除を確認。次：L2スイッチのCisco風CLI。
+- **L2スイッチをCisco風CLIで設定できるようにした（2026-10-14）**：`fnl/l2switch:2`（alpine＋python3、`swcli`＝CLI、
+  `swcli --agent`＝running-configをbr0に反映するメインプロセス）。コンソールは`while true; do swcli; done`。
+  GUIのVLAN欄と`utils/switchConfig.ts`を削除。CLIラボで access/trunk設定→ルーター経由のVLAN間疎通、
+  `wr`→停止/起動での保存/破棄、`?`・Tab・省略形を確認。backlog候補：スイッチのstartup-configをホスト側に置く。
 - **（2026-10-07、ユーザー確認済み）** コンソールのvtyshループ・PC/ルーターの
   privileged:false化、router on a stick（GUIでVLAN ID＋アドレス一括設定）＋ゲートウェイ設定は
   front-test/test2で実機確認済み（問題なし。test2で見つかったルーター側アドレス未設定の件も、

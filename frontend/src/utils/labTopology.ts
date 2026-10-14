@@ -5,7 +5,6 @@ import type { Node, Edge } from '@xyflow/react'
 import { dump as dumpYaml } from 'js-yaml'
 import type { TopoNodeData } from '../components/TopologyNode'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
-import { buildSwitchSyncCommand, type SwitchPort, type VlanConfig } from './switchConfig'
 import { parseTopologyYaml } from './topologyFromYaml'
 import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities } from './annotations'
 import type { ExecResponse, TopologyContent } from '../api/client'
@@ -16,11 +15,8 @@ import type { ExecResponse, TopologyContent } from '../api/client'
 export interface EdgeIfaceData {
   sourceIface: string
   targetIface: string
-  // L2スイッチ側のポートにだけ意味がある（PC/ルーター側は常にundefined）。
-  // VLAN設定自体はcontainerlabのトポロジYAMLには無く、スイッチのコンテナにexecで別途投入する
-  // （2026-10-06追加、2026-10-13からbridge vlan。buildNodeSyncCommands参照）
-  sourceVlan?: VlanConfig
-  targetVlan?: VlanConfig
+  // スイッチのVLANは2026-10-14からスイッチのCLI（swcli）で設定する。それ以前に作ったラボの
+  // エッジにはsourceVlan/targetVlanが残っていることがあるが、使わない
   // PC/ルーター側にだけ意味がある（L2スイッチ側は常にundefined。スイッチはL2なのでIPは持たない）。
   // "10.0.0.1/24"形式のCIDR文字列。アドレス設定もトポロジYAMLには無く、deploy後に
   // clab-api-serverのexec経由で`ip addr add`して別途投入する（2026-10-07追加、
@@ -83,7 +79,6 @@ export interface AddressTask {
 // 文字化けのように見える・VLAN/アドレス設定が消える、の両方の修正）
 export interface PortAnnotation {
   iface: string
-  vlan?: VlanConfig
   address?: string
   // デフォルトゲートウェイ（2026-10-07追加）
   gateway?: string
@@ -135,8 +130,6 @@ export function buildTopologyContent(
   labName: string,
 ): {
   topologyContent: TopologyContent
-  // L2スイッチごとのポート（I/F名とVLAN設定）。deploy後にbuildSwitchSyncCommand()で投入する
-  switchConfigs: Map<string, SwitchPort[]>
   addressTasks: AddressTask[]
   // PC/ルーター（L2スイッチ以外）の全clabName。containerlabが自動設定するeth0の
   // デフォルトルートはmgmtネットワークのゲートウェイを指しており、ラボ内に存在しない
@@ -212,10 +205,6 @@ export function buildTopologyContent(
     .map((n) => clabNodeNames.get(n.id))
     .filter((name): name is string => !!name)
 
-  const switchConfigs = new Map<string, SwitchPort[]>()
-  for (const node of deviceNodes) {
-    if ((node.data as Partial<TopoNodeData>).kind === 'l2-switch') switchConfigs.set(node.id, [])
-  }
   const addressTasks: AddressTask[] = []
   const gatewayByNode = new Map<string, string>()
   const portAnnotations: Record<string, PortAnnotation> = {}
@@ -232,9 +221,6 @@ export function buildTopologyContent(
     const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
     const sourcePort = iface.sourceIface
     const targetPort = iface.targetIface
-    // スイッチ側のポートはVLAN設定（未設定含む）とともに記録し、deploy後にまとめて投入する
-    if (sourceIsSwitch) switchConfigs.get(sourceName)?.push({ iface: sourcePort, vlan: iface.sourceVlan })
-    if (targetIsSwitch) switchConfigs.get(targetName)?.push({ iface: targetPort, vlan: iface.targetVlan })
 
     // ルーターの通常のアドレス設定はvtyshのCLIで行う方針（2026-10-07決定）のため、GUIの
     // プレーンなアドレス/ゲートウェイ入力欄はルーターには出していない。ただし古い保存データ
@@ -259,13 +245,11 @@ export function buildTopologyContent(
 
     portAnnotations[`${sourceName}:${sourcePort}`] = {
       iface: iface.sourceIface,
-      vlan: iface.sourceVlan,
       address: iface.sourceAddress,
       gateway: iface.sourceGateway,
     }
     portAnnotations[`${targetName}:${targetPort}`] = {
       iface: iface.targetIface,
-      vlan: iface.targetVlan,
       address: iface.targetAddress,
       gateway: iface.targetGateway,
     }
@@ -275,7 +259,6 @@ export function buildTopologyContent(
 
   return {
     topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
-    switchConfigs,
     addressTasks,
     linuxNodeNames,
     gatewayByNode,
@@ -294,16 +277,18 @@ export function topologyToYaml(content: TopologyContent): string {
 // ---------------------------------------------------------------------------
 // ノードごとの設定コマンド（2026-10-14、自動保存＋差分反映のため追加）
 //
-// 以前はdeploy直後にだけ「VLAN投入」「アドレス追加」「サブインターフェース作成」
-// 「eth0のデフォルトルート削除」を個別にexecしていた。差分反映ではノードを作り直さないため、
+// 以前はdeploy直後にだけ「アドレス追加」「eth0のデフォルトルート削除」等
+// を個別にexecしていた。差分反映ではノードを作り直さないため、
 // 設定が変わったノードにだけ「あるべき状態」を入れ直す必要がある。そこでノードごとに
 // 何度実行しても同じ結果になる1本のコマンドにまとめ、前回投入したコマンドと文字列が
 // 違うノード（＋新しく作られた/起動し直したノード）にだけ流す。
-// ノードの停止→起動ではリンクは保たれるがコンテナ内の設定（ブリッジ・アドレス）は消えるため
+// ノードの停止→起動ではリンクは保たれるがコンテナ内の設定（アドレス）は消えるため
 // （2026-10-14 CLIで確認）、起動後も同じコマンドを流し直す。
 //
 // execはシェルを介さず引数分割されるので`sh -c '...'`で包む。中に`'`を入れてはいけない
-// （switchConfig.tsと同じ）。I/F名・アドレス・VLAN IDは入力時に形式を検証済み。
+// I/F名・アドレスは入力時に形式を検証済みで、ここでも形式を確かめてから埋め込む。
+// L2スイッチ（2026-10-14〜）とルーターのサブインターフェースは、それぞれのイメージ内のエージェントが
+// CLIの設定から作るので、ここでは何もしない（backend/l2switch/、backend/frr-router/）。
 // ---------------------------------------------------------------------------
 
 const IFACE_PATTERN = /^eth[0-9]+$/
@@ -333,7 +318,6 @@ const ROUTER_SYNC_COMMAND = `sh -c 'ip route del default dev eth0 2>/dev/null ||
 // buildTopologyContent()の結果から、ノード（node.id）ごとの設定コマンドを作る
 export function buildNodeSyncCommands(built: ReturnType<typeof buildTopologyContent>): Map<string, string> {
   const commands = new Map<string, string>()
-  for (const [name, ports] of built.switchConfigs) commands.set(name, buildSwitchSyncCommand(ports))
   const routers = new Set(built.routerClabNames)
   for (const name of routers) {
     commands.set(name, ROUTER_SYNC_COMMAND)

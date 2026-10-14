@@ -3,7 +3,7 @@
 // ブラウザやclab-api-serverのexecからは書けないため、JWTで認証する専用ヘルパーを立てている）。
 //
 // もともとはL2スイッチ（ovs-bridge kind）のブリッジ作成・VLAN設定用だったが、スイッチを
-// コンテナ化した（2026-10-13、utils/switchConfig.ts）ため、そちらのAPIは使わなくなった
+// コンテナ化した（2026-10-13、backend/l2switch/）ため、そちらのAPIは使わなくなった
 // （サーバー側のエンドポイントは古いラボのために残している）。
 import { ApiError, getAuthToken } from './client'
 

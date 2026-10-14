@@ -544,4 +544,18 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   設定を空にする（FRRは動いているインターフェースを`no interface`できない）。
 - 既存ラボ：ルーターのイメージが変わるため、動いているラボは「作り直す」まで自動反映を止める
   （黙ってルーターを作り直してwrite memoryしていない設定を消さないため）。GUIで入れていたサブIFは引き継がない。
-- L2スイッチも同様にCLI（Cisco風の専用CLI）で設定する方向（実装は次）。PCのアドレス/GWはGUIのまま。
+- L2スイッチも同様にCLIで設定する（下の決定）。PCのアドレス/GWはGUIのまま。
+
+## 決定事項（2026-10-14追記）：L2スイッチはCisco風CLIで設定する（GUIのVLAN欄は廃止）
+
+- 「switchってコンソールいらなくね？それか専用のCLI作るか」「すべてCLIで設定できるならしたい」を受けて、
+  スイッチのコンソールをrootシェルから専用CLI（`backend/l2switch/swcli.py`、イメージ`fnl/l2switch:2`）に変えた。
+  rootシェルでは`bridge`コマンドでVLAN分離を壊せてしまう問題も同時に解消。
+- コマンドはCisco IOSの`switchport mode access/trunk`、`switchport access vlan`、`switchport trunk allowed/native vlan`、
+  `vlan`/`name`、`show vlan brief`/`mac address-table`/`interfaces status|trunk`/`running-config`、`write memory`等。
+  省略形・`?`・Tab補完に対応。設定はrunning/startupの2段で、`write memory`で保存（ルーターと同じ運用）。
+- VLANの意味はCiscoに合わせた（未設定はaccess VLAN1、trunkのnative VLANはタグなし）。10-14午前に入れた
+  「タグなしは内部VLAN4094」はGUI時代の挙動に合わせるためのもので、CLI化に伴い廃止。
+- GUIの接続ダイアログからVLAN欄を削除（GUIはスイッチの配線だけ）。既存ラボのGUIのVLAN設定は引き継がない。
+- 制約：startup-configはスイッチのコンテナ内に置くため、ラボの作り直し・削除で消える（ルーターのfrr-configは
+  ホスト側なので残る）。必要ならovs-helperの初期化ラッパーを拡張してホスト側に置く（backlog）。
