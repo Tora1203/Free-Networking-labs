@@ -594,3 +594,19 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   既定値＝有効として扱う）。動いているスイッチは作り直すまで古いまま（STP無し）。
 - リンクの帯域は既定で無制限のまま（実測：直結8.5Gbps、スイッチ経由7.9Gbps、上限はCPU）。帯域・遅延等は
   次に作るリンクの品質変更（netem、clab-api-serverの`/tools/netem/*`）で必要な時に絞る。
+
+## 決定事項（2026-10-14追記）：STPはmstpdでSTP/RSTP/MSTPに対応。モード名は stp / rapid-stp / mstp
+
+- 上の「カーネルSTP（802.1Dのみ）」を、同日中にmstpdへ置き換えた。「802.1w使えないのか、使えたらいい勉強になった」
+  「PortFastが使えないならBPDU Guardも無理か」を受けて調査し、mstpdをコンテナで動かせることを試作で確認したため。
+- mstpdはそのままではコンテナで動かない（カーネルのユーザーSTPモードはホストの名前空間だけ、STP無効のブリッジは
+  BPDUを転送してmstpdに届かない、mstpd本体のnetlink受信の不具合）。パッチ（`backend/l2switch/mstpd/fnl.patch`）で
+  ポート状態をカーネルのMST（5.18〜）の状態として入れ、BPDUはtcで止めてタップで受ける形にした。
+- モード名はCiscoのpvst/rapid-pvstを使わず `stp / rapid-stp / mstp` にする（ユーザー指示：「pvstとstpが混在する
+  表記が好きじゃない」。PVSTはCisco独自でLinuxでは動かないので、名前も標準規格に合わせる）。既定は `stp`
+  （ユーザー選択：Ciscoの実機に近く、学生がrapid-stpに変えて速さの違いを体験できる）。
+- PortFast・BPDU Guard（err-disabled、shutdown→no shutdownで復旧）・BPDU Filter・Root Guard・MSTPのリージョン設定まで
+  Cisco風のコマンドで使える。portfastでないポートは自動でエッジにしない（Ciscoと同じ）。
+- イメージは`fnl/l2switch:3`（Alpine 3.22、iproute2 6.15）。`:2`のスイッチは「古い形式」として作り直しを促す。
+- 安全面：試作中にSTPが効いていない状態のループで再びストームを起こした（load 3）。以降のループ試験は、
+  リンクにnetemで帯域上限（5Mbps）をかけてから行った。

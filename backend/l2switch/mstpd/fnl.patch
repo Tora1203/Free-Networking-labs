@@ -1,0 +1,75 @@
+diff --git a/bridge_track.c b/bridge_track.c
+index ed67a43..c8e85f8 100644
+--- a/bridge_track.c
++++ b/bridge_track.c
+@@ -499,7 +499,7 @@ void MSTP_OUT_set_state(per_tree_port_t *ptp, int new_state)
+         /* we can only modify STP states of up ports */
+         if(prt->sysdeps.up)
+         {
+-            if(0 > br_set_state(prt->sysdeps.if_index, ptp->state))
++            if(0)  /* fnl: driver_set_new_state()でMSTの状態として設定済み */
+                 ERROR_PRTNAME(prt, "Couldn't set kernel bridge state %s",
+                               state_name);
+         }
+diff --git a/brmon.c b/brmon.c
+index 21b82e6..eeff2d7 100644
+--- a/brmon.c
++++ b/brmon.c
+@@ -76,7 +76,7 @@ static int mnl_talk(struct mnl_socket *nl, struct nlmsghdr *msg,
+         return -1;
+     }
+ 
+-    ret = mnl_socket_recvfrom(nl, buf, sizeof(*buf));
++    ret = mnl_socket_recvfrom(nl, buf, sizeof(buf))  /* fnl: sizeof(*buf)だと1バイトしか読めない */;
+     if(ret < 0)
+     {
+         ERROR("mnl_socket_recvfrom failed: %m");
+diff --git a/driver_deps.c b/driver_deps.c
+index 6990292..0dc73da 100644
+--- a/driver_deps.c
++++ b/driver_deps.c
+@@ -1,3 +1,5 @@
++#include <stdio.h>
++#include <stdlib.h>
+ /* SPDX-License-Identifier: GPL-2.0-or-later */
+ /*
+  * driver_deps.c    Driver-specific code.
+@@ -56,7 +58,14 @@ void driver_delete_port(port_t *prt)
+  */
+ int driver_set_new_state(per_tree_port_t *ptp, int new_state)
+ {
+-    /* TODO: insert driver-specific code here */
++    /* fnl: コンテナのネットワーク名前空間ではカーネルのユーザーSTPモードが使えないため、
++       各ツリーの状態をカーネルのMSTインスタンスのポート状態として設定する。
++       カーネルのMSTI 0は設定できないので、CIST（MSTID 0）はカーネルのMSTI 4094に対応させる */
++    char cmd[128];
++    int kmsti = (0 == ptp->MSTID) ? 4094 : __be16_to_cpu(ptp->MSTID);
++    snprintf(cmd, sizeof(cmd), "bridge mst set dev %s msti %d state %d >/dev/null 2>&1",
++             ptp->port->sysdeps.name, kmsti, new_state);
++    system(cmd);  /* そのMSTIにまだVLANが無いと失敗するが、VLANを割り当てた時にエージェントが合わせる */
+     return new_state;
+ }
+ 
+diff --git a/packet.c b/packet.c
+index d583182..bb5e332 100644
+--- a/packet.c
++++ b/packet.c
+@@ -117,6 +117,8 @@ static void packet_rcv(uint32_t events, struct epoll_event_handler *h)
+     dump_packet(buf, cc);
+ #endif
+ 
++    if(sl.sll_pkttype == PACKET_OUTGOING)  /* fnl: 自分が送ったBPDUは無視 */
++        return;
+     bridge_bpdu_rcv(sl.sll_ifindex, buf, cc);
+ }
+ 
+@@ -148,7 +150,8 @@ int packet_sock_init(void)
+         .filter = stp_filter,
+     };
+ 
+-    s = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_802_2));
++    /* fnl: ブリッジ（STP無効）に消費される前のBPDUを受け取るため、全プロトコルのタップで受ける */
++    s = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+     if(s < 0)
+     {
+         ERROR("socket failed: %m");

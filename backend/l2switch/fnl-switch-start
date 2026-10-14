@@ -1,13 +1,16 @@
 #!/bin/sh
 # 起動のたびにstartup-configからrunning-configを作り直し（実機の電源投入と同じ）、
-# エージェントを動かし続ける（落ちても1秒後に再起動）
+# mstpd（STP/RSTP/MSTP）とエージェントを動かし続ける（落ちても1秒後に再起動。mstpdが
+# 再起動した時は、エージェントがブリッジを登録し直して設定を入れ直す）
 mkdir -p /run/fnl-switch
+rm -f /run/fnl-switch/errdisabled.json
 if [ -f /etc/fnl-switch/startup.json ]; then
   cp /etc/fnl-switch/startup.json /run/fnl-switch/running.json
 else
   rm -f /run/fnl-switch/running.json
 fi
 trap 'exit 0' TERM INT
+(while :; do /usr/sbin/mstpd -d -v 1 >/dev/null 2>&1; sleep 1; done) &
 while :; do
   /usr/local/bin/swcli --agent &
   wait $!

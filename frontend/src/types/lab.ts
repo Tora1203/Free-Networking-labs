@@ -32,7 +32,7 @@ export const PALETTE_NODE_CONFIGS: Record<PaletteNodeKind, PaletteNodeConfig> = 
   // ルーターはFRR公式イメージ＋サブインターフェース自動作成エージェント（backend/frr-router/、2026-10-14〜）
   router: { kind: 'router', label: 'ルーター', clabKind: 'linux', image: 'fnl/frr:1' },
   // L2スイッチはコンテナ内のLinuxブリッジ（backend/l2switch/、2026-10-13にovs-bridgeから変更）。
-  // :2（2026-10-14〜）はCisco風CLI（swcli）入り。VLANはCLIで設定する
-  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'linux', image: 'fnl/l2switch:2' },
+  // :2（2026-10-14〜）はCisco風CLI（swcli）入り。VLANはCLIで設定する。:3（同日〜）はmstpdでSTP/RSTP/MSTP
+  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'linux', image: 'fnl/l2switch:3' },
   pc: { kind: 'pc', label: 'PC', clabKind: 'linux', image: 'alpine:3.20' },
 }

@@ -113,23 +113,49 @@ wr
 - [ ] `wr` してからラボを「作り直す」（または停止→ホームで削除せずに起動し直す）と設定が残る（10/14〜ホスト側に保存）
 - [ ] 接続ダイアログにVLANの入力欄は出ない（10/14で廃止）
 
-**3-2b スパニングツリー（STP）**（10/14〜、スイッチは最初からSTPが有効）
+**3-2b スパニングツリー（STP / RSTP / MSTP）**（10/14〜、スイッチは最初から `stp`（802.1D）で有効）
 
 例：スイッチ3台を三角形につなぎ（ループ）、2台にPCを1台ずつつなぐ
 ```
-sh spanning-tree                     ← Root ID / Bridge ID / 各ポートの Role・Sts（FWD/BLK）
+sh spanning-tree                     ← Root ID / Bridge ID / 各ポートの Role・Sts（FWD/BLK）・Type（Edge等）
 conf t
 spanning-tree vlan 1 root primary    ← このスイッチをルートにする（priority 24576）
-int eth1
-spanning-tree cost 100               ← ポートのコストを変えてブロックされるポートを動かす
+spanning-tree mode rapid-stp         ← 802.1w に切り替える（stp / rapid-stp / mstp の3つ）
+int eth3
+spanning-tree portfast               ← PCをつなぐポートはすぐ転送する（Edge）
+spanning-tree bpduguard enable       ← BPDUを受けたらerr-disabledにする
 end
 ```
 - [ ] ループを組んでもPC同士の `ping` が通り、どれか1ポートが `Altn BLK` になる（サーバーが重くならない）
 - [ ] `root primary` や `priority` でルートが変わり、`sh spanning-tree` に反映される。`sh run` に設定が出る
-- [ ] 通信中の経路のポートを `shutdown` すると、**約50秒後**に迂回路で通信が戻る
-      （古典STP：max age 20秒＋forward delay 15秒×2。BLK→LIS→LRN→FWDの変化を `sh spanning-tree` で観察できる）
-- [ ] 注意：ラボの起動直後やケーブルをつないだ直後は、**約30秒スイッチ経由の通信ができない**（LIS→LRN）。Ciscoと同じ。
-      portfast・rapid-pvst は未対応（打つとその旨が出る）。全VLANで1つのツリー
+- [ ] `stp` のまま通信中の経路のポートを `shutdown` すると、**約50秒後**に迂回路で通信が戻る（古典STP）
+- [ ] 全スイッチを `rapid-stp` にして同じことをすると、**ほぼ止まらずに**切り替わる（実測：0.2秒間隔のpingが1つも欠けない）
+- [ ] `portfast` を入れたポートは `sh spanning-tree` で `P2p Edge` になり、リンクアップ直後から通信できる
+      （入れていないポートは、Ciscoと同じく起動直後や接続直後に約30秒待つ）
+- [ ] BPDUが届くポート（スイッチ同士の `Altn` のポートなど）で `bpduguard enable` すると、`sh int status` で
+      `err-disabled` になり相手は `notconnect` になる。`no spanning-tree bpduguard` → `shutdown` → `no shutdown` で戻る
+- [ ] `spanning-tree guard root` / `bpdufilter enable` / `spanning-tree portfast default` / `spanning-tree portfast bpduguard default` が打てて `sh run` に出る
+
+**MSTP**（VLANごとに別のツリー。3台とも同じリージョン設定にする）
+```
+conf t
+vlan 10,20
+interface range eth1-2
+ switchport mode trunk
+spanning-tree mode mstp
+spanning-tree mst configuration
+ name LAB
+ revision 1
+ instance 1 vlan 10
+ instance 2 vlan 20
+exit
+spanning-tree mst 1 root primary     ← 1台目だけ。2台目は spanning-tree mst 2 root primary
+end
+sh spanning-tree mst / sh spanning-tree mst 1 / sh spanning-tree mst configuration
+```
+- [ ] MST1とMST2でルートが別のスイッチになり、ブロックされるポートがインスタンスごとに違う
+- [ ] 注意：PVST（VLANごとに独立したSTP、Cisco独自）は無い。`spanning-tree vlan 10 ...` は全VLANに効く（注意が出る）。
+      VLANごとに分けたいときはMSTPを使う
 
 **3-3 Router on a stick**（ルーターのコンソールで設定する）
 
