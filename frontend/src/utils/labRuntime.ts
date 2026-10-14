@@ -180,10 +180,10 @@ export async function applyLinkConditions(
     const [node, iface] = splitPortKey(key)
     if (routerUnplugged.has(key) || !running.has(node) || freshSet.has(node) || !/^eth[0-9]+$/.test(iface)) continue
     tasks.push(
-      execInLab(labName, node, `sh -c 'ip link set ${iface} up'`).then(
-        (r) => assertExecOk(r, 'ケーブルを差し直せませんでした'),
-        (e) => void failures.push(`${node} ${iface}: ${errorMessage(e, 'ケーブルを差し直せませんでした')}`),
-      ),
+      // assertExecOkが投げた時も失敗の一覧に入れる（then の第2引数では拾えず、保存全体の失敗になっていた）
+      execInLab(labName, node, `sh -c 'ip link set ${iface} up'`)
+        .then((r) => assertExecOk(r, 'ケーブルを差し直せませんでした'))
+        .catch((e) => void failures.push(`${node} ${iface}: ${errorMessage(e, 'ケーブルを差し直せませんでした')}`)),
     )
   }
   state.routerUnplugged = routerUnplugged
