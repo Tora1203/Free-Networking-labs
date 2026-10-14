@@ -79,6 +79,17 @@
   color: var(--warn);
 }
 
+/* ラボの実行状態（起動中/停止中/未起動、2026-10-14） */
+.topology-editor__run-state {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+
+.topology-editor__run-state--running {
+  color: var(--accent);
+}
+
 .topology-editor__context-menu-status {
   position: fixed;
   bottom: 16px;

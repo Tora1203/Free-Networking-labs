@@ -2,14 +2,18 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Lab, NodeState } from '../types/lab'
 import {
   ApiError,
-  destroyLab,
+  deleteLab,
+  deleteLabFile,
   getLabs,
-  startLab,
+  getLabTopologyFiles,
   stopLab,
   type RawLabNode,
   type RawLabsResponse,
+  type TopologyFileEntry,
 } from '../api/client'
 import { getLabDisplayName } from '../utils/labName'
+import { startSavedLab } from '../utils/labRuntime'
+import { useAuthStore } from '../store/authStore'
 import { useUiStore } from '../store/uiStore'
 import './Home.css'
 
@@ -20,12 +24,26 @@ const stateLabel: Record<NodeState, string> = {
   paused: 'paused',
 }
 
-// GET /api/v1/labs は { [labName]: RawLabNode[] } で返る（api-contract.md 2.1）。
-// 自分が所有するラボだけが返る（実機確認済み）。UI用の Lab[] 形状に変換する。
-function toLabs(raw: RawLabsResponse): Lab[] {
-  return Object.entries(raw).map(([labName, nodes]) => ({
+// 自動保存（2026-10-14）になってから、ラボは「保存済みのトポロジ」として存在し、
+// 起動していなくても一覧に出す。保存済みラボの一覧（GET /labs/topology/files、自分のものだけ）に、
+// 動いている/停止中のコンテナの状態（GET /api/v1/labs）を重ねる。
+// GET /api/v1/labs は clab_admins 所属だと他ユーザーのラボも返すため、そちらは自分のものだけ使う
+type HomeLab = Lab & { runKind: 'running' | 'stopped' | 'none'; yamlFileName?: string; annotationsFileName?: string }
+
+function toLabs(files: TopologyFileEntry[], raw: RawLabsResponse, username: string | null): HomeLab[] {
+  const names = new Set(files.map((f) => f.labName))
+  for (const [labName, nodes] of Object.entries(raw)) {
+    if (nodes[0]?.owner === username) names.add(labName)
+  }
+  return [...names].sort().reverse().map((labName) => {
+    const nodes = raw[labName] ?? []
+    const file = files.find((f) => f.labName === labName)
+    return {
     name: labName,
-    owner: nodes[0]?.owner ?? '',
+    owner: nodes[0]?.owner ?? username ?? '',
+    runKind: nodes.length === 0 ? 'none' : nodes.some((n) => n.state === 'running') ? 'running' : 'stopped',
+    yamlFileName: file?.yamlFileName,
+    annotationsFileName: file?.hasAnnotations ? file.annotationsFileName : undefined,
     nodes: nodes.map((n: RawLabNode) => ({
       name: n.nodeName,
       kind: n.kind,
@@ -33,11 +51,13 @@ function toLabs(raw: RawLabsResponse): Lab[] {
       state: (n.state in stateLabel ? n.state : 'created') as NodeState,
       ipv4_address: n.ipv4_address,
     })),
-  }))
+    }
+  })
 }
 
-// ovs-bridge(l2-switch)はコンテナを起動しないkindなのでシェル/コンソールの対象外
-// （api-contract.md 3章参照）
+const runKindLabel: Record<HomeLab['runKind'], string> = { running: '起動中', stopped: '停止中', none: '未起動' }
+
+// 2026-10-13以前のラボのovs-bridge(l2-switch)はコンテナを起動しないkindなのでコンソールの対象外
 function hasConsole(node: Lab['nodes'][number]) {
   return node.kind !== 'ovs-bridge' && node.state === 'running'
 }
@@ -62,7 +82,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
           <button
             className="lab-node-row__console"
             disabled={!hasConsole(n)}
-            title={n.kind === 'ovs-bridge' ? '古い形式のL2スイッチにはコンソールがありません（一度deployし直すと使えます）' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
+            title={n.kind === 'ovs-bridge' ? '古い形式のL2スイッチにはコンソールがありません（エディタの「作り直す」で使えるようになります）' : !hasConsole(n) ? 'ノードが起動していません' : 'コンソールを開く'}
             onClick={() => openNodeConsole(n)}
           >
             🖥
@@ -80,38 +100,53 @@ type BusyAction = 'start' | 'stop' | 'destroy'
 // （2026-10-05決定、docs/direction.md参照）。常時表示のタブに戻すと、今エディタに出ている
 // トポロジがどのラボなのか分からなくなる誤操作の元になっていたため。
 export default function Home() {
-  const [labs, setLabs] = useState<Lab[] | null>(null)
+  const [labs, setLabs] = useState<HomeLab[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<Record<string, BusyAction | undefined>>({})
   const [actionError, setActionError] = useState<Record<string, string | undefined>>({})
   const openEditor = useUiStore((s) => s.openEditor)
+  const username = useAuthStore((s) => s.username)
 
   const refresh = useCallback(() => {
-    getLabs()
-      .then((raw) => setLabs(toLabs(raw)))
+    Promise.all([getLabTopologyFiles(), getLabs()])
+      .then(([files, raw]) => setLabs(toLabs(files, raw, username)))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'ラボ一覧の取得に失敗しました'))
-  }, [])
+  }, [username])
 
   useEffect(() => {
     refresh()
   }, [refresh])
 
   const runAction = useCallback(
-    async (labName: string, action: BusyAction) => {
-      if (action === 'destroy' && !window.confirm(`ラボ「${labName}」を削除します。よろしいですか？`)) return
+    async (lab: HomeLab, action: BusyAction) => {
+      const labName = lab.name
+      if (
+        action === 'destroy' &&
+        !window.confirm(`ラボ「${getLabDisplayName(labName)}」を削除します。保存したトポロジやルーターの設定も消え、元に戻せません。よろしいですか？`)
+      )
+        return
+      if (action === 'stop' && !window.confirm('ラボを停止します。write memoryしていないルーターの設定は消えます。よろしいですか？')) return
 
       setBusy((b) => ({ ...b, [labName]: action }))
       setActionError((e) => ({ ...e, [labName]: undefined }))
       try {
-        if (action === 'start') await startLab(labName)
-        else if (action === 'stop') await stopLab(labName)
-        else await destroyLab(labName)
-        refresh()
+        if (action === 'start') {
+          // 保存済みトポロジでapplyし、スイッチのVLAN・PCのアドレス等も流し直す（labRuntime.ts）
+          const { failures } = await startSavedLab(labName)
+          if (failures.length > 0) throw new Error(`起動しましたが設定の反映に失敗: ${failures.join(' / ')}`)
+        } else if (action === 'stop') await stopLab(labName)
+        else if (lab.runKind !== 'none') await deleteLab(labName)
+        else {
+          // 一度も起動していないラボはコンテナが無くDELETE /labs/{name}の対象外なので、保存ファイルを消す
+          if (lab.annotationsFileName) await deleteLabFile(labName, lab.annotationsFileName).catch(() => undefined)
+          await deleteLabFile(labName, lab.yamlFileName ?? `${labName}.clab.yml`)
+        }
       } catch (e) {
         const message = e instanceof ApiError || e instanceof Error ? e.message : `${action}に失敗しました`
         setActionError((prev) => ({ ...prev, [labName]: message }))
       } finally {
         setBusy((b) => ({ ...b, [labName]: undefined }))
+        refresh()
       }
     },
     [refresh],
@@ -123,7 +158,7 @@ export default function Home() {
         <div className="lab-list__header-row">
           <div>
             <h1>ホーム</h1>
-            <p className="lab-list__hint">GET /api/v1/labs（自分が所有するラボのみ表示されます）</p>
+            <p className="lab-list__hint">自分のラボ（編集内容は自動保存されます）</p>
           </div>
           <button className="lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
             ＋ 新規ラボを作成
@@ -137,7 +172,7 @@ export default function Home() {
         {labs?.map((lab) => {
           const runningCount = lab.nodes.filter((n) => n.state === 'running').length
           const labBusy = busy[lab.name]
-          // deploy時に日本語名等が使われた場合、実際のAPI上の名前は安全な名前に変換されている
+          // 保存時に日本語名等が使われた場合、実際のAPI上の名前は安全な名前に変換されている
           // （utils/labName.ts参照）。localStorageに記録された元の名前があればそちらを表示する。
           const displayName = getLabDisplayName(lab.name)
           return (
@@ -148,20 +183,21 @@ export default function Home() {
                 </span>
                 <span className="lab-card__owner">@{lab.owner}</span>
               </div>
-              <LabNodeList labName={lab.name} nodes={lab.nodes} />
+              {lab.runKind !== 'none' && <LabNodeList labName={lab.name} nodes={lab.nodes} />}
               <div className="lab-card__meta">
-                {runningCount}/{lab.nodes.length} nodes running
+                {runKindLabel[lab.runKind]}
+                {lab.runKind !== 'none' && `（${runningCount}/${lab.nodes.length} ノード起動中）`}
               </div>
               {actionError[lab.name] && <p className="lab-card__error">{actionError[lab.name]}</p>}
               <div className="lab-card__actions">
-                <button onClick={() => runAction(lab.name, 'start')} disabled={!!labBusy}>
-                  {labBusy === 'start' ? '起動中...' : 'Start'}
+                <button onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
+                  {labBusy === 'start' ? '起動中...' : '▶ 起動'}
                 </button>
-                <button onClick={() => runAction(lab.name, 'stop')} disabled={!!labBusy}>
-                  {labBusy === 'stop' ? '停止中...' : 'Stop'}
+                <button onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
+                  {labBusy === 'stop' ? '停止中...' : '■ 停止'}
                 </button>
-                <button className="lab-card__actions-destroy" onClick={() => runAction(lab.name, 'destroy')} disabled={!!labBusy}>
-                  {labBusy === 'destroy' ? '削除中...' : 'Destroy'}
+                <button className="lab-card__actions-destroy" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>
+                  {labBusy === 'destroy' ? '削除中...' : '削除'}
                 </button>
               </div>
               <button className="lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>

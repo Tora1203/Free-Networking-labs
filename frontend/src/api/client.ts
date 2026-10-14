@@ -154,6 +154,66 @@ export function destroyLab(labName: string) {
   })
 }
 
+// ラボを完全に削除する（コンテナの破棄＋ラボディレクトリごと削除、2026-10-14）。
+// 自動保存になってからは、destroyだけだと保存済みトポロジが残って一覧に「停止中」として出続けるため
+export function deleteLab(labName: string) {
+  return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}?cleanup=true&purgeLabDir=true`, {
+    method: 'DELETE',
+  })
+}
+
+// ラボディレクトリ内のファイルを削除する。一度も起動していない（コンテナが無い）ラボは
+// DELETE /labs/{name} の対象にならないため、保存済みトポロジのファイルを直接消す
+export function deleteLabFile(labName: string, path: string) {
+  return request<{ success: boolean }>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/topology/file?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ---- 自動保存＋差分反映（api-contract.md 2.7、2026-10-13実機確認） ----
+
+// トポロジYAMLを保存する。未起動の新規ラボ名にも書ける（ラボディレクトリが作られる）
+export function putLabTopologyYaml(labName: string, yamlText: string) {
+  return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain' },
+    body: yamlText,
+  })
+}
+
+export interface ApplyResponse {
+  dryRun: boolean
+  deployedLab: boolean
+  labName: string
+  addedNodes: string[] | null
+  deletedNodes: string[] | null
+  recreatedNodes: string[] | null
+  startedNodes: string[] | null
+  restartedNodes: string[] | null
+  addedLinks: string[] | null
+  deletedEndpoints: string[] | null
+}
+
+// 保存済みトポロジをラボに反映する。動いていなければdeploy（停止中なら起動）、
+// 動いていれば差分だけ反映し、既存ノードは作り直さない
+export function applyLab(labName: string) {
+  return request<ApplyResponse>(`/api/v1/labs/${encodeURIComponent(labName)}/apply`, { method: 'POST' })
+}
+
+// 保存済みラボ（未起動のものも含む）の一覧。`deploymentState`は常に"undeployed"で、
+// 実際に動いているかはGET /api/v1/labs と突き合わせる（2026-10-14 Swaggerで確認）
+export interface TopologyFileEntry {
+  labName: string
+  yamlFileName: string
+  annotationsFileName: string
+  hasAnnotations: boolean
+}
+
+export function getLabTopologyFiles() {
+  return request<TopologyFileEntry[]>('/api/v1/labs/topology/files')
+}
+
 // ラボ全体のstart/stop/restart（api-contract.md 2.4）。ノード個別のstart/stopとは別エンドポイント。
 function labAction(labName: string, action: 'start' | 'stop' | 'restart') {
   return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}/${action}`, {

@@ -26,14 +26,6 @@ async function postToHelper(path: string, body: Record<string, unknown>): Promis
   }
 }
 
-// deployより前に呼ぶ。ブリッジが既に存在していてもエラーにならない（--may-exist）ので、
-// 再deploy時に毎回呼んでも安全
-
-
-// deployより前に呼ぶ。ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、
-// 再deployすると同じ名前になり、前回のOVS側インターフェースが残っているとcontainerlabが
-// 「already exists」で失敗する（2026-10-06実機確認）。存在しなければ何もしない
-
 // ルーターのFRR設定（daemons/frr.conf/vtysh.conf）をdeployより前に用意する（2026-10-07追加）。
 // 「ルーターはCLIで設定しないと意味がない」指摘対応：元々はGUIがexec経由で直接
 // `ip addr add`していたが、deployのたびに再投入が必要だった。この仕組みでは、
