@@ -22,7 +22,7 @@ import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
-import { buildSwitchSyncCommand, type SwitchPort, type VlanConfig } from '../utils/switchConfig'
+import { buildSwitchSyncCommand, isUserVlanId, MAX_USER_VLAN, type SwitchPort, type VlanConfig } from '../utils/switchConfig'
 import { ensureFrrConfig } from '../api/ovsHelperClient'
 import { startPacketCapture } from '../api/captureClient'
 import type { CaptureTarget } from '../api/client'
@@ -103,10 +103,10 @@ type VlanMode = 'none' | 'access' | 'trunk-all' | 'trunk-list'
 // VLAN入力欄の文字列をVlanConfigに変換する。modeが'none'なら未設定として扱う
 function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; error?: string } {
   if (mode === 'none') return {}
-  const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
+  const isValidVlanId = isUserVlanId
   if (mode === 'access') {
     const n = Number(value)
-    if (!isValidVlanId(n)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
+    if (!isValidVlanId(n)) return { error: `VLAN IDは1〜${MAX_USER_VLAN}の整数で指定してください` }
     return { config: { mode: 'access', vlan: n } }
   }
   if (mode === 'trunk-all') return { config: { mode: 'trunk', vlans: 'all' } }
@@ -116,7 +116,7 @@ function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; e
     .filter(Boolean)
     .map(Number)
   if (vlans.length === 0 || vlans.some((n) => !isValidVlanId(n))) {
-    return { error: 'VLAN IDはカンマ区切りで1〜4094の整数を指定してください（例: 10,20,30）' }
+    return { error: `VLAN IDはカンマ区切りで1〜${MAX_USER_VLAN}の整数を指定してください（例: 10,20,30）` }
   }
   return { config: { mode: 'trunk', vlans } }
 }
@@ -150,12 +150,12 @@ function parseIpv4Cidr(value: string): { address?: string; error?: string } {
 // 同じタイミングでアドレスも設定してしまう方がシンプルで誤解が無いという判断）
 function parseSubInterfaceRows(rows: { vlan: string; address: string }[]): { configs?: SubInterfaceConfig[]; error?: string } {
   if (rows.length === 0) return {}
-  const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
+  const isValidVlanId = isUserVlanId
   const configs: SubInterfaceConfig[] = []
   const seenVlans = new Set<number>()
   for (const row of rows) {
     const vlan = Number(row.vlan)
-    if (!isValidVlanId(vlan)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
+    if (!isValidVlanId(vlan)) return { error: `VLAN IDは1〜${MAX_USER_VLAN}の整数で指定してください` }
     if (seenVlans.has(vlan)) return { error: `VLAN ${vlan} が重複しています` }
     seenVlans.add(vlan)
     const { address, error } = parseIpv4Cidr(row.address)

@@ -12,6 +12,10 @@ bridge vlan add dev eth2 vid 10 pvid untagged     # アクセスポート（VLAN
 bridge vlan add dev eth1 vid 10; bridge vlan add dev eth1 vid 20   # トランク（10,20をtagged）
 ```
 
+VLAN未設定／トランク（全VLAN）のポートは、VLAN1〜4093をタグ付きで通し、タグなしは内部用のVLAN4094
+（ネイティブ）として扱う。タグなしをVLAN1にするとルーターのVLAN1サブインターフェースに届かないため
+（2026-10-14修正、詳細は`frontend/src/utils/switchConfig.ts`）。GUIで指定できるVLAN IDは1〜4093。
+
 ## ビルド
 
 ```sh
