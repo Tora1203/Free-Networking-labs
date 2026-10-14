@@ -8,7 +8,11 @@ import { ApiError, createTerminalSession, getAuthToken } from '../api/client'
 // Authorizationヘッダーでしか認証できないが、ブラウザのWebSocket APIはヘッダーを設定できない
 // （2026-09-24 実機確認・ソースコード確認済み、docs/direction.md参照）。
 // そのため backend/console-proxy/ の中継プロキシを経由して接続する。
-const PROXY_URL = import.meta.env.VITE_CONSOLE_PROXY_URL ?? 'ws://localhost:8082'
+// 開発時は.envで直接指定。nginx配下の本番ビルドでは未指定（空）にして、同一オリジンの
+// `wss://<host>/console`（nginxがconsole-proxyへ中継）を使う（backend/nginx/参照）
+const PROXY_URL =
+  import.meta.env.VITE_CONSOLE_PROXY_URL ||
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
 
 // autoCommandを流し込むまでの待機時間。シェルの'ready'直後はまだプロンプトが出ていないことがあり、
 // 早すぎるとvtysh側のターミナル問い合わせ（カーソル位置応答など）の断片が画面に

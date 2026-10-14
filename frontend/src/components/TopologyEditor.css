@@ -79,6 +79,49 @@
   color: var(--warn);
 }
 
+/* ラボの実行状態（起動中/停止中/未起動、2026-10-14） */
+.topology-editor__run-state {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
+/* ノードの状態ランプと同じ色（TopologyNode.css）：緑＝起動中、灰＝停止中、黄＝処理中 */
+.topology-editor__run-state--running {
+  color: #fff;
+  background: #1f9d55;
+  border-color: #1f9d55;
+}
+
+.topology-editor__run-state--stopped {
+  color: #fff;
+  background: #8a8f98;
+  border-color: #8a8f98;
+}
+
+.topology-editor__run-state--busy {
+  color: #1f1300;
+  background: #e3a008;
+  border-color: #e3a008;
+}
+
+.topology-editor__context-menu-status {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  background: var(--panel-bg, #1f2430);
+  padding: 6px 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 50;
+}
+
 .topology-editor__canvas {
   flex: 1;
   min-width: 0;
@@ -189,6 +232,16 @@
   color: var(--ink);
 }
 
+/* router on a stick：VLANサブインターフェース1行分（VLAN ID / 削除ボタン） */
+.topology-editor__modal-subif-row {
+  display: flex;
+  gap: 4px;
+}
+
+.topology-editor__modal-subif-row input:first-child {
+  width: 64px;
+}
+
 .topology-editor__modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -214,4 +267,41 @@
 .topology-editor__modal-actions button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 元に戻す／やり直すで何が変わったかの表示（2026-10-14） */
+.topology-editor__history-notice {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 14px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  cursor: pointer;
+  animation: topology-editor-notice-in 0.15s ease-out;
+}
+
+.topology-editor__history-notice-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.topology-editor__history-notice ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@keyframes topology-editor-notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
 }

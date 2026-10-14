@@ -28,6 +28,8 @@
   `/etc/clab-api-server/clab-api-server.env` に設定済み（同一マシン・LAN上の別マシンどちらからの
   アクセスも許可済み）。実機確認済み（該当originからのpreflightが`204`、`Authorization`ヘッダーも許可）。
   開発サーバーのポート/ホストを変える場合はこの設定も追記が必要
+  （2026-10-10：ホスト名`fnl` / `fnl.sotsuken.net`でのアクセス用に`http://fnl:5173`・`http://fnl.sotsuken.net:5173`の追加が必要。ovs-helper側は追加済み、
+  clab-api-server側は要sudoのため手動追記。vite側は`vite.config.ts`の`allowedHosts`で許可済み）
 - **⚠️ 別マシン/新しいブラウザから初めてアクセスする時の注意（2026-09-28確認）**：
   自己署名TLSのため、フロントエンドの`fetch()`はブラウザが証明書を一度も信頼していないと
   黙って失敗する（ページ自体は開けるのに、ログインボタンを押しても無反応/エラーになる、という
@@ -234,3 +236,39 @@ FE のパレット3種と containerlab kind の対応:
   | 403 | 非管理者が管理者専用APIを叩いた | `Superuser privileges required for this operation` |
   | 404 | 他人のラボ/存在しないラボを指定 | `lab '<name>' not found or not owned by user` |
   | 200 | 正常時のdestroy等 | `{"message": "..."}`（エラーとは別形状） |
+
+## 2.7 自動保存・差分反映（2026-10-13 kawase3 実機確認、clab-api-server v0.6.0 / 内蔵containerlab 0.78）
+
+- `PUT /api/v1/labs/{labName}/topology/yaml`：ボディは`text/plain`のトポロジYAML。**未deployの新規ラボ名にも書ける**
+  （200 `{"success":true}`、ラボディレクトリが作られる）。deploy不要の「保存」に使える。
+- `PUT /api/v1/labs/{labName}/topology/annotations`：未deployのラボにも書ける（200）。
+- `POST /api/v1/labs/{labName}/apply`：保存済みトポロジをラボに反映する。
+  - ラボが動いていなければdeployする（`"deployedLab":true`）。
+  - 動いていれば**差分だけ反映**し、既存ノードは作り直さない（コンテナIDも中の状態も保持を確認）。
+    ノード追加・削除、リンク追加・削除、スイッチコンテナ（`fnl/l2switch:1`）の追加すべて確認。
+  - `?dryRun=true`で反映せずに計画だけ返す。レスポンス例：
+    ```json
+    {"dryRun":false,"deployedLab":false,"labName":"zz-api-apply","addedNodes":["sw"],"deletedNodes":[],
+     "recreatedNodes":[],"startedNodes":[],"addedLinks":["n1:eth1 -- sw:eth1","n2:eth1 -- sw:eth2"],
+     "deletedEndpoints":[],"restartedNodes":[],"nodeChangeReasons":{}}
+    ```
+- `GET /api/v1/labs/topology/files`：保存済みラボ（未deploy含む）の一覧。各要素は
+  `{"labName","yamlFileName","annotationsFileName","hasAnnotations","deploymentState"}`。
+  `GET /api/v1/labs`は動いているラボ（コンテナがあるもの）しか返さないので、ホーム一覧はこちらと組み合わせる。
+  `deploymentState`は**常に`"undeployed"`**（Swaggerの説明：実行状態はイベントストリームから得る想定）。
+  動いているかどうかは`GET /api/v1/labs`と突き合わせて判定する（2026-10-14確認）。
+
+### 2.7.1 ライフサイクル（2026-10-14 kawase3 実機確認）
+
+- `POST /api/v1/labs/{labName}/nodes/{nodeName}/stop|start`：`nodeName`は**短いノード名**（`pc-2`）で通る
+  （コンテナのフルネームでも通る）。200 `{"message":"Node 'pc-2' stopped successfully."}`。
+  リンクは保たれる（seamless dataplane）が、**コンテナ内の設定（ブリッジ・アドレス・VLANサブIF）は消える**ので
+  起動後に入れ直す必要がある。
+- `POST /api/v1/labs/{labName}/stop`：全ノードが`exited`になる。`GET /api/v1/labs`には`state:"exited"`で残る。
+- 停止中のラボに`POST /apply`すると全ノードを起動する（`"startedNodes":[...]`、`"deployedLab":false`）。
+- `DELETE /api/v1/labs/{labName}?cleanup=true&purgeLabDir=true`：コンテナ破棄＋ラボディレクトリごと削除
+  （保存済みトポロジ・frr-configも消え、`topology/files`からも消える）。**一度も起動していないラボは404**
+  （`lab 'x' not found`）。その場合は`DELETE /api/v1/labs/{labName}/topology/file?path=<file>`で
+  YAMLとannotationsを消す（空のラボディレクトリは残るが一覧には出ない）。
+- 注意：`clab_admins`所属（superuser）のユーザーは`GET /api/v1/labs`で他ユーザーのラボも見える（labuserで`aaa`=labuser2のラボが出た）。
+

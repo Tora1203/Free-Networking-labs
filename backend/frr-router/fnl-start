@@ -1,0 +1,4 @@
+#!/bin/sh
+# エージェントを裏で動かしてから、FRR公式イメージ本来の起動処理に入る（PID1はtini）
+/usr/local/bin/fnl-subif-agent &
+exec /usr/lib/frr/docker-start

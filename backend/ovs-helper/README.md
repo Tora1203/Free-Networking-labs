@@ -35,6 +35,24 @@ JWTの署名検証はしません（`clab-api-server`の秘密鍵を共有して
 このサーバーでは`labuser`に対して設定済み（`docs/direction.md`参照：
 `/etc/default/openvswitch-switch`に`--ovs-user=root:clab_admins`等）。
 
+## 前提：FRR設定用ラッパーのsudoers設定（初回のみ）
+
+`POST /frr-config`は、ラボのディレクトリ（ユーザーごとに`drwxr-x---`で分離）に書き込むため、
+`labuser`権限のovs-helperからは他ユーザーのラボに作れない（2026-10-13実機確認：
+`labuser2`のdeployが`EACCES: permission denied, mkdir .../frr-config/router-1`で失敗）。
+そこで「そのユーザーのラボ配下に`frr-config`を作り所有者を本人にする」だけを行うラッパー
+（`frr-config-init.sh`）をsudoersで限定許可する。入力（ユーザー名/ラボ名/ルーター名）は形式を検証し、
+シンボリックリンクは拒否、既存ファイルは上書きしない。
+
+```sh
+sudo cp backend/ovs-helper/frr-config-init.sh /usr/local/sbin/ovs-helper-frr-config-init
+sudo chown root:clab_admins /usr/local/sbin/ovs-helper-frr-config-init
+sudo chmod 750 /usr/local/sbin/ovs-helper-frr-config-init
+echo 'labuser ALL=(root) NOPASSWD: /usr/local/sbin/ovs-helper-frr-config-init' | sudo tee /etc/sudoers.d/ovs-helper-frr-config-init
+sudo chmod 440 /etc/sudoers.d/ovs-helper-frr-config-init
+sudo visudo -c
+```
+
 ## 前提：veth削除用ラッパーのsudoers設定（初回のみ）
 
 `POST /port/reset`は再deploy時のポート名衝突を防ぐため、OVSから切り離した後のvethデバイス
@@ -98,6 +116,48 @@ sudo visudo -c
 
 成功時は`200 {"message": "..."}`、認可エラーは`403`、入力不正は`400`、
 `ovs-vsctl`実行失敗は`500`で`{"error": "..."}`を返します。
+
+### `POST /switch-config`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "labName": "lab-xxxxxxxx", "switchName": "switch-1" }
+```
+
+L2スイッチ（`backend/l2switch/`）の`/etc/fnl-switch`にbind mountする空のディレクトリ
+`$CLAB_LABS_ROOT/<username>/<labName>/switch-config/<switchName>/`をdeployより前に用意する（2026-10-14追加）。
+swcliの`write memory`（`startup.json`）がホストに残り、ラボを作り直しても消えなくなる。
+既にあれば何もしない。作成は`/frr-config`と同じラッパー（`frr-config-init.sh`の`switch`モード）で行う。
+ラッパーを更新したら、下のセットアップの`sudo cp`〜`chmod 750`をやり直すこと（sudoersはそのままでよい）。
+
+### `POST /frr-config`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "labName": "lab-xxxxxxxx", "routerName": "router-1" }
+```
+
+ルーターのFRR設定（`daemons`/`frr.conf`/`vtysh.conf`）をdeployより前に用意するための
+エンドポイント（2026-10-07追加）。`$CLAB_LABS_ROOT/<username>/<labName>/frr-config/<routerName>/`
+に3ファイルを作成します。**既に存在するファイルは上書きしません**
+（学生がvtyshで`write memory`した設定を消さないため）。
+
+- なぜ必要か：ルーターのIPアドレス設定等は「GUIで一方的に投入する」のではなく、
+  学生がvtyshのCLIで直接設定し、それがdeployを越えて残るようにしたい
+  （「ルーターはCLIで設定しないと意味がない」指摘対応）。containerlabはbind mount先の
+  ファイルが事前に存在しないとdeploy自体を拒否するため（実機確認済み：
+  `Failed to verify bind path: ... no such file or directory`）、最低限の初期ファイルを
+  ここで用意する必要がある
+- `username`はJWTのペイロードから読むだけで署名検証はしない（ファイルパスの構築にしか
+  使わないため。認可自体は`verifyTokenOnly`がclab-api-server自身に問い合わせて行っており、
+  偽装トークンならそこで401になる）
+- 実機確認済み：`write memory`で保存した設定が、コンテナを完全に破棄・再作成する
+  redeployを越えて残ることを確認した（一時テストラボでの検証）
+- `labName`/`routerName`は英数字・ハイフン・アンダースコアのみ（`SAFE_PATH_SEGMENT_PATTERN`）。
+  パストラバーサル対策
+
+環境変数`CLAB_LABS_ROOT`（デフォルト`/var/lib/containerlab/labs`）でラボのルートディレクトリを
+指定します。
 
 ## 起動方法
 

@@ -113,7 +113,7 @@ export function getLabs() {
 export interface TopologyContent {
   name: string
   topology: {
-    nodes: Record<string, { kind: string; image?: string; privileged?: boolean; 'cap-add'?: string[] }>
+    nodes: Record<string, { kind: string; image?: string; privileged?: boolean; 'cap-add'?: string[]; binds?: string[] }>
     links: { endpoints: [string, string] }[]
   }
 }
@@ -152,6 +152,66 @@ export function destroyLab(labName: string) {
   return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}?cleanup=true`, {
     method: 'DELETE',
   })
+}
+
+// ラボを完全に削除する（コンテナの破棄＋ラボディレクトリごと削除、2026-10-14）。
+// 自動保存になってからは、destroyだけだと保存済みトポロジが残って一覧に「停止中」として出続けるため
+export function deleteLab(labName: string) {
+  return request<{ message: string }>(`/api/v1/labs/${encodeURIComponent(labName)}?cleanup=true&purgeLabDir=true`, {
+    method: 'DELETE',
+  })
+}
+
+// ラボディレクトリ内のファイルを削除する。一度も起動していない（コンテナが無い）ラボは
+// DELETE /labs/{name} の対象にならないため、保存済みトポロジのファイルを直接消す
+export function deleteLabFile(labName: string, path: string) {
+  return request<{ success: boolean }>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/topology/file?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ---- 自動保存＋差分反映（api-contract.md 2.7、2026-10-13実機確認） ----
+
+// トポロジYAMLを保存する。未起動の新規ラボ名にも書ける（ラボディレクトリが作られる）
+export function putLabTopologyYaml(labName: string, yamlText: string) {
+  return requestText(`/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain' },
+    body: yamlText,
+  })
+}
+
+export interface ApplyResponse {
+  dryRun: boolean
+  deployedLab: boolean
+  labName: string
+  addedNodes: string[] | null
+  deletedNodes: string[] | null
+  recreatedNodes: string[] | null
+  startedNodes: string[] | null
+  restartedNodes: string[] | null
+  addedLinks: string[] | null
+  deletedEndpoints: string[] | null
+}
+
+// 保存済みトポロジをラボに反映する。動いていなければdeploy（停止中なら起動）、
+// 動いていれば差分だけ反映し、既存ノードは作り直さない
+export function applyLab(labName: string) {
+  return request<ApplyResponse>(`/api/v1/labs/${encodeURIComponent(labName)}/apply`, { method: 'POST' })
+}
+
+// 保存済みラボ（未起動のものも含む）の一覧。`deploymentState`は常に"undeployed"で、
+// 実際に動いているかはGET /api/v1/labs と突き合わせる（2026-10-14 Swaggerで確認）
+export interface TopologyFileEntry {
+  labName: string
+  yamlFileName: string
+  annotationsFileName: string
+  hasAnnotations: boolean
+}
+
+export function getLabTopologyFiles() {
+  return request<TopologyFileEntry[]>('/api/v1/labs/topology/files')
 }
 
 // ラボ全体のstart/stop/restart（api-contract.md 2.4）。ノード個別のstart/stopとは別エンドポイント。
@@ -204,7 +264,7 @@ export function wipeNode(topologyContent: TopologyContent, nodeName: string) {
 }
 
 // コンテナ内でコマンドを実行する（api-contract.md 2.4）。PC/ルーターの固定IPアドレス設定に使う
-// （L2スイッチはコンテナを持たないためこの経路では届かず、backend/ovs-helper/を使う）。
+// （L2スイッチも2026-10-13からコンテナになったので、VLAN設定はこの経路で投入する）。
 // nodeFilterは短いノード名ではなく**コンテナのフルネーム**が必要（2026-10-07実機確認：
 // 短い名前だと`filter did not match any containers`で失敗した。execはdeploy済みコンテナを
 // 対象にするため、terminal-sessions（ConsoleSession.tsx）と同じ`clab-<labName>-<nodeName>`が
@@ -223,5 +283,50 @@ export function execInLab(labName: string, nodeName: string, command: string) {
   return request<ExecResponse>(
     `/api/v1/labs/${encodeURIComponent(labName)}/exec?nodeFilter=${encodeURIComponent(containerName)}`,
     { method: 'POST', body: JSON.stringify({ command }) },
+  )
+}
+
+// パケットキャプチャ（WiresharkのnoVNCセッション）関連（api-contract.md参照、2026-10-08追加）。
+// `containerName`はcapture_handlers.goのresolveCaptureContainer()がノード名の曖昧一致も
+// 受け付けるため、execInLab()と違って短いノード名のままで通る想定（短い名前だと
+// NodeNameとの一致でヒットする実装になっている、ソースコード確認済み）
+export interface CaptureTarget {
+  containerName: string
+  interfaceName: string
+}
+export interface CaptureWiresharkVncSession {
+  sessionId: string
+  labName: string
+  containerName: string
+  interfaceNames: string[]
+  vncPath: string
+  showVolumeTip: boolean
+  createdAt: string
+  expiresAt: string
+}
+export interface CaptureWiresharkVncCreateResponse {
+  sessions: CaptureWiresharkVncSession[]
+}
+export interface CaptureWiresharkVncReadyResponse {
+  ready: boolean
+  url: string
+}
+
+export function createCaptureSessions(labName: string, targets: CaptureTarget[]) {
+  return request<CaptureWiresharkVncCreateResponse>(
+    `/api/v1/labs/${encodeURIComponent(labName)}/capture/wireshark-vnc-sessions`,
+    { method: 'POST', body: JSON.stringify({ targets }) },
+  )
+}
+
+export function deleteCaptureSession(sessionId: string) {
+  return request<unknown>(`/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function getCaptureSessionReady(sessionId: string) {
+  return request<CaptureWiresharkVncReadyResponse>(
+    `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}/ready`,
   )
 }

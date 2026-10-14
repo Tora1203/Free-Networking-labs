@@ -47,15 +47,36 @@
   border: none;
   background: transparent;
   color: inherit;
-  opacity: 0.6;
+  opacity: 0.75;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 700;
   line-height: 1;
-  padding: 0 2px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  flex: none;
 }
 
 .console-tab__close:hover {
   opacity: 1;
+  background: var(--border);
+}
+
+.console-tabs__close-all {
+  flex: none;
+  align-self: center;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
 }
 
 .console-manager__body {
@@ -81,6 +102,20 @@
   align-items: center;
   justify-content: center;
   padding: 40px;
+  position: relative;
+}
+
+.console-pane__panel-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 .console-pane__hint {

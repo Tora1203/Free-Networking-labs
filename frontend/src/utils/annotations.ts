@@ -14,6 +14,10 @@ interface PortAnnotation {
   iface: string
   vlan?: unknown
   address?: string
+  // デフォルトゲートウェイ（2026-10-07追加）
+  gateway?: string
+  // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
+  subInterfaces?: unknown
 }
 
 interface AnnotationsFile {
@@ -40,12 +44,17 @@ interface AnnotationsFile {
   // （古いブリッジ/vethがホストに残骸として残り続け、VLAN設定も失われる）。
   // ここに元のnode.idを保存しておき、再読み込み時に戻す
   switchOriginalIds?: Record<string, string>
+  // ラボの表示名（2026-10-14追加）。APIで使うラボ名（ディレクトリ名・コンテナ名）は最初の保存で
+  // 固定されるため、CMLのように表示名だけを後から変えられるようにここに持つ。以前はブラウザの
+  // localStorageだけに持っていて、別のPCから開くと元の名前に戻っていた（utils/labName.ts）
+  title?: string
 }
 
 export function serializeAnnotations(
   nodes: Node[],
   portAnnotations?: Record<string, PortAnnotation>,
   switchOriginalIds?: Record<string, string>,
+  title?: string,
 ): string {
   const positions: AnnotationsFile['positions'] = {}
   const extraNodes: AnnotationsFile['extraNodes'] = []
@@ -67,7 +76,7 @@ export function serializeAnnotations(
     }
   }
 
-  const file: AnnotationsFile = { version: 2, positions, extraNodes, portAnnotations, switchOriginalIds }
+  const file: AnnotationsFile = { version: 2, positions, extraNodes, portAnnotations, switchOriginalIds, title }
   return JSON.stringify(file)
 }
 
@@ -83,6 +92,13 @@ function parseAnnotationsFile(annotationsText: string): AnnotationsFile | null {
   } catch {
     return null
   }
+}
+
+// 保存済みのラボの表示名（無ければundefined）
+export function readLabTitle(annotationsText: string | null): string | undefined {
+  if (!annotationsText) return undefined
+  const title = parseAnnotationsFile(annotationsText)?.title
+  return typeof title === 'string' && title.trim() ? title : undefined
 }
 
 export function applyAnnotations(nodes: Node[], annotationsText: string): Node[] {
@@ -132,6 +148,10 @@ export function applyPortAnnotations(edges: Edge[], annotationsText: string): Ed
         targetVlan: targetAnnotation?.vlan,
         sourceAddress: sourceAnnotation?.address,
         targetAddress: targetAnnotation?.address,
+        sourceGateway: sourceAnnotation?.gateway,
+        targetGateway: targetAnnotation?.gateway,
+        sourceSubInterfaces: sourceAnnotation?.subInterfaces,
+        targetSubInterfaces: targetAnnotation?.subInterfaces,
       },
     }
   })

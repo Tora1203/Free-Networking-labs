@@ -1,0 +1,34 @@
+#!/bin/sh
+# vtyshの設定に「interface eth1.10」のようなVLANサブインターフェースが現れたら、
+# カーネルにVLANデバイス（eth1のVLAN10）を作る。FRRはVLANデバイスを自分で作れないが、
+# 存在しないインターフェースにも設定は入れられ、デバイスができた時点でアドレス等を適用する
+# （2026-10-14確認）。これで学生はCiscoと同じ感覚で
+#   int eth1.10
+#    ip add 10.10.0.1/24
+# と打つだけでサブインターフェースを使える（write memoryすれば再起動後も同じように作られる）。
+#
+# 設定から消えたサブインターフェース（no ip address 等で設定が空になり、running-configに
+# 出なくなったもの）はデバイスも削除する。VLAN IDは名前の「.」の後ろ（1〜4094）。
+while :; do
+  if conf=$(vtysh -c "show running-config" 2>/dev/null); then
+    want=$(printf '%s\n' "$conf" | sed -n 's/^interface \(eth[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
+    for name in $want; do
+      parent=${name%.*}
+      vid=${name#*.}
+      [ "$vid" -ge 1 ] 2>/dev/null && [ "$vid" -le 4094 ] || continue
+      [ -e "/sys/class/net/$parent" ] || continue
+      if [ ! -e "/sys/class/net/$name" ]; then
+        ip link add link "$parent" name "$name" type vlan id "$vid" && ip link set "$name" up
+      fi
+    done
+    for d in /sys/class/net/eth*.*; do
+      [ -e "$d" ] || continue
+      n=${d##*/}
+      case " $(echo $want) " in
+        *" $n "*) ;;
+        *) ip link del "$n" ;;
+      esac
+    done
+  fi
+  sleep 1
+done

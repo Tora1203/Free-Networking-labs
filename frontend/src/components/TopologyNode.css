@@ -76,3 +76,57 @@
 .topo-node__handle.valid {
   opacity: 1;
 }
+
+/* 起動状態のランプ（2026-10-14）。右上の丸：緑＝起動中、灰＝停止中、黄の点滅＝処理中、黄の枠＝反映待ち */
+.topo-node {
+  position: relative;
+}
+
+/* バッジ（幅56px、ノード中央）の右上に重ねる。停止中にバッジを薄くしてもランプは薄くしないよう兄弟要素にする */
+.topo-node__status {
+  position: absolute;
+  top: -6px;
+  left: calc(50% + 21px);
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  box-sizing: border-box;
+  background: var(--ink-faint);
+}
+
+.topo-node--status-running .topo-node__status {
+  background: #1f9d55;
+  box-shadow: 0 0 6px rgba(31, 157, 85, 0.7);
+}
+
+.topo-node--status-stopped .topo-node__status {
+  background: #8a8f98;
+}
+
+.topo-node--status-busy .topo-node__status {
+  background: #e3a008;
+  animation: topo-node-status-blink 0.8s ease-in-out infinite alternate;
+}
+
+.topo-node--status-pending .topo-node__status {
+  background: var(--surface);
+  border: 3px solid #e3a008;
+}
+
+/* 停止中のノードは薄くして、一目で止まっていると分かるようにする */
+.topo-node--status-stopped .topo-node__badge {
+  opacity: 0.45;
+  filter: grayscale(0.8);
+  border-style: dashed;
+}
+
+@keyframes topo-node-status-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
+}

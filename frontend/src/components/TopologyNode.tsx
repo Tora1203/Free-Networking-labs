@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { PaletteNodeKind } from '../types/lab'
 import './TopologyNode.css'
+import { NODE_RUN_STATUS_LABEL, useNodeRunStatus } from './nodeRuntimeContext'
 
 // ノード種別ごとの見た目（形・色・略称）。api-contract.md 3章の対応表と対応させている。
 const KIND_VISUAL: Record<PaletteNodeKind, { badge: string; className: string }> = {
@@ -29,12 +30,16 @@ export interface TopoNodeData {
   [key: string]: unknown
 }
 
-export default function TopologyNode({ data, selected }: NodeProps) {
+export default function TopologyNode({ id, data, selected }: NodeProps) {
   const nodeData = data as TopoNodeData
   const visual = KIND_VISUAL[nodeData.kind] ?? { badge: '?', className: '' }
+  const runStatus = useNodeRunStatus(id)
 
   return (
-    <div className={`topo-node ${visual.className} ${selected ? 'topo-node--selected' : ''}`}>
+    <div
+      className={`topo-node ${visual.className} ${selected ? 'topo-node--selected' : ''} topo-node--status-${runStatus}`}
+      title={NODE_RUN_STATUS_LABEL[runStatus] || undefined}
+    >
       {HANDLE_POSITIONS.map((h) => (
         <Handle
           key={h.id}
@@ -45,6 +50,7 @@ export default function TopologyNode({ data, selected }: NodeProps) {
         />
       ))}
       <div className="topo-node__badge">{visual.badge}</div>
+      {runStatus !== 'none' && <span className="topo-node__status" aria-label={NODE_RUN_STATUS_LABEL[runStatus]} />}
       <div className="topo-node__label">{nodeData.shortLabel}</div>
     </div>
   )

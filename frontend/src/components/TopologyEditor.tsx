@@ -22,21 +22,34 @@ import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
-import { toClabBridgeName, toClabPortName } from '../utils/clabNaming'
-import { applyVlanConfig, ensureBridge, resetPort, type VlanConfig } from '../api/ovsHelperClient'
+import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
-import { parseTopologyYaml } from '../utils/topologyFromYaml'
-import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities, serializeAnnotations } from '../utils/annotations'
+import { readLabTitle, serializeAnnotations } from '../utils/annotations'
+import {
+  buildNodeSyncCommands,
+  hasSwitchWithoutConfigBind,
+  buildTopologyContent,
+  hasContainer,
+  parseImportedTopology,
+  topologyToYaml,
+  type EdgeIfaceData,
+} from '../utils/labTopology'
+import { describeHistoryChange } from '../utils/historyDiff'
+import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
+import { errorMessage, freshNodesOf, prepareNodeConfigs, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
 import {
   ApiError,
-  deployLab,
-  execInLab,
+  applyLab,
+  destroyLab,
   getLabAnnotations,
+  getLabs,
+  getLabTopologyFiles,
   getLabTopologyYaml,
   putLabAnnotations,
-  type TopologyContent,
+  putLabTopologyYaml,
+  stopLab,
+  type CaptureTarget,
 } from '../api/client'
-import { useAuthStore } from '../store/authStore'
 import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
 import './TopologyEditor.css'
@@ -46,52 +59,6 @@ const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-s
 
 const nodeTypes = { topoNode: TopologyNode, labelNode: LabelNode, areaNode: AreaNode }
 const edgeTypes = { floating: FloatingEdge }
-
-// リンクの両端に割り当てるインターフェース名。エッジの `data` にノードごとの
-// 実際のインターフェース名を保持する（CMLのようにユーザーが接続時に選べるようにするため、
-// 配列の並び順から機械的に決めるのではなく、エッジ自身のデータとして持たせる）。
-interface EdgeIfaceData {
-  sourceIface: string
-  targetIface: string
-  // L2スイッチ側のポートにだけ意味がある（PC/ルーター側は常にundefined）。
-  // VLAN設定自体はcontainerlabのトポロジYAMLには無く、deploy後にbackend/ovs-helper/
-  // 経由でovs-vsctlを叩いて別途投入する（2026-10-06追加、docs/direction.md参照）
-  sourceVlan?: VlanConfig
-  targetVlan?: VlanConfig
-  // PC/ルーター側にだけ意味がある（L2スイッチ側は常にundefined。スイッチはL2なのでIPは持たない）。
-  // "10.0.0.1/24"形式のCIDR文字列。アドレス設定もトポロジYAMLには無く、deploy後に
-  // clab-api-serverのexec経由で`ip addr add`して別途投入する（2026-10-07追加、
-  // 「PCのアドレシングが面倒」指摘対応。docs/direction.md参照）
-  sourceAddress?: string
-  targetAddress?: string
-  [key: string]: unknown
-}
-
-// VLANモードの選択肢。トランクは「全VLAN許可」と「指定VLANのみ許可」を分ける
-// （2026-10-06指摘：最初はトランク＝常に指定リスト必須だったが、
-// OVSの「tag/trunksどちらも設定しない＝全VLAN許可のトランク」という挙動に合わせて選べるようにした）
-type VlanMode = 'none' | 'access' | 'trunk-all' | 'trunk-list'
-
-// VLAN入力欄の文字列をVlanConfigに変換する。modeが'none'なら未設定として扱う
-function parseVlanInput(mode: VlanMode, value: string): { config?: VlanConfig; error?: string } {
-  if (mode === 'none') return {}
-  const isValidVlanId = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4094
-  if (mode === 'access') {
-    const n = Number(value)
-    if (!isValidVlanId(n)) return { error: 'VLAN IDは1〜4094の整数で指定してください' }
-    return { config: { mode: 'access', vlan: n } }
-  }
-  if (mode === 'trunk-all') return { config: { mode: 'trunk', vlans: 'all' } }
-  const vlans = value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(Number)
-  if (vlans.length === 0 || vlans.some((n) => !isValidVlanId(n))) {
-    return { error: 'VLAN IDはカンマ区切りで1〜4094の整数を指定してください（例: 10,20,30）' }
-  }
-  return { config: { mode: 'trunk', vlans } }
-}
 
 // IPv4アドレス入力欄の文字列を検証する。空文字は「未設定」として扱う（PC/ルーター側は
 // 配線だけしてアドレスは後で、という使い方もできるようにするため必須にしない）
@@ -106,6 +73,23 @@ function parseIpv4Cidr(value: string): { address?: string; error?: string } {
     return { error: 'IPv4アドレスは「10.0.0.1/24」の形式で指定してください' }
   }
   return { address: trimmed }
+}
+
+
+// デフォルトゲートウェイ入力欄の検証。プレフィックス無しの単純なIPv4アドレスのみ
+// （2026-10-07追加。「ラボ内の宛先が自動的に外部に飛んでしまう」指摘対応：
+// containerlabはmgmt用のeth0に`default via <docker bridge gw>`を自動設定するため、
+// ラボ内で意図していない宛先向けの経路が無いと、そのままeth0経由で実際の外部ネットワークに
+// 出てしまうことが実機で確認された。デフォルトゲートウェイを明示設定できるようにし、
+// 併せてeth0の自動デフォルトルートはdeploy後に削除する）
+function parseIpv4Gateway(value: string): { gateway?: string; error?: string } {
+  const trimmed = value.trim()
+  if (trimmed === '') return {}
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(trimmed)
+  if (!m || m.slice(1, 5).map(Number).some((n) => n > 255)) {
+    return { error: 'ゲートウェイは「10.0.0.254」のようなIPv4アドレスで指定してください' }
+  }
+  return { gateway: trimmed }
 }
 
 function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
@@ -148,30 +132,21 @@ const IFACE_OPTIONS = Array.from({ length: 8 }, (_, i) => `eth${i + 1}`)
 // 生シェルのプロンプトが実質出てこないようにする（実機確認済み：exit直後にvtyshが
 // 再起動し、シェルコマンドはvtyshに「Unknown command」として拒否される）
 const ROUTER_CONSOLE_AUTO_COMMAND = 'while true; do vtysh; done'
+// L2スイッチも同じ仕組みでCisco風CLI（backend/l2switch/swcli.py）だけを使わせる（2026-10-14）
+const SWITCH_CONSOLE_AUTO_COMMAND = 'while true; do swcli; done'
 
-// containerlabの`linux` kindはデフォルトでDockerの`--privileged`相当（全capability付与・
-// AppArmor/seccomp無効）でコンテナを起動することが判明（2026-10-07実機確認：
-// `docker inspect`で`Privileged: true`、`CapEff`が全capability）。PC/ルーターのコンソールは
-// 単なるroot権限のシェルなので、このままだとコンソールから特権コンテナ由来のホスト侵害
-// （release_agent等のcgroup経由のコンテナエスケープ手法等）を試みられてしまう
-// （「PCでeth0を触れる」指摘から発覚した、より深刻な問題）。
-// `privileged: false` + 必要最小限の`cap-add`に絞ることで、host deviceへのアクセスや
-// AppArmor/seccomp無効化は解消される。実機検証の結果：
-// - PC（ip addr/link操作のみ）: NET_ADMINのみで十分（ping含め動作確認済み）
-// - ルーター（FRR）: zebra/ospfdがNET_ADMIN+NET_RAWだけでは
-//   `privs_init: initial cap_set_proc failed: Operation not permitted`で起動せず、
-//   SYS_ADMINも追加して初めて起動した（FRR自体が要求するcapability）。
-//   SYS_ADMIN自体は軽くはないが、`--privileged`全体（host device直接アクセス・
-//   AppArmor/seccomp無効化等）とは別物で、それらは引き続き防げる。
-//   OSPF隣接形成・loopback間pingまで実機確認済み
-const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privileged: false; capAdd: string[] }>> = {
-  pc: { privileged: false, capAdd: ['NET_ADMIN'] },
-  router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
+function consoleAutoCommand(kind: PaletteNodeKind | undefined): string | undefined {
+  if (kind === 'router') return ROUTER_CONSOLE_AUTO_COMMAND
+  if (kind === 'l2-switch') return SWITCH_CONSOLE_AUTO_COMMAND
+  return undefined
 }
 
-function usedInterfaces(nodeId: string, edges: Edge[]): Set<string> {
+// excludeEdgeIdは「このエッジ自身の既存のI/F割り当て」を使用中として数えないために使う
+// （既存接続を編集する時、自分自身のI/Fを「既に使用中」と誤検知してしまうのを防ぐ、2026-10-07追加）
+function usedInterfaces(nodeId: string, edges: Edge[], excludeEdgeId?: string): Set<string> {
   const used = new Set<string>()
   for (const e of edges) {
+    if (e.id === excludeEdgeId) continue
     const data = e.data as Partial<EdgeIfaceData> | undefined
     if (e.source === nodeId && data?.sourceIface) used.add(data.sourceIface)
     if (e.target === nodeId && data?.targetIface) used.add(data.targetIface)
@@ -184,135 +159,76 @@ function nextAvailableIface(nodeId: string, edges: Edge[]): string {
   return IFACE_OPTIONS.find((iface) => !used.has(iface)) ?? `eth${used.size + 1}`
 }
 
-// React Flowのノード/エッジから、POST /api/v1/labs に渡す topologyContent を組み立てる。
-// L2スイッチ(ovs-bridge kind)のノード名だけ、ホスト全体でのブリッジ名衝突を避けるため
-// toClabBridgeName() で短いハッシュ名に変換する（2026-09-24改訂、docs/direction.md参照）。
-interface VlanTask {
-  port: string
-  config: VlanConfig
+// 文字列をブラウザでファイルとしてダウンロードさせる（2026-10-08追加、YAML export機能）
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-interface AddressTask {
-  nodeName: string
-  iface: string
-  address: string
+const OLD_FORMAT_MESSAGE =
+  '古い形式のラボのため、編集は保存のみで反映されません。「作り直す」で今の形式にできます（write memoryしていないルーター設定と、スイッチの設定は消えます）'
+
+// 今のパレット定義と違う古い形式のノードか（ovs-bridge/CLI無しのスイッチ、エージェント無しのルーター）
+function needsUpgrade(node: Node): boolean {
+  if (node.type !== 'topoNode') return false
+  const data = node.data as Partial<TopoNodeData>
+  if (data.kind === 'l2-switch') return data.image !== PALETTE_NODE_CONFIGS['l2-switch'].image
+  if (data.kind === 'router') return data.image !== PALETTE_NODE_CONFIGS.router.image
+  return false
 }
 
-// デプロイ後、トポロジYAMLをGETして再構築する時に備えて、ハッシュ化された実名（L2スイッチの
-// ブリッジ名・ポート名）から、UI上で使っていた分かりやすい名前・VLAN・アドレス設定を
-// 引き戻すためのマップ。`${実際にYAMLに書かれるclabName}:${実際のポート名}`をキーにする
-// （endpointsの文字列そのものと同じ形なので、再読み込み時にそのまま突き合わせられる）。
-// containerlabのトポロジYAML自体にはこれらの情報を置けないため、annotations.tsの保存先に
-// 載せて一緒に永続化する（2026-10-07追加。再読み込み後にL2スイッチ接続のI/F名が
-// 文字化けのように見える・VLAN/アドレス設定が消える、の両方の修正）
-interface PortAnnotation {
-  iface: string
-  vlan?: VlanConfig
-  address?: string
+// 一部のノードだけ止めている時は「起動中（3/4）」のように数を添える
+function runningSummary(state: LabRunState): string {
+  const states = Object.values(state.nodeStates)
+  const running = states.filter((s) => s === 'running').length
+  return running < states.length ? `（${running}/${states.length}）` : ''
 }
 
-function buildTopologyContent(
-  nodes: Node[],
-  edges: Edge[],
-  username: string,
-  labName: string,
-): {
-  topologyContent: TopologyContent
-  vlanTasks: VlanTask[]
-  switchPorts: string[]
-  addressTasks: AddressTask[]
-  portAnnotations: Record<string, PortAnnotation>
-  switchOriginalIds: Record<string, string>
-} {
-  const clabNodeNames = new Map<string, string>()
-  const nodeKinds = new Map<string, PaletteNodeKind>()
-  const nodesMap: TopologyContent['topology']['nodes'] = {}
-  // L2スイッチのブリッジ名は node.id をハッシュ化して作る。再読み込み後にnode.idが元の値に
-  // 戻せていないと、ハッシュ済みの名前をさらにハッシュしてしまい、再deployのたびにブリッジ名・
-  // ポート名がズレていく（2026-10-07レビュー指摘）。ここでnode.id→ブリッジ名の対応を記録して
-  // annotationsに保存し、再読み込み時に元のnode.idへ戻せるようにする
-  const switchOriginalIds: Record<string, string> = {}
-
-  // ラベル（labelNode）はトポロジ上のメモに過ぎずcontainerlabのノードではないため除外する
-  const deviceNodes = nodes.filter((n) => n.type === 'topoNode')
-
-  for (const node of deviceNodes) {
-    const data = node.data as Partial<TopoNodeData>
-    if (!data.kind || !data.clabKind) {
-      throw new Error(`ノード「${node.id}」の種別情報が無く、deployできません（パレットから配置し直してください）`)
-    }
-    const clabName = data.kind === 'l2-switch' ? toClabBridgeName(username, labName, node.id) : node.id
-    clabNodeNames.set(node.id, clabName)
-    nodeKinds.set(node.id, data.kind)
-    const caps = CONTAINER_CAPABILITIES[data.kind]
-    nodesMap[clabName] = {
-      kind: data.clabKind,
-      ...(data.image ? { image: data.image } : {}),
-      ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
-    }
-    if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
-  }
-
-  const vlanTasks: VlanTask[] = []
-  const switchPorts: string[] = []
-  const addressTasks: AddressTask[] = []
-  const portAnnotations: Record<string, PortAnnotation> = {}
-
-  const links = edges.map((edge) => {
-    const sourceName = clabNodeNames.get(edge.source)
-    const targetName = clabNodeNames.get(edge.target)
-    const iface = edge.data as Partial<EdgeIfaceData> | undefined
-    if (!sourceName || !targetName || !iface?.sourceIface || !iface?.targetIface) {
-      throw new Error(`リンク「${edge.id}」のインターフェース情報が見つかりません`)
-    }
-
-    // L2スイッチ側のポート名は、ブリッジ名と同じ理由（ホスト全体でグローバルな名前空間）で
-    // ハッシュ化した実名を使う。UI上はeth1等の分かりやすい名前のまま見せる
-    // （2026-10-06発見、docs/direction.md参照）。VLAN設定も同じ実名を使って後段で投入する
-    const sourceIsSwitch = nodeKinds.get(edge.source) === 'l2-switch'
-    const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
-    const sourcePort = sourceIsSwitch ? toClabPortName(username, labName, edge.source, iface.sourceIface) : iface.sourceIface
-    const targetPort = targetIsSwitch ? toClabPortName(username, labName, edge.target, iface.targetIface) : iface.targetIface
-
-    if (sourceIsSwitch) switchPorts.push(sourcePort)
-    if (targetIsSwitch) switchPorts.push(targetPort)
-    // trunkの「全VLAN許可」はovs-helperに送る必要がない（resetPort後のポートは
-    // デフォルトで全VLAN許可のトランクになっているため、何もしなくてよい）
-    const isAllTrunk = (v?: VlanConfig) => v?.mode === 'trunk' && v.vlans === 'all'
-    if (iface.sourceVlan && !isAllTrunk(iface.sourceVlan)) vlanTasks.push({ port: sourcePort, config: iface.sourceVlan })
-    if (iface.targetVlan && !isAllTrunk(iface.targetVlan)) vlanTasks.push({ port: targetPort, config: iface.targetVlan })
-
-    // PC/ルーター側のIPv4アドレスは、L2スイッチと違ってコンテナを持つのでclab-api-serverの
-    // execで直接`ip addr add`できる（ovs-helperを経由しない。2026-10-07追加）
-    if (!sourceIsSwitch && iface.sourceAddress) {
-      addressTasks.push({ nodeName: sourceName, iface: iface.sourceIface, address: iface.sourceAddress })
-    }
-    if (!targetIsSwitch && iface.targetAddress) {
-      addressTasks.push({ nodeName: targetName, iface: iface.targetIface, address: iface.targetAddress })
-    }
-
-    portAnnotations[`${sourceName}:${sourcePort}`] = { iface: iface.sourceIface, vlan: iface.sourceVlan, address: iface.sourceAddress }
-    portAnnotations[`${targetName}:${targetPort}`] = { iface: iface.targetIface, vlan: iface.targetVlan, address: iface.targetAddress }
-
-    return { endpoints: [`${sourceName}:${sourcePort}`, `${targetName}:${targetPort}`] as [string, string] }
-  })
-
-  return {
-    topologyContent: { name: labName, topology: { nodes: nodesMap, links } },
-    vlanTasks,
-    switchPorts,
-    addressTasks,
-    portAnnotations,
-    switchOriginalIds,
-  }
+function runStateTitle(state: LabRunState): string {
+  const entries = Object.entries(state.nodeStates)
+  if (entries.length === 0) return 'まだ一度も起動していません'
+  return entries.map(([id, s]) => `${id}: ${s === 'running' ? '起動中' : '停止中'}`).join('\n')
 }
 
-type DeployStatus = { kind: 'idle' } | { kind: 'deploying' } | { kind: 'success'; message: string } | { kind: 'error'; message: string }
+// 元に戻すの履歴の上限
+const HISTORY_LIMIT = 100
+
+// 履歴に積む状態。選択中・ドラッグ中・サイズ計測の結果は見た目だけの情報なので外す
+// （keyで「意味のある変更か」を比べる）
+function takeSnapshot(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[]; key: string } {
+  const cleanNodes = nodes.map((n) => ({ ...n, selected: false, dragging: false }))
+  const cleanEdges = edges.map((e) => ({ ...e, selected: false }))
+  const key = JSON.stringify([
+    cleanNodes.map(({ measured: _measured, ...rest }) => rest),
+    cleanEdges,
+  ])
+  return { nodes: cleanNodes, edges: cleanEdges, key }
+}
+
+// ラボの実行状態（GET /api/v1/labs から判定）。none＝一度も起動していない（コンテナが無い）
+type LabRunState = { kind: 'unknown' | 'none' | 'stopped' | 'running'; nodeStates: Record<string, string> }
+// 自動保存・差分反映・起動/停止の状態表示
+type SyncStatus =
+  | { kind: 'idle' }
+  | { kind: 'busy'; message: string }
+  | { kind: 'ok'; message: string }
+  | { kind: 'error'; message: string; canRebuild?: boolean }
 type ContextMenu =
   | { x: number; y: number; kind: 'node'; nodeId: string }
   | { x: number; y: number; kind: 'edge'; edgeId: string }
   | null
-type PendingConnection = { source: string; target: string; sourceHandle: string | null; targetHandle: string | null } | null
+// editingEdgeIdが設定されている時は「新規接続」ではなく「既存接続の設定編集」モード
+// （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応：
+// 元々は新規接続時のポップアップにしかI/F・VLAN・アドレス・ゲートウェイの入力欄が無く、
+// 既存の接続を後から変更する手段が無かった）
+type PendingConnection =
+  | { source: string; target: string; sourceHandle: string | null; targetHandle: string | null; editingEdgeId?: string }
+  | null
 
 function TopologyEditorInner() {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -321,27 +237,29 @@ function TopologyEditorInner() {
   const [edges, setEdges] = useState<Edge[]>(initialEdges)
   // 新規作成モードなら最初からYYYYMMDDHHの名前を入れておく（既存ラボを開く時はuseEffectで上書きする）
   const [labName, setLabName] = useState(() => (useUiStore.getState().editorTarget.mode === 'new' ? defaultLabName() : ''))
-  const [deployStatus, setDeployStatus] = useState<DeployStatus>({ kind: 'idle' })
+  // サーバーに保存済みのラボ名（APIで使う安全な名前）。新規作成では最初の自動保存で決まり、以降は変えない
+  const [savedLabName, setSavedLabName] = useState<string | null>(null)
+  const [runState, setRunState] = useState<LabRunState>({ kind: 'unknown', nodeStates: {} })
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ kind: 'idle' })
+  const [labBusy, setLabBusy] = useState(false)
+  // 起動・停止の処理中のノード（'all'＝ラボ全体の起動/停止/作り直し中）。キャンバスのランプを点滅させる
+  const [busyNodes, setBusyNodes] = useState<'all' | string[]>([])
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection>(null)
+  // 接続ダイアログを開いている間はCtrl+Zで裏のトポロジを戻さない（キー処理から参照する）
+  const pendingConnectionRef = useRef<PendingConnection>(null)
+  pendingConnectionRef.current = pendingConnection
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
-  // L2スイッチ側のポートにだけ表示するVLAN設定の入力欄（2026-10-06追加）
-  const [pendingSourceVlanMode, setPendingSourceVlanMode] = useState<VlanMode>('none')
-  const [pendingSourceVlanValue, setPendingSourceVlanValue] = useState('')
-  const [pendingTargetVlanMode, setPendingTargetVlanMode] = useState<VlanMode>('none')
-  const [pendingTargetVlanValue, setPendingTargetVlanValue] = useState('')
   // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
   const [pendingSourceAddress, setPendingSourceAddress] = useState('')
   const [pendingTargetAddress, setPendingTargetAddress] = useState('')
-  // 直近にdeployできたラボ名と、その時点でコンソールを開けるノード（l2-switch以外の
-  // デバイスノード）のid集合。トポロジエディタからワンタッチでコンソールを開けるようにするため、
-  // deploy成功時にここへ記録しておく（deploy前のノードやdeploy後に追加したノードは無効化する）
-  const [deployedLab, setDeployedLab] = useState<{ labName: string; nodeIds: Set<string> } | null>(null)
+  // プレーンなアドレス設定の時だけ表示するデフォルトゲートウェイの入力欄（2026-10-07追加）
+  const [pendingSourceGateway, setPendingSourceGateway] = useState('')
+  const [pendingTargetGateway, setPendingTargetGateway] = useState('')
   // 既存ラボをエディタで開く時のYAML取得状態（ホームからの「エディタで開く」導線、2026-10-05追加）
   const [loadStatus, setLoadStatus] = useState<{ kind: 'idle' | 'loading' | 'error'; message?: string }>({ kind: 'idle' })
   const { screenToFlowPosition } = useReactFlow()
-  const username = useAuthStore((s) => s.username)
   const openConsole = useConsoleStore((s) => s.openConsole)
   const closeAllConsoles = useConsoleStore((s) => s.closeAllConsoles)
   const editorTarget = useUiStore((s) => s.editorTarget)
@@ -351,7 +269,495 @@ function TopologyEditorInner() {
   const consolePanelDocked = useUiStore((s) => s.consolePanelDocked)
   const setConsolePanelDocked = useUiStore((s) => s.setConsolePanelDocked)
 
-  // ホームの「エディタで開く」から来た場合、デプロイ済みのトポロジYAMLを取得してキャンバスに復元する。
+  // ---------------------------------------------------------------------------
+  // 自動保存＋差分反映（2026-10-14、CML風。deployボタンを廃止）
+  //
+  // 編集するたびに（1秒の間を置いて）トポロジYAMLとannotationsをサーバーに保存する。
+  // ラボが動いていれば、トポロジが変わった時はPOST /apply で差分だけ反映し（既存ノードは
+  // 作り直さないので、ルーターの設定もwrite memoryなしで残る）、続けて設定が変わったノード
+  // （＋新しく作られたノード）にだけノードごとの設定コマンドを流す（utils/labTopology.ts）。
+  // 保存・反映・起動・停止はすべてqueueRefで1本の列に並べ、同時に走らないようにする。
+  // ---------------------------------------------------------------------------
+  const latestRef = useRef({ nodes, edges, labName })
+  const savedNameRef = useRef<string | null>(null)
+  const runStateRef = useRef<LabRunState>(runState)
+  const lastSavedYaml = useRef<string | null>(null)
+  const lastSavedAnnotations = useRef<string | null>(null)
+  const lastAppliedYaml = useRef<string | null>(null)
+  // ノードごとに最後に投入できた設定コマンド（これと違うノードにだけ流し直す）
+  const lastSynced = useRef(new Map<string, string>())
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
+  const syncQueuedRef = useRef(false)
+  // 未保存の変更があるか（ホームに戻る・タブを閉じる時の確認用）
+  const dirtyRef = useRef(false)
+  // 古い形式のまま動いているラボは、作り直すまで保存だけして反映しない（反映するとルーターが
+  // 黙って作り直され、write memoryしていない設定が消えるため）
+  const applyBlockedRef = useRef(false)
+  // 開いたラボが古い形式だったか。停止中なら起動時に一度破棄して今の定義で作り直す（labRuntime.startSavedLab参照）
+  const oldFormatRef = useRef(false)
+  // 既存ラボを開く時は、読み込みが終わるまで自動保存しない（空のキャンバスで上書きしないため）
+  const loadedRef = useRef(editorTarget.mode === 'new')
+
+  const enqueue = useCallback((task: () => Promise<void>) => {
+    const next = queueRef.current.then(task).catch((e: unknown) => console.error(e))
+    queueRef.current = next
+    return next
+  }, [])
+
+  const updateRunState = useCallback((next: LabRunState) => {
+    runStateRef.current = next
+    setRunState(next)
+  }, [])
+
+  // ラボが動いているか・ノードごとの状態をGET /api/v1/labs から取り直す
+  const refreshRunState = useCallback(
+    async (name: string) => {
+      const raw = (await getLabs())[name] ?? []
+      const nodeStates: Record<string, string> = {}
+      for (const n of raw) nodeStates[n.nodeName] = n.state
+      const states = Object.values(nodeStates)
+      const next: LabRunState = {
+        kind: states.length === 0 ? 'none' : states.includes('running') ? 'running' : 'stopped',
+        nodeStates,
+      }
+      updateRunState(next)
+      return next
+    },
+    [updateRunState],
+  )
+
+  // 新規作成：最初の保存でラボ名を確定する。既存のラボを上書きしないよう、同名があれば保存しない
+  const claimLabName = useCallback(async (): Promise<string | null> => {
+    const displayName = latestRef.current.labName.trim()
+    if (!displayName) {
+      setSyncStatus({ kind: 'error', message: 'ラボ名を入力すると自動保存されます' })
+      return null
+    }
+    const safeName = toSafeLabName(displayName)
+    const [files, labs] = await Promise.all([getLabTopologyFiles(), getLabs()])
+    if (files.some((f) => f.labName === safeName) || safeName in labs) {
+      setSyncStatus({ kind: 'error', message: `「${displayName}」という名前のラボが既にあります。名前を変えると保存されます` })
+      return null
+    }
+    rememberLabDisplayName(safeName, displayName)
+    savedNameRef.current = safeName
+    setSavedLabName(safeName)
+    updateRunState({ kind: 'none', nodeStates: {} })
+    return safeName
+  }, [updateRunState])
+
+  const syncOnce = useCallback(async () => {
+    dirtyRef.current = false
+    const { nodes, edges } = latestRef.current
+    let name = savedNameRef.current
+    if (!name) {
+      // デバイスを1台も置いていない新規ラボはまだ保存しない（空のラボが一覧に溜まらないように）
+      if (!nodes.some((n) => n.type === 'topoNode')) return
+      name = await claimLabName()
+      if (!name) return
+    }
+    let built: ReturnType<typeof buildTopologyContent>
+    try {
+      built = buildTopologyContent(nodes, edges, name)
+    } catch (e) {
+      setSyncStatus({ kind: 'error', message: errorMessage(e, '保存できません') })
+      return
+    }
+    const yamlText = topologyToYaml(built.topologyContent)
+    // 表示名（ラボ名欄）。保存後も変えられ、annotationsに入るだけなのでラボの作り直しは起きない
+    const title = latestRef.current.labName.trim() || name
+    const annotationsText = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
+    try {
+      if (yamlText !== lastSavedYaml.current) {
+        setSyncStatus({ kind: 'busy', message: '保存中...' })
+        await putLabTopologyYaml(name, yamlText)
+        lastSavedYaml.current = yamlText
+      }
+      if (annotationsText !== lastSavedAnnotations.current) {
+        await putLabAnnotations(name, annotationsText)
+        lastSavedAnnotations.current = annotationsText
+        rememberLabDisplayName(name, title)
+      }
+      if (runStateRef.current.kind !== 'running') {
+        setSyncStatus({ kind: 'ok', message: '保存済み' })
+        return
+      }
+      if (applyBlockedRef.current) {
+        setSyncStatus({ kind: 'error', message: `保存済み（${OLD_FORMAT_MESSAGE}）`, canRebuild: true })
+        return
+      }
+
+      let fresh: string[] = []
+      if (yamlText !== lastAppliedYaml.current) {
+        setSyncStatus({ kind: 'busy', message: '動いているラボに反映中...' })
+        await prepareNodeConfigs(name, built)
+        const result = await applyLab(name)
+        lastAppliedYaml.current = yamlText
+        fresh = freshNodesOf(result)
+        for (const id of result.deletedNodes ?? []) lastSynced.current.delete(id)
+        await refreshRunState(name)
+      }
+      const commands = buildNodeSyncCommands(built)
+      const nodeStates = runStateRef.current.nodeStates
+      const targets = [...commands]
+        .filter(([id, command]) => nodeStates[id] === 'running' && (fresh.includes(id) || lastSynced.current.get(id) !== command))
+        .map(([id]) => id)
+      if (targets.length > 0) setSyncStatus({ kind: 'busy', message: '設定を反映中...' })
+      const { succeeded, failures } = await runNodeSyncs(name, commands, targets)
+      for (const [id, command] of succeeded) lastSynced.current.set(id, command)
+      setSyncStatus(
+        failures.length > 0
+          ? { kind: 'error', message: `保存済み（設定の反映に失敗: ${failures.join(' / ')}）` }
+          : { kind: 'ok', message: '保存・反映済み' },
+      )
+    } catch (e) {
+      setSyncStatus({
+        kind: 'error',
+        message: errorMessage(e, '保存に失敗しました'),
+        canRebuild: runStateRef.current.kind === 'running',
+      })
+    }
+  }, [claimLabName, refreshRunState])
+
+  // 編集のたびに1秒待って保存する（ドラッグ中など連続した変更は1回にまとめる）
+  useEffect(() => {
+    latestRef.current = { nodes, edges, labName }
+    if (!loadedRef.current) return
+    dirtyRef.current = true
+    const timer = setTimeout(() => {
+      if (syncQueuedRef.current) return
+      syncQueuedRef.current = true
+      void enqueue(async () => {
+        syncQueuedRef.current = false
+        await syncOnce()
+      })
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [nodes, edges, labName, enqueue, syncOnce])
+
+  // 未保存の変更がある・保存中のままタブを閉じようとしたら確認を出す
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (dirtyRef.current || syncQueuedRef.current) e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
+  const goHome = useCallback(() => {
+    // 間を置いている途中の変更も保存してから戻る
+    void enqueue(syncOnce).then(() => setView('home'))
+  }, [enqueue, syncOnce, setView])
+
+  // ---------------------------------------------------------------------------
+  // 元に戻す／やり直す（2026-10-14、テスターの要望「Ctrl+Zで1つ戻したい」）
+  //
+  // ノード・接続の状態のスナップショットを履歴に積む。ドラッグ等の連続した変更は0.3秒の間を置いて
+  // 1件にまとめる。選択状態などの見た目だけの変化は履歴にしない。戻した結果も通常の編集と同じく
+  // 自動保存され、ラボが動いていれば反映される（削除したノードを戻すと新しく作られる）。
+  // ---------------------------------------------------------------------------
+  type Snapshot = { nodes: Node[]; edges: Edge[]; key: string }
+  const historyRef = useRef<{ past: Snapshot[]; future: Snapshot[]; current: Snapshot | null }>({
+    past: [],
+    future: [],
+    current: editorTarget.mode === 'new' ? takeSnapshot(initialNodes, initialEdges) : null,
+  })
+  // ボタンの有効/無効と、押すと何が起きるか（ツールチップ）の表示用（履歴そのものはhistoryRefにある）
+  const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0, undoHint: '', redoHint: '' })
+  const syncHistoryCounts = useCallback(() => {
+    const h = historyRef.current
+    const hint = (target: Snapshot | undefined) => {
+      if (!target || !h.current) return ''
+      const { lines } = describeHistoryChange(h.current, target)
+      return lines.slice(0, 3).join('\n') + (lines.length > 3 ? `\nほか${lines.length - 3}件` : '')
+    }
+    setHistoryCounts({
+      past: h.past.length,
+      future: h.future.length,
+      undoHint: hint(h.past[h.past.length - 1]),
+      redoHint: hint(h.future[h.future.length - 1]),
+    })
+  }, [])
+  // 戻した／やり直した直後に、何がどう変わったかをキャンバス上部に数秒出す（2026-10-14）
+  const [historyNotice, setHistoryNotice] = useState<{ action: 'undo' | 'redo'; lines: string[]; seq: number } | null>(null)
+  useEffect(() => {
+    if (!historyNotice) return
+    const timer = setTimeout(() => setHistoryNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [historyNotice])
+
+  // 今の状態が履歴の最新と違えば積む（undo直前に、まだ積まれていない直近の変更を拾うためにも使う）
+  const commitHistory = useCallback((nodes: Node[], edges: Edge[]) => {
+    const h = historyRef.current
+    if (!h.current) return
+    const snap = takeSnapshot(nodes, edges)
+    if (snap.key === h.current.key) return
+    h.past.push(h.current)
+    if (h.past.length > HISTORY_LIMIT) h.past.shift()
+    h.future = []
+    h.current = snap
+    syncHistoryCounts()
+  }, [syncHistoryCounts])
+
+  useEffect(() => {
+    const timer = setTimeout(() => commitHistory(nodes, edges), 300)
+    return () => clearTimeout(timer)
+  }, [nodes, edges, commitHistory])
+
+  // 変わったノード・接続は選択状態にして場所を示す（選択は履歴の比較対象外なので履歴は増えない）
+  const restoreSnapshot = useCallback((from: Snapshot, snap: Snapshot, action: 'undo' | 'redo') => {
+    const change = describeHistoryChange(from, snap)
+    const changedNodes = new Set(change.nodeIds)
+    const changedEdges = new Set(change.edgeIds)
+    historyRef.current.current = snap
+    setNodes(snap.nodes.map((n) => (changedNodes.has(n.id) ? { ...n, selected: true } : n)))
+    setEdges(snap.edges.map((e) => (changedEdges.has(e.id) ? { ...e, selected: true } : e)))
+    setContextMenu(null)
+    setHistoryNotice((prev) => ({ action, lines: change.lines, seq: (prev?.seq ?? 0) + 1 }))
+  }, [])
+
+  const undo = useCallback(() => {
+    const { nodes, edges } = latestRef.current
+    commitHistory(nodes, edges)
+    const h = historyRef.current
+    const current = h.current
+    const prev = h.past.pop()
+    if (!prev || !current) return
+    h.future.push(current)
+    restoreSnapshot(current, prev, 'undo')
+    syncHistoryCounts()
+  }, [commitHistory, restoreSnapshot, syncHistoryCounts])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    const current = h.current
+    const next = h.future.pop()
+    if (!next || !current) return
+    h.past.push(current)
+    restoreSnapshot(current, next, 'redo')
+    syncHistoryCounts()
+  }, [restoreSnapshot, syncHistoryCounts])
+
+  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y（Macは⌘）。入力欄やコンソール（xterm）の中では奪わない
+  // （コンソールのCtrl+Zはルーター・スイッチのCLIで「特権モードに戻る」に使うため）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .xterm')) return
+      if (pendingConnectionRef.current) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [undo, redo])
+
+  // ラボ全体を起動する（未起動ならdeploy、停止中なら起動）。起動後は全ノードに設定を流す
+  const startWholeLab = useCallback(
+    async (name: string, allowRebuild: boolean) => {
+      const { nodes, edges } = latestRef.current
+      const built = buildTopologyContent(nodes, edges, name)
+      await prepareNodeConfigs(name, built)
+      if (oldFormatRef.current && runStateRef.current.kind === 'stopped') {
+        await destroyLab(name).catch(() => undefined)
+      }
+      try {
+        await applyLab(name)
+      } catch (e) {
+        // 2026-10-13以前のラボ（スイッチがovs-bridge）等、停止中のコンテナと今の定義が合わず
+        // applyできない場合は、一度破棄してから起動する（停止中なので失うものはない。
+        // write memoryしたルーター設定はfrr-configに残る）
+        if (!allowRebuild) throw e
+        console.warn('applyに失敗したため、破棄してから起動し直します', e)
+        await destroyLab(name).catch(() => undefined)
+        await applyLab(name)
+      }
+      lastAppliedYaml.current = topologyToYaml(built.topologyContent)
+      applyBlockedRef.current = false
+      oldFormatRef.current = false
+      await refreshRunState(name)
+      lastSynced.current.clear()
+      const commands = buildNodeSyncCommands(built)
+      const { succeeded, failures } = await runNodeSyncs(name, commands, commands.keys())
+      for (const [id, command] of succeeded) lastSynced.current.set(id, command)
+      return failures
+    },
+    [refreshRunState],
+  )
+
+  const onStartLab = useCallback(() => {
+    void enqueue(async () => {
+      await syncOnce() // まず今の編集内容を保存する
+      const name = savedNameRef.current
+      if (!name) return
+      setLabBusy(true)
+      setBusyNodes('all')
+      setSyncStatus({ kind: 'busy', message: 'ラボを起動中...（初回はしばらくかかります）' })
+      try {
+        const failures = await startWholeLab(name, runStateRef.current.kind === 'stopped')
+        setSyncStatus(
+          failures.length > 0
+            ? { kind: 'error', message: `起動しました（設定の反映に失敗: ${failures.join(' / ')}）` }
+            : { kind: 'ok', message: 'ラボを起動しました' },
+        )
+      } catch (e) {
+        setSyncStatus({ kind: 'error', message: errorMessage(e, '起動に失敗しました') })
+        await refreshRunState(name).catch(() => undefined)
+      } finally {
+        setLabBusy(false)
+        setBusyNodes([])
+      }
+    })
+  }, [enqueue, syncOnce, startWholeLab, refreshRunState])
+
+  const onStopLab = useCallback(() => {
+    if (!window.confirm('ラボを停止します。write memoryしていないルーターの設定は消えます。よろしいですか？')) return
+    void enqueue(async () => {
+      const name = savedNameRef.current
+      if (!name) return
+      setLabBusy(true)
+      setBusyNodes('all')
+      setSyncStatus({ kind: 'busy', message: 'ラボを停止中...' })
+      try {
+        await stopLab(name)
+        lastSynced.current.clear()
+        await refreshRunState(name)
+        setSyncStatus({ kind: 'ok', message: 'ラボを停止しました' })
+      } catch (e) {
+        setSyncStatus({ kind: 'error', message: errorMessage(e, '停止に失敗しました') })
+      } finally {
+        setLabBusy(false)
+        setBusyNodes([])
+      }
+    })
+  }, [enqueue, refreshRunState])
+
+  // 差分反映できない状態になった時の最終手段：ラボを破棄して今の内容で起動し直す
+  const onRebuildLab = useCallback(() => {
+    if (!window.confirm('ラボを作り直します。write memoryしていないルーターの設定は消えます。よろしいですか？')) return
+    void enqueue(async () => {
+      const name = savedNameRef.current
+      if (!name) return
+      setLabBusy(true)
+      setBusyNodes('all')
+      setSyncStatus({ kind: 'busy', message: 'ラボを作り直し中...' })
+      try {
+        await destroyLab(name).catch(() => undefined)
+        await refreshRunState(name)
+        await syncOnce()
+        const failures = await startWholeLab(name, false)
+        setSyncStatus(
+          failures.length > 0
+            ? { kind: 'error', message: `作り直しました（設定の反映に失敗: ${failures.join(' / ')}）` }
+            : { kind: 'ok', message: 'ラボを作り直しました' },
+        )
+      } catch (e) {
+        setSyncStatus({ kind: 'error', message: errorMessage(e, '作り直しに失敗しました') })
+      } finally {
+        setLabBusy(false)
+        setBusyNodes([])
+      }
+    })
+  }, [enqueue, syncOnce, startWholeLab, refreshRunState])
+
+  // ノード単位の起動/停止（リンクは保たれる）。起動し直したノードは中の設定が消えているので流し直す
+  const onNodePower = useCallback(
+    (nodeId: string, action: 'start' | 'stop') => {
+      setContextMenu(null)
+      void enqueue(async () => {
+        const name = savedNameRef.current
+        if (!name) return
+        setSyncStatus({ kind: 'busy', message: action === 'start' ? 'ノードを起動中...' : 'ノードを停止中...' })
+        setBusyNodes((prev) => (prev === 'all' ? prev : [...prev, nodeId]))
+        try {
+          await (action === 'start' ? startLabNode : stopLabNode)(name, nodeId)
+          lastSynced.current.delete(nodeId)
+          await refreshRunState(name)
+          let failures: string[] = []
+          if (action === 'start') {
+            const { nodes, edges } = latestRef.current
+            const commands = buildNodeSyncCommands(buildTopologyContent(nodes, edges, name))
+            const result = await runNodeSyncs(name, commands, [nodeId])
+            for (const [id, command] of result.succeeded) lastSynced.current.set(id, command)
+            failures = result.failures
+          }
+          setSyncStatus(
+            failures.length > 0
+              ? { kind: 'error', message: `起動しました（設定の反映に失敗: ${failures.join(' / ')}）` }
+              : { kind: 'ok', message: action === 'start' ? `${nodeId}を起動しました` : `${nodeId}を停止しました` },
+          )
+        } catch (e) {
+          setSyncStatus({ kind: 'error', message: errorMessage(e, action === 'start' ? '起動に失敗しました' : '停止に失敗しました') })
+        } finally {
+          setBusyNodes((prev) => (prev === 'all' ? prev : prev.filter((id) => id !== nodeId)))
+        }
+      })
+    },
+    [enqueue, refreshRunState],
+  )
+
+  // キャンバスのノードに出す起動状態（2026-10-14、「on/offが見た目で分からない」指摘対応）
+  const nodeRunStatus = useCallback(
+    (nodeId: string): NodeRunStatus => {
+      if (!savedLabName || runState.kind === 'unknown' || runState.kind === 'none') {
+        return busyNodes === 'all' ? 'busy' : 'none'
+      }
+      if (busyNodes === 'all' || busyNodes.includes(nodeId)) return 'busy'
+      const state = runState.nodeStates[nodeId]
+      if (state === 'running') return 'running'
+      if (state === 'created' || state === 'restarting') return 'busy'
+      if (state) return 'stopped'
+      // まだコンテナが無いノード：動いているラボなら次の自動反映で作られる
+      return runState.kind === 'running' ? 'pending' : 'none'
+    },
+    [savedLabName, runState, busyNodes],
+  )
+
+  // 他の画面（ホームの起動/停止、別のタブ）での変化や、落ちたノードも映すよう、10秒ごとに状態を取り直す。
+  // 保存・反映と同じ列に並べ、処理の途中の状態で上書きしないようにする
+  useEffect(() => {
+    if (!savedLabName) return
+    let queued = false
+    const timer = setInterval(() => {
+      if (queued || document.hidden) return
+      queued = true
+      void enqueue(async () => {
+        queued = false
+        await refreshRunState(savedLabName).catch(() => undefined)
+      })
+    }, 10000)
+    return () => clearInterval(timer)
+  }, [savedLabName, enqueue, refreshRunState])
+
+  // 保存済みのYAML（＋annotations）をダウンロードする（2026-10-08追加、
+  // 「授業で使うテンプレートを配布しやすく」指摘対応）。サーバーから改めて取得する
+  const [exportStatus, setExportStatus] = useState<{ kind: 'idle' | 'exporting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onExport = useCallback(async () => {
+    if (!savedLabName) return
+    setExportStatus({ kind: 'exporting' })
+    try {
+      await enqueue(syncOnce) // 編集直後でも最新の内容を出す
+      const yamlText = await getLabTopologyYaml(savedLabName)
+      const annotationsText = await getLabAnnotations(savedLabName).catch(() => null)
+      downloadTextFile(`${savedLabName}.clab.yml`, yamlText)
+      if (annotationsText) downloadTextFile(`${savedLabName}.clab.yml.annotations.json`, annotationsText)
+      setExportStatus({ kind: 'idle' })
+    } catch (e) {
+      const message = e instanceof ApiError || e instanceof Error ? e.message : 'エクスポートに失敗しました'
+      setExportStatus({ kind: 'error', message })
+    }
+  }, [savedLabName, enqueue, syncOnce])
+
+  // ホームの「エディタで開く」から来た場合、保存済みのトポロジYAMLを取得してキャンバスに復元する。
   // エディタはホームから「新規作成」/「既存ラボを開く」のどちらかでしか入れない専用画面で、
   // 入る度にTopologyEditorInnerが新たにマウントされるため、マウント時に一度だけ行えばよい
   // （2026-10-05決定、docs/direction.md参照）
@@ -362,50 +768,90 @@ function TopologyEditorInner() {
     closeAllConsoles()
     setConsolePanelDocked(false)
 
-    if (editorTarget.mode !== 'edit') return
+    if (editorTarget.mode !== 'edit') {
+      // 新規作成：YYYYMMDDHHが既存のラボと同じなら、-2, -3...を付けて空いている名前にする
+      // （同じ時間帯に2つ目を作ると最初の保存が「同名あり」で止まってしまうため）
+      void Promise.all([getLabTopologyFiles(), getLabs()])
+        .then(([files, labs]) => {
+          const taken = new Set([...files.map((f) => f.labName), ...Object.keys(labs)])
+          const base = defaultLabName()
+          let candidate = base
+          for (let i = 2; taken.has(candidate); i++) candidate = `${base}-${i}`
+          setLabName((current) => (current === base ? candidate : current))
+        })
+        .catch(() => undefined)
+      return
+    }
     const targetLabName = editorTarget.labName
     const autoOpenConsoleNode = editorTarget.autoOpenConsoleNode
     setLoadStatus({ kind: 'loading' })
     getLabTopologyYaml(targetLabName)
       .then(async (yamlText) => {
-        const parsed = parseTopologyYaml(yamlText)
-        // 座標・ラベル/エリアの保存データがあれば復元する。保存されていない（404）、
-        // または想定外のフォーマットの場合は無視してグリッド配置のまま進める
-        // （座標が無いことを理由にエディタが開けなくなることは避けたいため）
-        let nodes = parsed.nodes
-        let edges = parsed.edges
+        // 座標・VLAN/アドレス設定の保存データがあれば復元する（保存されていない＝404の場合は
+        // 無視してグリッド配置のまま進める。座標が無いことを理由にエディタが開けなくなることは
+        // 避けたいため）。実際の復元ロジックはparseImportedTopology()に共通化している
+        // （YAMLインポート機能と共有、2026-10-08）
+        let annotationsText: string | null = null
         try {
-          const annotationsText = await getLabAnnotations(targetLabName)
-          nodes = applyAnnotations(nodes, annotationsText)
-          // L2スイッチ接続のI/F名はハッシュ化された実名のまま（例: p-1e45bb1d）だと
-          // 文字化けのように見えるうえ、VLAN/アドレス設定もトポロジYAMLに無いため消えてしまう。
-          // 保存済みのportAnnotationsがあれば分かりやすい名前・設定に戻す（2026-10-07追加）。
-          // portAnnotationsのキーはハッシュ化されたclabName基準なので、これを
-          // restoreSwitchIdentitiesより先に呼ぶこと
-          edges = applyPortAnnotations(edges, annotationsText)
-          // L2スイッチのnode.idもハッシュ化された実名のままだと、次回deployでさらにハッシュされて
-          // ブリッジ名・ポート名が毎回ズレていく（2026-10-07レビュー指摘）。元のidに戻す
-          ;({ nodes, edges } = restoreSwitchIdentities(nodes, edges, annotationsText))
+          annotationsText = await getLabAnnotations(targetLabName)
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
+        const parsed = parseImportedTopology(yamlText, annotationsText)
+        const { edges, counters: parsedCounters } = parsed
+        // 古い形式のノード（2026-10-13以前のovs-bridgeのスイッチ、2026-10-14以前のエージェント無しの
+        // ルーター）は、キャンバス上は今の形式として扱い、次の保存で書き直す。
+        // 動いているラボは作り直さないと反映できないので、「作り直す」まで自動反映を止める
+        // スイッチの設定保存先（switch-config）をbind mountしていないラボ（2026-10-14以前）も同じ扱い
+        const isOldFormat = parsed.nodes.some((n) => needsUpgrade(n)) || hasSwitchWithoutConfigBind(yamlText)
+        const nodes = parsed.nodes.map((n) => {
+          const kind = (n.data as Partial<TopoNodeData>).kind
+          if (!needsUpgrade(n) || !kind) return n
+          const config = PALETTE_NODE_CONFIGS[kind]
+          return { ...n, data: { ...n.data, clabKind: config.clabKind, image: config.image } }
+        })
         setNodes(nodes)
         setEdges(edges)
-        counters.current = parsed.counters
-        setLabName(getLabDisplayName(targetLabName))
-        const consoleNodeIds = new Set(
-          nodes
-            .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
-            .map((n) => n.id),
-        )
-        setDeployedLab({ labName: targetLabName, nodeIds: consoleNodeIds })
+        counters.current = parsedCounters
+        const title = readLabTitle(annotationsText) ?? getLabDisplayName(targetLabName)
+        setLabName(title)
+        latestRef.current = { ...latestRef.current, labName: title }
+        savedNameRef.current = targetLabName
+        setSavedLabName(targetLabName)
+
+        // 開いた時点の内容は保存・反映済みとみなす（開いただけで全ノードに設定を流し直さないため）。
+        // 古い形式のラボだけは、次の保存で今の形式に書き直す
+        let commands = new Map<string, string>()
+        try {
+          const built = buildTopologyContent(nodes, edges, targetLabName)
+          const normalizedYaml = topologyToYaml(built.topologyContent)
+          commands = buildNodeSyncCommands(built)
+          if (!isOldFormat) {
+            lastSavedYaml.current = normalizedYaml
+            lastAppliedYaml.current = normalizedYaml
+            lastSavedAnnotations.current = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
+          }
+        } catch {
+          // 種別情報の無いノード等。次の保存でエラーとして表示される
+        }
+        const state = await refreshRunState(targetLabName).catch(() => runStateRef.current)
+        for (const [id, command] of commands) {
+          if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
+        }
+        loadedRef.current = true
+        historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, edges) }
         setLoadStatus({ kind: 'idle' })
+        oldFormatRef.current = isOldFormat
+        if (isOldFormat && state.kind === 'running') {
+          applyBlockedRef.current = true
+          setSyncStatus({ kind: 'error', message: OLD_FORMAT_MESSAGE, canRebuild: true })
+        }
 
         // ホームの🖥ボタンから来た場合、読み込み完了後にそのノードのコンソールを自動で開く
-        if (autoOpenConsoleNode && consoleNodeIds.has(autoOpenConsoleNode)) {
+        if (autoOpenConsoleNode && state.nodeStates[autoOpenConsoleNode] === 'running') {
           const targetNode = nodes.find((n) => n.id === autoOpenConsoleNode)
           const kind = (targetNode?.data as Partial<TopoNodeData> | undefined)?.kind
-          openConsole(targetLabName, autoOpenConsoleNode, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
+          openConsole(targetLabName, autoOpenConsoleNode, consoleAutoCommand(kind))
           setConsolePanelDocked(true)
         }
       })
@@ -438,72 +884,79 @@ function TopologyEditorInner() {
       })
       setPendingSourceIface(nextAvailableIface(connection.source, edges))
       setPendingTargetIface(nextAvailableIface(connection.target, edges))
-      setPendingSourceVlanMode('none')
-      setPendingSourceVlanValue('')
-      setPendingTargetVlanMode('none')
-      setPendingTargetVlanValue('')
       setPendingSourceAddress('')
       setPendingTargetAddress('')
+      setPendingSourceGateway('')
+      setPendingTargetGateway('')
     },
     [edges],
   )
 
-  const sourceVlanResult = useMemo(
-    () => parseVlanInput(pendingSourceVlanMode, pendingSourceVlanValue),
-    [pendingSourceVlanMode, pendingSourceVlanValue],
-  )
-  const targetVlanResult = useMemo(
-    () => parseVlanInput(pendingTargetVlanMode, pendingTargetVlanValue),
-    [pendingTargetVlanMode, pendingTargetVlanValue],
-  )
   const sourceAddressResult = useMemo(() => parseIpv4Cidr(pendingSourceAddress), [pendingSourceAddress])
   const targetAddressResult = useMemo(() => parseIpv4Cidr(pendingTargetAddress), [pendingTargetAddress])
+  const sourceGatewayResult = useMemo(() => parseIpv4Gateway(pendingSourceGateway), [pendingSourceGateway])
+  const targetGatewayResult = useMemo(() => parseIpv4Gateway(pendingTargetGateway), [pendingTargetGateway])
 
   const confirmConnection = useCallback(() => {
     if (!pendingConnection) return
-    const { source, target, sourceHandle, targetHandle } = pendingConnection
-    const id = `${source}:${pendingSourceIface}-${target}:${pendingTargetIface}`
-    setEdges((eds) =>
-      eds.concat({
-        id,
-        source,
-        target,
-        sourceHandle: sourceHandle ?? undefined,
-        targetHandle: targetHandle ?? undefined,
-        type: 'floating',
-        data: {
-          sourceIface: pendingSourceIface,
-          targetIface: pendingTargetIface,
-          sourceVlan: sourceVlanResult.config,
-          targetVlan: targetVlanResult.config,
-          sourceAddress: sourceAddressResult.address,
-          targetAddress: targetAddressResult.address,
-        } satisfies EdgeIfaceData,
-      }),
-    )
+    const { source, target, sourceHandle, targetHandle, editingEdgeId } = pendingConnection
+    const newData: EdgeIfaceData = {
+      sourceIface: pendingSourceIface,
+      targetIface: pendingTargetIface,
+      sourceAddress: sourceAddressResult.address,
+      targetAddress: targetAddressResult.address,
+      sourceGateway: sourceGatewayResult.gateway,
+      targetGateway: targetGatewayResult.gateway,
+    }
+    if (editingEdgeId) {
+      // 既存接続の編集：idはそのまま、dataだけ入れ替える（2026-10-07追加）
+      setEdges((eds) => eds.map((e) => (e.id === editingEdgeId ? { ...e, data: newData } : e)))
+    } else {
+      // idはI/F名から組み立てず、ランダムな値にする（2026-10-08レビュー指摘対応：
+      // I/F名から組み立てたidだと、既存接続を編集してI/Fを変更した時にidが古いI/Fの
+      // ままになり、後から同じI/F組み合わせで新規接続を作るとidが衝突し、
+      // disconnectEdge/editEdgeが両方のエッジを同時に操作してしまう不具合があった）
+      const id = randomAnnotationId('edge')
+      setEdges((eds) =>
+        eds.concat({
+          id,
+          source,
+          target,
+          sourceHandle: sourceHandle ?? undefined,
+          targetHandle: targetHandle ?? undefined,
+          type: 'floating',
+          data: newData,
+        }),
+      )
+    }
     setPendingConnection(null)
   }, [
     pendingConnection,
     pendingSourceIface,
     pendingTargetIface,
-    sourceVlanResult,
-    targetVlanResult,
     sourceAddressResult,
     targetAddressResult,
+    sourceGatewayResult,
+    targetGatewayResult,
   ])
 
   const cancelConnection = useCallback(() => setPendingConnection(null), [])
 
   const sourceIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.source, edges).has(pendingSourceIface)
+    ? usedInterfaces(pendingConnection.source, edges, pendingConnection.editingEdgeId).has(pendingSourceIface)
     : false
   const targetIfaceConflict = pendingConnection
-    ? usedInterfaces(pendingConnection.target, edges).has(pendingTargetIface)
+    ? usedInterfaces(pendingConnection.target, edges, pendingConnection.editingEdgeId).has(pendingTargetIface)
     : false
 
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
   const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
   const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
+  // ルーターはIPアドレス設定をvtyshのCLIで行う方針にしたため、GUIのプレーンなアドレス/
+  // ゲートウェイ入力欄はPCにしか出さない（2026-10-07方針変更：「ルーターはCLIで設定しないと
+  // 意味がない」指摘対応。docs/direction.md参照）
+  const sourceIsRouter = pendingConnection ? nodeKind(pendingConnection.source) === 'router' : false
+  const targetIsRouter = pendingConnection ? nodeKind(pendingConnection.target) === 'router' : false
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -572,18 +1025,82 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
+  // ノードのコンテナが動いているか（コンソール・キャプチャを使えるか）
+  const isNodeRunning = useCallback((nodeId: string) => runState.nodeStates[nodeId] === 'running', [runState])
+
+  // パケットキャプチャ（WiresharkのnoVNCセッション）を開始する（2026-10-08追加）。
+  // 動いているノードの側だけが対象（古い形式のovs-bridgeのスイッチはコンテナが無いので対象外）
+  const [captureStatus, setCaptureStatus] = useState<{ kind: 'idle' | 'starting' | 'error'; message?: string }>({
+    kind: 'idle',
+  })
+  const onCaptureEdge = useCallback(
+    async (edgeId: string) => {
+      setContextMenu(null)
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge || !savedLabName) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      const nodeInfo = (id: string) => nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined
+      const shortLabelOf = (id: string) => (nodeInfo(id)?.shortLabel as string | undefined) ?? id
+      const targets: CaptureTarget[] = []
+      const labelsByContainer: Record<string, string> = {}
+      if (hasContainer(nodeInfo(edge.source)) && data.sourceIface && isNodeRunning(edge.source)) {
+        targets.push({ containerName: edge.source, interfaceName: data.sourceIface })
+        labelsByContainer[edge.source] = `${shortLabelOf(edge.source)}(${data.sourceIface}) ↔ ${shortLabelOf(edge.target)}`
+      }
+      if (hasContainer(nodeInfo(edge.target)) && data.targetIface && isNodeRunning(edge.target)) {
+        targets.push({ containerName: edge.target, interfaceName: data.targetIface })
+        labelsByContainer[edge.target] = `${shortLabelOf(edge.target)}(${data.targetIface}) ↔ ${shortLabelOf(edge.source)}`
+      }
+      setCaptureStatus({ kind: 'starting' })
+      try {
+        await startPacketCapture(savedLabName, targets, labelsByContainer)
+        setCaptureStatus({ kind: 'idle' })
+      } catch (e) {
+        const message = e instanceof ApiError || e instanceof Error ? e.message : 'キャプチャの開始に失敗しました'
+        setCaptureStatus({ kind: 'error', message })
+      }
+    },
+    [edges, nodes, savedLabName, isNodeRunning],
+  )
+
+  // 既存接続の設定（I/F・VLAN・アドレス・ゲートウェイ・サブインターフェース）を編集する
+  // ポップアップを開く。新規接続時と同じポップアップを、保存済みのデータで埋めて再利用する
+  // （2026-10-07追加。「IPはGUIで設定できるのにDGWを設定できないのはナンセンス」指摘対応）
+  const editEdge = useCallback(
+    (edgeId: string) => {
+      const edge = edges.find((e) => e.id === edgeId)
+      if (!edge) return
+      const data = (edge.data ?? {}) as Partial<EdgeIfaceData>
+      setPendingConnection({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+        editingEdgeId: edge.id,
+      })
+      setPendingSourceIface(data.sourceIface ?? '')
+      setPendingTargetIface(data.targetIface ?? '')
+      setPendingSourceAddress(data.sourceAddress ?? '')
+      setPendingTargetAddress(data.targetAddress ?? '')
+      setPendingSourceGateway(data.sourceGateway ?? '')
+      setPendingTargetGateway(data.targetGateway ?? '')
+      setContextMenu(null)
+    },
+    [edges],
+  )
+
   // トポロジエディタから直接、統合コンソールをワンタッチで開く（ラボ一覧に行かなくて済むように）。
-  // deployedLabに載っているノード＝直近のdeployに含まれていたノードのみ開ける
+  // 動いているノードだけ開ける
   const openNodeConsole = useCallback(
     (nodeId: string) => {
-      if (!deployedLab || !deployedLab.nodeIds.has(nodeId)) return
+      if (!savedLabName || !isNodeRunning(nodeId)) return
       // ルーターはCMLのように最初からvtyshを開いた状態にしておく
       const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
-      openConsole(deployedLab.labName, nodeId, kind === 'router' ? ROUTER_CONSOLE_AUTO_COMMAND : undefined)
+      openConsole(savedLabName, nodeId, consoleAutoCommand(kind))
       setConsolePanelDocked(true)
       setContextMenu(null)
     },
-    [deployedLab, nodes, openConsole, setConsolePanelDocked],
+    [savedLabName, isNodeRunning, nodes, openConsole, setConsolePanelDocked],
   )
 
   const renameNode = useCallback(
@@ -614,8 +1131,6 @@ function TopologyEditorInner() {
     }
     const pairSeen = new Map<string, number>()
 
-    const vlanLabel = (v?: VlanConfig) =>
-      v ? (v.mode === 'access' ? `VLAN${v.vlan}` : `trunk(${v.vlans === 'all' ? 'all' : v.vlans.join(',')})`) : ''
 
     return edges.map((edge) => {
       const iface = edge.data as Partial<EdgeIfaceData> | undefined
@@ -623,9 +1138,9 @@ function TopologyEditorInner() {
       const parallelIndex = pairSeen.get(pairKey) ?? 0
       pairSeen.set(pairKey, parallelIndex + 1)
       const parallelCount = pairCounts.get(pairKey) ?? 1
-      const sourceVlanLabel = vlanLabel(iface?.sourceVlan) || iface?.sourceAddress || ''
-      const targetVlanLabel = vlanLabel(iface?.targetVlan) || iface?.targetAddress || ''
-      const vlanSuffix = sourceVlanLabel || targetVlanLabel ? ` [${[sourceVlanLabel, targetVlanLabel].filter(Boolean).join('/')}]` : ''
+      // PCのアドレスだけをラベルに添える（スイッチのVLANはCLIで設定するのでGUIは知らない、2026-10-14）
+      const addressLabels = [iface?.sourceAddress, iface?.targetAddress].filter(Boolean)
+      const vlanSuffix = addressLabels.length > 0 ? ` [${addressLabels.join('/')}]` : ''
 
       return {
         ...edge,
@@ -639,130 +1154,80 @@ function TopologyEditorInner() {
     })
   }, [edges])
 
-  // ラベル（labelNode）はデバイスではないので、deployできるかどうかの判定からは除く
-  const deviceNodeCount = useMemo(() => nodes.filter((n) => n.type === 'topoNode').length, [nodes])
-  const canDeploy = useMemo(
-    () => labName.trim().length > 0 && deviceNodeCount > 0 && deployStatus.kind !== 'deploying',
-    [labName, deviceNodeCount, deployStatus.kind],
-  )
-  // 入力欄のラボ名が「直近deployしたラボ」と同じなら、今回のDeployは新規ではなく変更の反映になる
-  const isRedeploy = useMemo(() => deployedLab?.labName === toSafeLabName(labName.trim()), [deployedLab, labName])
 
-  const onDeploy = useCallback(async () => {
-    if (!username) return
-    setDeployStatus({ kind: 'deploying' })
-    try {
-      const displayName = labName.trim()
-      // ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付ける（日本語等は拒否される、
-      // 2026-09-28実機確認）。安全でない名前は決定的なハッシュ名に変換し、元の名前は
-      // ラボ一覧での表示用にlocalStorageへ保存しておく（utils/labName.ts参照）。
-      const safeName = toSafeLabName(displayName)
-      const { topologyContent, vlanTasks, switchPorts, addressTasks, portAnnotations, switchOriginalIds } = buildTopologyContent(
-        nodes,
-        edges,
-        username,
-        safeName,
-      )
-
-      // containerlabはovs-bridge kindのブリッジを自動生成しないため、deploy前に
-      // 自分でovs-vsctl add-brしておく必要がある（2026-10-06実機確認：
-      // 「bridge "..." referenced in topology but does not exist」で失敗することが判明）。
-      // 既に存在していてもエラーにならないので、reconfigure時も毎回呼んで問題ない
-      const bridgeNames = nodes
-        .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
-        .map((n) => toClabBridgeName(username, safeName, n.id))
-      await Promise.all(bridgeNames.map((bridge) => ensureBridge(bridge)))
-
-      // ポート名は(username,labName,switchNodeId,iface)から決定的に決まるため、再deployすると
-      // 必ず同じ名前になる。前回のdeployで作られたOVS側のインターフェースが残っていると、
-      // containerlabが「already exists」で失敗する（2026-10-06実機確認）ため、
-      // deploy前に一度消してから作り直させる（存在しなければ何もしない）
-      await Promise.all(switchPorts.map((port) => resetPort(port)))
-
-      // 同じラボ名に対する2回目以降のdeployは「新規」ではなく「変更を反映」（reconfigure）として送る。
-      // reconfigureを付けずに既存のラボ名へPOSTすると「既に存在する」エラーになり、
-      // deploy後にトポロジを直せなくなってしまうため（2026-09-30指摘）
-      await deployLab(topologyContent, { reconfigure: isRedeploy })
-      rememberLabDisplayName(safeName, displayName)
-
-      // VLAN設定（アクセス/トランク）はcontainerlabのトポロジYAMLには無いため、
-      // deploy成功後にbackend/ovs-helper/経由でovs-vsctlを実行して別途投入する
-      // （2026-10-06追加）。1件でも失敗したら成功メッセージにその旨を添える。
-      // ensureBridge/resetPortと同じくPromise.allで並列実行する（2026-10-07レビュー指摘：
-      // 直列だとポート数が増えるほどdeployが線形に遅くなっていた）
-      const vlanResults = await Promise.allSettled(vlanTasks.map((task) => applyVlanConfig(safeName, task.port, task.config)))
-      const vlanFailures = vlanResults
-        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-        .map((r) => (r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'VLAN設定に失敗しました'))
-
-      // PC/ルーターのIPv4アドレスもトポロジYAMLには無いため、deploy成功後にclab-api-serverの
-      // execで`ip addr add`して別途投入する（2026-10-07追加。「PCのアドレシングが面倒」指摘対応）
-      const addressResults = await Promise.allSettled(
-        addressTasks.map(async (task) => {
-          const result = await execInLab(safeName, task.nodeName, `ip addr add ${task.address} dev ${task.iface}`)
-          const [firstResult] = Object.values(result).flat()
-          if (firstResult && firstResult['return-code'] !== 0) {
-            throw new Error((firstResult.stderr ?? '').trim() || 'アドレス設定に失敗しました')
-          }
-          return task
-        }),
-      )
-      const addressFailures = addressResults.flatMap((r, i) => {
-        if (r.status !== 'rejected') return []
-        const task = addressTasks[i]
-        const message = r.reason instanceof ApiError || r.reason instanceof Error ? r.reason.message : 'アドレス設定に失敗しました'
-        return [`${task.nodeName}:${task.iface} ${message}`]
-      })
-
-      const failureSuffixes = [
-        vlanFailures.length > 0 ? `VLAN設定に失敗: ${vlanFailures.join(' / ')}` : '',
-        addressFailures.length > 0 ? `アドレス設定に失敗: ${addressFailures.join(' / ')}` : '',
-      ].filter(Boolean)
-
-      setDeployStatus({
-        kind: 'success',
-        message:
-          (isRedeploy ? `ラボ「${displayName}」の変更を反映しました` : `ラボ「${displayName}」をdeployしました`) +
-          (failureSuffixes.length > 0 ? `（ただし${failureSuffixes.join(' / ')}）` : ''),
-      })
-      // l2-switchはコンテナを起動しないkindなのでコンソールの対象から除く
-      const consoleNodeIds = new Set(
-        nodes
-          .filter((n) => n.type === 'topoNode' && (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
-          .map((n) => n.id),
-      )
-      setDeployedLab({ labName: safeName, nodeIds: consoleNodeIds })
-      // ノード座標・ラベル/エリアを保存しておく（次回「エディタで開く」時に復元するため）。
-      // 失敗してもdeploy自体は成功しているので、ここはログに残すだけで握りつぶす
-      putLabAnnotations(safeName, serializeAnnotations(nodes, portAnnotations, switchOriginalIds)).catch((err: unknown) => {
-        console.warn('ノード配置の保存に失敗しました', err)
-      })
-    } catch (e) {
-      const message = e instanceof ApiError || e instanceof Error ? e.message : 'deployに失敗しました'
-      setDeployStatus({ kind: 'error', message })
+  // YAML（＋任意でannotations）をローカルファイルからインポートしてキャンバスに読み込む
+  // （2026-10-08追加）。他の人がexportしたテンプレートを取り込んで新規ラボとして
+  // 使い始められるようにする。読み込むだけでdeployはしない（ユーザーが確認してから
+  // 自分のアカウントでdeployする）
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const onImportFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const fileList = Array.from(files)
+    const yamlFile = fileList.find((f) => /\.ya?ml$/i.test(f.name))
+    const annotationsFile = fileList.find((f) => /\.json$/i.test(f.name))
+    if (!yamlFile) {
+      setLoadStatus({ kind: 'error', message: 'YAMLファイル（.yml/.yaml）を選んでください' })
+      return
     }
-  }, [nodes, edges, username, labName, isRedeploy])
+    try {
+      const yamlText = await yamlFile.text()
+      const annotationsText = annotationsFile ? await annotationsFile.text() : null
+      const { nodes: importedNodes, edges: importedEdges, counters: importedCounters } = parseImportedTopology(
+        yamlText,
+        annotationsText,
+      )
+      setNodes(importedNodes)
+      setEdges(importedEdges)
+      counters.current = importedCounters
+      setLoadStatus({ kind: 'idle' })
+    } catch (e) {
+      setLoadStatus({ kind: 'error', message: e instanceof Error ? e.message : 'インポートに失敗しました' })
+    }
+  }, [])
 
   const nodeLabel = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? id
 
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
   const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
   const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
-  // L2スイッチ（ovs-bridge kind）はコンテナを持たないためそもそもコンソールが無い（2026-10-07指摘）
-  const contextMenuIsSwitch = (contextMenuNode?.data as Partial<TopoNodeData> | undefined)?.kind === 'l2-switch'
+  // コンテナを持たないノード（古い形式のovs-bridgeのスイッチ。読み込み時に今の形式に置き換えるので
+  // 通常は無い）にはコンソールが無い。スイッチのコンソールはCisco風CLI（swcli）
+  const contextMenuIsSwitch = !hasContainer(contextMenuNode?.data as Partial<TopoNodeData> | undefined)
   const contextMenuCanOpenConsole =
     contextMenu?.kind === 'node' &&
     !contextMenuIsAnnotation &&
     !contextMenuIsSwitch &&
-    !!deployedLab?.nodeIds.has(contextMenu.nodeId)
+    isNodeRunning(contextMenu.nodeId)
+  // ノード単位の起動/停止は、ラボが一度でも起動していて（コンテナがあり）、そのノードが既にある時だけ。
+  // まだコンテナの無い（起動後に追加して反映待ちの）ノードには出さない
+  const contextMenuCanPower =
+    contextMenu?.kind === 'node' &&
+    !contextMenuIsAnnotation &&
+    !contextMenuIsSwitch &&
+    !labBusy &&
+    contextMenu.nodeId in runState.nodeStates
 
   return (
     <div className="topology-editor">
       <NodePalette />
       <div className="topology-editor__main">
         <div className="topology-editor__toolbar">
-          <button className="topology-editor__back" onClick={() => setView('home')} title="ホームに戻る">
+          <button className="topology-editor__back" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
             ← ホーム
+          </button>
+          <button
+            onClick={undo}
+            disabled={historyCounts.past === 0}
+            title={`元に戻す（Ctrl+Z）${historyCounts.undoHint ? `\n${historyCounts.undoHint}` : ''}`}
+          >
+            ↶
+          </button>
+          <button
+            onClick={redo}
+            disabled={historyCounts.future === 0}
+            title={`やり直す（Ctrl+Shift+Z / Ctrl+Y）${historyCounts.redoHint ? `\n${historyCounts.redoHint}` : ''}`}
+          >
+            ↷
           </button>
           <input
             className="topology-editor__lab-name"
@@ -770,19 +1235,92 @@ function TopologyEditorInner() {
             value={labName}
             onChange={(e) => setLabName(e.target.value)}
             disabled={loadStatus.kind === 'loading'}
+            title={
+              savedLabName
+                ? `表示名はいつでも変えられます（ラボのID: ${savedLabName}。IDは最初の保存で決まり変わりません）`
+                : '最初のノードを置いた時点でこの名前で保存されます'
+            }
           />
           {loadStatus.kind === 'loading' && <span className="topology-editor__status">トポロジを読み込み中...</span>}
           {loadStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{loadStatus.message}</span>}
-          {labName.trim() && !isSafeLabName(labName.trim()) && (
-            <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前でdeployされます">
+          {!savedLabName && labName.trim() && !isSafeLabName(labName.trim()) && (
+            <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前で保存されます">
               実際の名前: {toSafeLabName(labName)}
             </span>
           )}
-          <button onClick={onDeploy} disabled={!canDeploy} title={isRedeploy ? '既にdeploy済みのラボに変更を反映します' : undefined}>
-            {deployStatus.kind === 'deploying' ? (isRedeploy ? '反映中...' : 'deploy中...') : isRedeploy ? '変更を反映' : 'Deploy'}
+          {savedLabName && runState.kind !== 'unknown' && (
+            <span
+              className={`topology-editor__run-state topology-editor__run-state--${labBusy ? 'busy' : runState.kind}`}
+              title={runStateTitle(runState)}
+            >
+              {labBusy
+                ? '● 処理中...'
+                : runState.kind === 'running'
+                  ? `● 起動中${runningSummary(runState)}`
+                  : runState.kind === 'stopped'
+                    ? '● 停止中'
+                    : '● 未起動'}
+            </span>
+          )}
+          {runState.kind === 'running' ? (
+            <button
+              onClick={onStopLab}
+              disabled={labBusy}
+              title="ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
+            >
+              ■ 停止
+            </button>
+          ) : (
+            <button
+              onClick={onStartLab}
+              disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
+              title="ラボを起動します。起動中の編集は自動で反映されます"
+            >
+              ▶ 起動
+            </button>
+          )}
+          {syncStatus.kind !== 'idle' && (
+            <span
+              className={`topology-editor__status${syncStatus.kind === 'ok' ? ' topology-editor__status--ok' : syncStatus.kind === 'error' ? ' topology-editor__status--error' : ''}`}
+            >
+              {syncStatus.message}
+            </span>
+          )}
+          {syncStatus.kind === 'error' && syncStatus.canRebuild && (
+            <button onClick={onRebuildLab} disabled={labBusy} title="ラボを破棄して今の内容で起動し直します">
+              作り直す
+            </button>
+          )}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".yml,.yaml,.json"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              void onImportFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() => importInputRef.current?.click()}
+            disabled={!!savedLabName}
+            title={
+              savedLabName
+                ? '保存済みのラボを上書きしないよう、インポートは新規作成の画面でだけ使えます'
+                : '他の人がエクスポートしたYAML（＋annotations）を読み込んで新規ラボとして編集を始めます'
+            }
+          >
+            インポート
           </button>
-          {deployStatus.kind === 'success' && <span className="topology-editor__status topology-editor__status--ok">{deployStatus.message}</span>}
-          {deployStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{deployStatus.message}</span>}
+          <button
+            onClick={onExport}
+            disabled={!savedLabName || exportStatus.kind === 'exporting'}
+            title={savedLabName ? '保存済みのYAML（＋annotations）をダウンロードします' : 'ノードを置くと保存され、使えるようになります'}
+          >
+            {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
+          </button>
+          {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
           <div className="topology-editor__toolbar-spacer" />
           <button
             className="topology-editor__panel-toggle"
@@ -793,6 +1331,20 @@ function TopologyEditorInner() {
           </button>
         </div>
         <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
+          {historyNotice && (
+            <div key={historyNotice.seq} className="topology-editor__history-notice" role="status" onClick={() => setHistoryNotice(null)}>
+              <div className="topology-editor__history-notice-title">
+                {historyNotice.action === 'undo' ? '↶ 元に戻しました' : '↷ やり直しました'}
+              </div>
+              <ul>
+                {historyNotice.lines.slice(0, 6).map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+                {historyNotice.lines.length > 6 && <li>ほか{historyNotice.lines.length - 6}件</li>}
+              </ul>
+            </div>
+          )}
+          <NodeRuntimeContext.Provider value={nodeRunStatus}>
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}
@@ -817,6 +1369,7 @@ function TopologyEditorInner() {
             <Controls />
             <MiniMap />
           </ReactFlow>
+          </NodeRuntimeContext.Provider>
 
           {contextMenu?.kind === 'node' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
@@ -825,24 +1378,43 @@ function TopologyEditorInner() {
                 <button
                   onClick={() => openNodeConsole(contextMenu.nodeId)}
                   disabled={!contextMenuCanOpenConsole}
-                  title={contextMenuCanOpenConsole ? undefined : 'このノードはまだdeployされていません'}
+                  title={contextMenuCanOpenConsole ? undefined : 'ノードが起動していません'}
                 >
                   コンソールを開く
                 </button>
               )}
+              {contextMenuCanPower &&
+                (isNodeRunning(contextMenu.nodeId) ? (
+                  <button onClick={() => onNodePower(contextMenu.nodeId, 'stop')}>ノードを停止</button>
+                ) : (
+                  <button onClick={() => onNodePower(contextMenu.nodeId, 'start')}>ノードを起動</button>
+                ))}
               <button onClick={() => deleteNode(contextMenu.nodeId)}>削除</button>
             </div>
           )}
           {contextMenu?.kind === 'edge' && (
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+              <button onClick={() => editEdge(contextMenu.edgeId)}>設定を編集</button>
+              <button
+                onClick={() => void onCaptureEdge(contextMenu.edgeId)}
+                disabled={runState.kind !== 'running' || captureStatus.kind === 'starting'}
+                title={runState.kind === 'running' ? 'このリンクのパケットキャプチャを別タブで開きます' : 'ラボを起動してから使えます'}
+              >
+                {captureStatus.kind === 'starting' ? 'キャプチャ開始中...' : 'パケットキャプチャ'}
+              </button>
               <button onClick={() => disconnectEdge(contextMenu.edgeId)}>接続を解除</button>
+            </div>
+          )}
+          {captureStatus.kind === 'error' && (
+            <div className="topology-editor__context-menu-status topology-editor__status topology-editor__status--error">
+              {captureStatus.message}
             </div>
           )}
 
           {pendingConnection && (
             <div className="topology-editor__modal-overlay" onClick={cancelConnection}>
               <div className="topology-editor__modal" onClick={(e) => e.stopPropagation()}>
-                <h3>接続するインターフェースを選択</h3>
+                <h3>{pendingConnection.editingEdgeId ? '接続の設定を編集' : '接続するインターフェースを選択'}</h3>
                 <div className="topology-editor__modal-row">
                   <label>
                     {nodeLabel(pendingConnection.source)} 側
@@ -855,25 +1427,7 @@ function TopologyEditorInner() {
                     </select>
                   </label>
                   {sourceIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
-                  {sourceIsSwitch && (
-                    <div className="topology-editor__modal-vlan">
-                      <select value={pendingSourceVlanMode} onChange={(e) => setPendingSourceVlanMode(e.target.value as VlanMode)}>
-                        <option value="none">VLAN未設定</option>
-                        <option value="access">アクセス</option>
-                        <option value="trunk-all">トランク（全VLAN許可）</option>
-                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
-                      </select>
-                      {pendingSourceVlanMode === 'access' || pendingSourceVlanMode === 'trunk-list' ? (
-                        <input
-                          value={pendingSourceVlanValue}
-                          onChange={(e) => setPendingSourceVlanValue(e.target.value)}
-                          placeholder={pendingSourceVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
-                        />
-                      ) : null}
-                      {sourceVlanResult.error && <span className="topology-editor__modal-warn">{sourceVlanResult.error}</span>}
-                    </div>
-                  )}
-                  {!sourceIsSwitch && (
+                  {!sourceIsSwitch && !sourceIsRouter && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingSourceAddress}
@@ -881,6 +1435,12 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.1/24）"
                       />
                       {sourceAddressResult.error && <span className="topology-editor__modal-warn">{sourceAddressResult.error}</span>}
+                      <input
+                        value={pendingSourceGateway}
+                        onChange={(e) => setPendingSourceGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.254）"
+                      />
+                      {sourceGatewayResult.error && <span className="topology-editor__modal-warn">{sourceGatewayResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -896,25 +1456,7 @@ function TopologyEditorInner() {
                     </select>
                   </label>
                   {targetIfaceConflict && <span className="topology-editor__modal-warn">既に使用中のI/Fです</span>}
-                  {targetIsSwitch && (
-                    <div className="topology-editor__modal-vlan">
-                      <select value={pendingTargetVlanMode} onChange={(e) => setPendingTargetVlanMode(e.target.value as VlanMode)}>
-                        <option value="none">VLAN未設定</option>
-                        <option value="access">アクセス</option>
-                        <option value="trunk-all">トランク（全VLAN許可）</option>
-                        <option value="trunk-list">トランク（指定VLANのみ許可）</option>
-                      </select>
-                      {pendingTargetVlanMode === 'access' || pendingTargetVlanMode === 'trunk-list' ? (
-                        <input
-                          value={pendingTargetVlanValue}
-                          onChange={(e) => setPendingTargetVlanValue(e.target.value)}
-                          placeholder={pendingTargetVlanMode === 'access' ? 'VLAN ID（例: 10）' : 'VLAN ID（例: 10,20,30）'}
-                        />
-                      ) : null}
-                      {targetVlanResult.error && <span className="topology-editor__modal-warn">{targetVlanResult.error}</span>}
-                    </div>
-                  )}
-                  {!targetIsSwitch && (
+                  {!targetIsSwitch && !targetIsRouter && (
                     <div className="topology-editor__modal-vlan">
                       <input
                         value={pendingTargetAddress}
@@ -922,6 +1464,12 @@ function TopologyEditorInner() {
                         placeholder="IPv4アドレス（任意、例: 10.0.0.2/24）"
                       />
                       {targetAddressResult.error && <span className="topology-editor__modal-warn">{targetAddressResult.error}</span>}
+                      <input
+                        value={pendingTargetGateway}
+                        onChange={(e) => setPendingTargetGateway(e.target.value)}
+                        placeholder="デフォルトゲートウェイ（任意、例: 10.0.0.1）"
+                      />
+                      {targetGatewayResult.error && <span className="topology-editor__modal-warn">{targetGatewayResult.error}</span>}
                     </div>
                   )}
                 </div>
@@ -932,13 +1480,13 @@ function TopologyEditorInner() {
                     disabled={
                       sourceIfaceConflict ||
                       targetIfaceConflict ||
-                      (pendingSourceVlanMode !== 'none' && !sourceVlanResult.config) ||
-                      (pendingTargetVlanMode !== 'none' && !targetVlanResult.config) ||
                       !!sourceAddressResult.error ||
-                      !!targetAddressResult.error
+                      !!sourceGatewayResult.error ||
+                      !!targetAddressResult.error ||
+                      !!targetGatewayResult.error
                     }
                   >
-                    接続
+                    {pendingConnection.editingEdgeId ? '保存' : '接続'}
                   </button>
                 </div>
               </div>
