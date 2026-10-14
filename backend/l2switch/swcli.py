@@ -12,6 +12,11 @@ VLANの意味はCiscoに合わせる：
   - 何も設定していないポートは access VLAN 1
   - access：指定VLANのタグなしポート
   - trunk：allowed vlan（既定は全VLAN）をタグ付きで通し、native vlan（既定1）だけタグなしで通す
+
+STP（2026-10-14追加）：Linuxカーネルのブリッジ内蔵STP（IEEE 802.1D）を使う。既定で有効（Ciscoと同じ。
+ループを組んだ時のブロードキャストストームで共有サーバーが重くなるのも防ぐ）。カーネルの制約で
+全VLANで1つのツリー（PVST+/RSTPではない）、portfastは無い。ブリッジの優先度にはCiscoのsys-id-ext
+と同じくVLAN 1の分（+1）を足してカーネルに設定し、show spanning-treeの表示をCiscoと揃える。
 """
 import json
 import os
@@ -72,7 +77,17 @@ def port_view(cfg, name):
         'native': p.get('native', 1),
         'shutdown': p.get('shutdown', False),
         'description': p.get('description', ''),
+        'stp_cost': p.get('stp_cost'),  # None＝リンク速度から自動
+        'stp_port_priority': p.get('stp_port_priority', 128),
     }
+
+
+STP_DEFAULTS = {'enabled': True, 'priority': 32768, 'hello': 2, 'forward': 15, 'max_age': 20}
+
+
+def stp_view(cfg):
+    """既定値を埋めたSTP設定"""
+    return {**STP_DEFAULTS, **cfg.get('stp', {})}
 
 
 def iface_key(name):
@@ -178,6 +193,54 @@ def apply_port(name, p):
             sh('bridge', 'vlan', 'add', 'dev', name, 'vid', rng)
 
 
+def read_sys(path, default=None):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def auto_path_cost(name):
+    """カーネルの既定と同じ、リンク速度から決まるパスコスト（802.1D-1998：10G=2, 1G=4, 100M=19, 10M=100）"""
+    try:
+        speed = int(read_sys(f'/sys/class/net/{name}/speed', '10000'))
+    except ValueError:
+        speed = 10000
+    if speed >= 10000:
+        return 2
+    if speed >= 1000:
+        return 4
+    if speed >= 100:
+        return 19
+    return 100
+
+
+def apply_stp(cfg, ports):
+    """running-configのSTP設定をbr0に反映する（違う時だけ書く）"""
+    st = stp_view(cfg)
+    base = f'/sys/class/net/{BRIDGE}/bridge'
+    want = {
+        'stp_state': '1' if st['enabled'] else '0',
+        'priority': str(st['priority'] + 1),  # Ciscoのsys-id-ext（VLAN 1）の分
+        'hello_time': str(st['hello'] * 100),  # sysfsは1/100秒単位
+        'forward_delay': str(st['forward'] * 100),
+        'max_age': str(st['max_age'] * 100),
+    }
+    if any(read_sys(f'{base}/{k}') != v for k, v in want.items()):
+        args = []
+        for k, v in want.items():
+            args += [k, v]
+        sh('ip', 'link', 'set', BRIDGE, 'type', 'bridge', *args)
+    for name in ports:
+        p = port_view(cfg, name)
+        cost = str(p['stp_cost'] or auto_path_cost(name))
+        prio = str(p['stp_port_priority'] // 4)  # Ciscoは0-240（16刻み）、カーネルは0-63
+        brif = f'/sys/class/net/{BRIDGE}/brif/{name}'
+        if read_sys(f'{brif}/path_cost') != cost or read_sys(f'{brif}/priority') != prio:
+            sh('bridge', 'link', 'set', 'dev', name, 'cost', cost, 'priority', prio)
+
+
 def agent():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     os.makedirs(RUN_DIR, exist_ok=True)
@@ -203,6 +266,7 @@ def agent():
                     sh('ip', 'link', 'set', name, 'up')
                 if current.get(name, set()) != desired_vlans(p):
                     apply_port(name, p)
+            apply_stp(cfg, system_ports())
         except Exception as e:  # 1回の失敗で止まらないように
             print(f'agent: {e}', file=sys.stderr)
         time.sleep(1)
@@ -232,6 +296,14 @@ def show_running(cfg):
         if name and name != f'VLAN{int(vid):04d}':
             lines.append(f' name {name}')
         lines.append('!')
+    st = stp_view(cfg)
+    if not st['enabled']:
+        lines.append('no spanning-tree vlan 1-4094')
+    for key, word in (('priority', 'priority'), ('hello', 'hello-time'), ('forward', 'forward-time'), ('max_age', 'max-age')):
+        if st[key] != STP_DEFAULTS[key]:
+            lines.append(f'spanning-tree vlan 1-4094 {word} {st[key]}')
+    if lines[-1] != '!':
+        lines.append('!')
     for name in all_ports(cfg):
         p = port_view(cfg, name)
         lines.append(f'interface {name}')
@@ -247,11 +319,75 @@ def show_running(cfg):
             lines.append(' switchport mode access')
             if p['access_vlan'] != 1:
                 lines.append(f' switchport access vlan {p["access_vlan"]}')
+        if p['stp_cost'] is not None:
+            lines.append(f' spanning-tree cost {p["stp_cost"]}')
+        if p['stp_port_priority'] != 128:
+            lines.append(f' spanning-tree port-priority {p["stp_port_priority"]}')
         if p['shutdown']:
             lines.append(' shutdown')
         lines.append('!')
     lines.append('end')
     return '\n'.join(lines)
+
+
+def cisco_mac(bridge_id):
+    """カーネルのbridge id「8001.aac1ab1607fa」→（優先度, 'aac1.ab16.07fa'）"""
+    prio, _, mac = bridge_id.partition('.')
+    return int(prio, 16), '.'.join(mac[i:i + 4] for i in range(0, 12, 4))
+
+
+STP_STATE = {'0': 'DIS', '1': 'LIS', '2': 'LRN', '3': 'FWD', '4': 'BLK'}
+
+
+def show_spanning_tree(cfg):
+    st = stp_view(cfg)
+    base = f'/sys/class/net/{BRIDGE}/bridge'
+    if not st['enabled'] or read_sys(f'{base}/stp_state') != '1':
+        return 'No spanning tree instance exists.'
+    bridge_id = read_sys(f'{base}/bridge_id', '')
+    root_id = read_sys(f'{base}/root_id', '')
+    timers = lambda prefix: (  # noqa: E731
+        f'Hello Time  {int(read_sys(f"{base}/{prefix}hello_time", "200")) // 100:>2} sec  '
+        f'Max Age {int(read_sys(f"{base}/{prefix}max_age", "2000")) // 100:>2} sec  '
+        f'Forward Delay {int(read_sys(f"{base}/{prefix}forward_delay", "1500")) // 100:>2} sec')
+    ports = {}
+    for name in system_ports():
+        brif = f'{BRIDGE}/brif/{name}'
+        if os.path.isdir(f'/sys/class/net/{brif}'):
+            ports[name] = {k: read_sys(f'/sys/class/net/{brif}/{k}', '') for k in
+                           ('state', 'port_no', 'port_id', 'path_cost', 'priority', 'designated_bridge', 'designated_port')}
+    root_port_no = read_sys(f'{base}/root_port', '0')
+    root_port = next((n for n, v in ports.items() if v['port_no'] and int(v['port_no'], 16) == int(root_port_no)), None)
+
+    rprio, rmac = cisco_mac(root_id)
+    bprio, bmac = cisco_mac(bridge_id)
+    out = ['', 'VLAN0001', '  Spanning tree enabled protocol ieee',
+           f'  Root ID    Priority    {rprio}', f'             Address     {rmac}']
+    if root_id == bridge_id:
+        out.append('             This bridge is the root')
+    else:
+        out.append(f'             Cost        {read_sys(f"{base}/root_path_cost", "0")}')
+        out.append(f'             Port        {int(root_port_no)} ({root_port or "?"})')
+    out += [f'             {timers("")}', '',
+            f'  Bridge ID  Priority    {bprio}  (priority {bprio - 1} sys-id-ext 1)',
+            f'             Address     {bmac}',
+            f'             Hello Time  {st["hello"]:>2} sec  Max Age {st["max_age"]:>2} sec  Forward Delay {st["forward"]:>2} sec',
+            f'             Aging Time  {int(read_sys(f"{base}/ageing_time", "30000")) // 100} sec', '',
+            f'{"Interface":<20}{"Role":<5}{"Sts":<4}{"Cost":<10}{"Prio.Nbr":<9}Type',
+            '------------------- ---- --- --------- -------- --------------------------------']
+    for name, v in ports.items():
+        if v['state'] == '0':  # Ciscoと同じく、リンクの落ちているポートは出さない
+            continue
+        if name == root_port:
+            role = 'Root'
+        elif v['designated_bridge'] == bridge_id and int(v['designated_port'] or '-1', 0) == int(v['port_id'] or '-2', 0):
+            # sysfsのport_idは16進（0x8003）、designated_portは10進（32771）
+            role = 'Desg'
+        else:
+            role = 'Altn'
+        nbr = f'{int(v["priority"] or 0) * 4}.{int(v["port_no"] or "0", 16)}'
+        out.append(f'{name:<20}{role:<5}{STP_STATE.get(v["state"], "?"):<4}{v["path_cost"]:<10}{nbr:<9}P2p')
+    return '\n'.join(out)
 
 
 def show_vlan_brief(cfg):
@@ -357,6 +493,12 @@ ARG_CHECK = {
     '<ifaces>': lambda t: norm_iface_range(t) is not None,
     '<word>': lambda t: True,
     '<line>': lambda t: True,
+    '<bridge-prio>': lambda t: t.isdigit() and int(t) <= 61440 and int(t) % 4096 == 0,
+    '<port-prio>': lambda t: t.isdigit() and int(t) <= 240 and int(t) % 16 == 0,
+    '<cost>': lambda t: t.isdigit() and 1 <= int(t) <= 65535,
+    '<hello>': lambda t: t.isdigit() and 1 <= int(t) <= 10,
+    '<fwd>': lambda t: t.isdigit() and 4 <= int(t) <= 30,
+    '<maxage>': lambda t: t.isdigit() and 6 <= int(t) <= 40,
 }
 ARG_HELP = {
     '<vlan>': ('<1-4094>', 'VLAN ID'),
@@ -365,6 +507,12 @@ ARG_HELP = {
     '<ifaces>': ('WORD', 'Interface range (e.g. eth1-3,eth5)'),
     '<word>': ('WORD', ''),
     '<line>': ('LINE', ''),
+    '<bridge-prio>': ('<0-61440>', 'bridge priority in increments of 4096'),
+    '<port-prio>': ('<0-240>', 'port priority in increments of 16'),
+    '<cost>': ('<1-65535>', 'port path cost'),
+    '<hello>': ('<1-10>', 'number of seconds between generation of config BPDUs'),
+    '<fwd>': ('<4-30>', 'number of seconds for the forward delay timer'),
+    '<maxage>': ('<6-40>', 'maximum number of seconds the information in a BPDU is valid'),
 }
 KEYWORD_HELP = {
     'configure': 'Enter configuration mode', 'terminal': 'Configure from the terminal',
@@ -384,6 +532,13 @@ KEYWORD_HELP = {
     'startup-config': 'Contents of startup configuration', 'status': 'Show interface line status',
     'brief': 'VTP all VLAN status in brief', 'add': 'add VLANs to the current list',
     'remove': 'remove VLANs from the current list', 'all': 'all VLANs', 'none': 'no VLANs',
+    'spanning-tree': 'Spanning Tree Subsystem', 'priority': 'Set the bridge priority for the spanning tree',
+    'root': 'Configure switch as root', 'primary': 'Configure this switch as primary root for this spanning tree',
+    'secondary': 'Configure switch as secondary root', 'hello-time': 'Set the hello interval for the spanning tree',
+    'forward-time': 'Set the forward delay for the spanning tree', 'max-age': 'Set the max age interval for the spanning tree',
+    'cost': 'Change an interface\'s spanning tree port path cost',
+    'port-priority': 'Change an interface\'s spanning tree port priority',
+    'portfast': 'Spanning tree portfast options',
 }
 
 
@@ -463,7 +618,9 @@ class Cli:
             (['show', 'interfaces', 'trunk'], p(show_interfaces_trunk), 'Show interface trunk information'),
             (['show', 'mac', 'address-table'], p(show_mac), 'MAC forwarding table'),
             (['show', 'mac-address-table'], p(show_mac), 'MAC forwarding table'),
+            (['show', 'spanning-tree'], p(show_spanning_tree), 'Spanning tree topology'),
         ]
+        stp_vlan = ['spanning-tree', 'vlan', '<vlans>']
         common_cfg = [
             (['end'], self.do_end, 'Exit from configure mode'),
             (['exit'], self.do_exit, 'Exit from the current mode'),
@@ -486,6 +643,20 @@ class Cli:
                 (['interface', 'range', '<ifaces>'], self.do_interface_range, 'Interface range command'),
                 (['vlan', '<vlans>'], self.do_vlan, 'Vlan commands'),
                 (['no', 'vlan', '<vlans>'], self.do_no_vlan, 'Delete VLANs'),
+                (stp_vlan, lambda a: self.set_stp(a, enabled=None), 'Enable spanning tree'),
+                (['no'] + stp_vlan, lambda a: self.set_stp(a, enabled=False), 'Disable spanning tree'),
+                (stp_vlan + ['priority', '<bridge-prio>'], lambda a: self.set_stp(a, priority=int(a[1])), 'Set the bridge priority'),
+                (stp_vlan + ['root', 'primary'], lambda a: self.set_stp(a, priority=24576), 'Configure this switch as primary root'),
+                (stp_vlan + ['root', 'secondary'], lambda a: self.set_stp(a, priority=28672), 'Configure switch as secondary root'),
+                (stp_vlan + ['hello-time', '<hello>'], lambda a: self.set_stp(a, hello=int(a[1])), 'Set the hello interval'),
+                (stp_vlan + ['forward-time', '<fwd>'], lambda a: self.set_stp(a, forward=int(a[1])), 'Set the forward delay'),
+                (stp_vlan + ['max-age', '<maxage>'], lambda a: self.set_stp(a, max_age=int(a[1])), 'Set the max age interval'),
+                (['no'] + stp_vlan + ['priority'], lambda a: self.set_stp(a, priority=None), 'Reset the bridge priority'),
+                (['no'] + stp_vlan + ['root'], lambda a: self.set_stp(a, priority=None), 'Reset the bridge priority'),
+                (['no'] + stp_vlan + ['hello-time'], lambda a: self.set_stp(a, hello=None), 'Reset the hello interval'),
+                (['no'] + stp_vlan + ['forward-time'], lambda a: self.set_stp(a, forward=None), 'Reset the forward delay'),
+                (['no'] + stp_vlan + ['max-age'], lambda a: self.set_stp(a, max_age=None), 'Reset the max age interval'),
+                (['spanning-tree', 'mode', '<word>'], self.do_stp_mode, 'Spanning tree operating mode'),
             ],
             'vlan': common_cfg + [
                 (['name', '<word>'], self.do_vlan_name, 'Ascii name of the VLAN'),
@@ -509,6 +680,12 @@ class Cli:
                 (['no', 'shutdown'], lambda a: self.set_port(shutdown=None), 'Enable the selected interface'),
                 (['description', '<line>'], self.do_description, 'Interface specific description'),
                 (['no', 'description'], lambda a: self.set_port(description=None), 'Remove the description'),
+                (['spanning-tree', 'cost', '<cost>'], lambda a: self.set_port(stp_cost=int(a[0])), 'Change the port path cost'),
+                (['no', 'spanning-tree', 'cost'], lambda a: self.set_port(stp_cost=None), 'Reset the port path cost'),
+                (['spanning-tree', 'port-priority', '<port-prio>'],
+                 lambda a: self.set_port(stp_port_priority=None if int(a[0]) == 128 else int(a[0])), 'Change the port priority'),
+                (['no', 'spanning-tree', 'port-priority'], lambda a: self.set_port(stp_port_priority=None), 'Reset the port priority'),
+                (['spanning-tree', 'portfast'], self.do_portfast, 'Enable an interface to move directly to forwarding on link up'),
             ],
         }
 
@@ -705,6 +882,31 @@ class Cli:
     def do_native(self, a):
         v = int(a[0])
         self.set_port(native=None if v == 1 else v)
+
+    def set_stp(self, a, **changes):
+        """spanning-tree vlan <list> ...。木は1つしか無いので、指定したVLANに関わらず全VLANに効く"""
+        if parse_vlan_list(a[0]) != ALL_VLANS:
+            print('% Note: this switch runs a single IEEE 802.1D spanning tree for all VLANs.')
+            print('%       The setting is applied to all VLANs.')
+
+        def fn(cfg):
+            st = cfg.setdefault('stp', {})
+            for k, v in changes.items():
+                if v is None or v == STP_DEFAULTS[k]:
+                    st.pop(k, None)
+                else:
+                    st[k] = v
+            if not st:
+                cfg.pop('stp')
+        self.modify(fn)
+
+    def do_stp_mode(self, a):
+        if a[0].lower() not in ('stp', 'ieee', 'pvst'):
+            print('% Only IEEE 802.1D spanning tree is supported on this switch (no rapid-pvst/mst).')
+
+    def do_portfast(self, a):
+        print('% portfast is not supported on this switch (Linux kernel STP has no edge ports).')
+        print('%   Ports go through listening/learning (2 x forward-time) after link up.')
 
     def do_description(self, a):
         self.set_port(description=a[0])

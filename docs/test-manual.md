@@ -113,6 +113,24 @@ wr
 - [ ] `wr` してからラボを「作り直す」（または停止→ホームで削除せずに起動し直す）と設定が残る（10/14〜ホスト側に保存）
 - [ ] 接続ダイアログにVLANの入力欄は出ない（10/14で廃止）
 
+**3-2b スパニングツリー（STP）**（10/14〜、スイッチは最初からSTPが有効）
+
+例：スイッチ3台を三角形につなぎ（ループ）、2台にPCを1台ずつつなぐ
+```
+sh spanning-tree                     ← Root ID / Bridge ID / 各ポートの Role・Sts（FWD/BLK）
+conf t
+spanning-tree vlan 1 root primary    ← このスイッチをルートにする（priority 24576）
+int eth1
+spanning-tree cost 100               ← ポートのコストを変えてブロックされるポートを動かす
+end
+```
+- [ ] ループを組んでもPC同士の `ping` が通り、どれか1ポートが `Altn BLK` になる（サーバーが重くならない）
+- [ ] `root primary` や `priority` でルートが変わり、`sh spanning-tree` に反映される。`sh run` に設定が出る
+- [ ] 通信中の経路のポートを `shutdown` すると、**約50秒後**に迂回路で通信が戻る
+      （古典STP：max age 20秒＋forward delay 15秒×2。BLK→LIS→LRN→FWDの変化を `sh spanning-tree` で観察できる）
+- [ ] 注意：ラボの起動直後やケーブルをつないだ直後は、**約30秒スイッチ経由の通信ができない**（LIS→LRN）。Ciscoと同じ。
+      portfast・rapid-pvst は未対応（打つとその旨が出る）。全VLANで1つのツリー
+
 **3-3 Router on a stick**（ルーターのコンソールで設定する）
 
 例：PC1（VLAN10）とPC2（VLAN20）をルーター1台でつなぐ

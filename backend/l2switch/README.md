@@ -44,6 +44,25 @@ sw#wr
 | VLAN | `name WORD`、`no name` |
 | インターフェース | `switchport mode access/trunk`、`switchport access vlan N`、`switchport trunk allowed vlan <list>/add/remove/all/none`、`switchport trunk native vlan N`、`shutdown`、`description`、各`no`形 |
 
+### スパニングツリー（2026-10-14〜）
+
+Linuxカーネルのブリッジ内蔵STP（IEEE 802.1D、古典STP）を使う。**既定で有効**（Ciscoと同じ。STPなしで
+ループを組むと1ポートあたり毎秒約29万パケットのストームになり、共有サーバーのload averageが0.5→3に
+上がるのを実測したため）。
+
+| モード | コマンド |
+| --- | --- |
+| 特権 | `show spanning-tree`（Root ID / Bridge ID / Interface Role Sts Cost Prio.Nbr） |
+| 設定 | `[no] spanning-tree vlan <list>`、`spanning-tree vlan <list> priority N / root primary / root secondary / hello-time / forward-time / max-age`（各`no`形） |
+| インターフェース | `spanning-tree cost N`、`spanning-tree port-priority N`（各`no`形） |
+
+制約：
+- 全VLANで1つのツリー（PVST+ではない）。`spanning-tree vlan 10 ...`と打っても全VLANに効く（注意が出る）
+- RSTP/rapid-pvst・portfastは無い（カーネルSTPにエッジポートが無く、mstpdはAlpineに無い）。
+  そのためリンクアップ後はforward-time×2（既定30秒）待ってから転送が始まる
+- 表示の優先度はCiscoと同じくsys-id-ext（VLAN 1）を足した値（32769）。カーネルにもその値を設定している
+- 実測：ルート側のリンクを`shutdown`してから迂回路で通信が戻るまで約49秒（理論値50秒）
+
 VLANの意味はCiscoに合わせている：
 - 何も設定していないポートは access VLAN 1
 - trunk は allowed vlan（既定は全VLAN）をタグ付きで通し、**native vlan（既定1）だけタグなし**で通す。
