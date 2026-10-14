@@ -7,7 +7,9 @@ L2スイッチを、ホストのOVS（`ovs-bridge` kind）ではなく**普通�
 | タグ | 中身 |
 | --- | --- |
 | `fnl/l2switch:1`（2026-10-13） | alpine + iproute2。VLANはGUIの設定をexecで`bridge vlan`投入 |
-| `fnl/l2switch:2`（2026-10-14〜） | alpine + iproute2 + python3。**Cisco風CLI（`swcli`）で設定**し、エージェントがbr0に反映 |
+| `fnl/l2switch:2`（2026-10-14） | alpine + iproute2 + python3。**Cisco風CLI（`swcli`）で設定**し、エージェントがbr0に反映 |
+| `fnl/l2switch:3`（2026-10-14） | alpine 3.22（iproute2 6.15、MST対応）＋ mstpd。STP/RSTP/MSTP |
+| `fnl/l2switch:4`（2026-10-14〜） | GUIの「ケーブルを抜く」に対応（`/run/fnl-switch/unplugged`に書かれたポートをdownのままにし、notconnectと表示）。非特権コンテナでmstpdが応答できずSTPが動いていなかった不具合を修正 |
 
 ## Cisco風CLI（swcli）
 
@@ -44,6 +46,41 @@ sw#wr
 | VLAN | `name WORD`、`no name` |
 | インターフェース | `switchport mode access/trunk`、`switchport access vlan N`、`switchport trunk allowed vlan <list>/add/remove/all/none`、`switchport trunk native vlan N`、`shutdown`、`description`、各`no`形 |
 
+### スパニングツリー（2026-10-14〜、`fnl/l2switch:3`）
+
+[mstpd](https://github.com/mstpd/mstpd)（RSTP/MSTPのデーモン）をソースからビルドして入れ、
+**STP（802.1D）/ RSTP（802.1w）/ MSTP（802.1s）**を動かす。既定は `rapid-stp` で有効（2026-10-14にstpから変更。最近の機種はRSTP系が既定のため。
+STPなしでループを組むと1ポートあたり毎秒約29万パケットのストームになり、共有サーバーのload averageが
+0.5→3に上がるのを実測したため）。モード名はCiscoのpvst/rapid-pvstではなく `stp / rapid-stp / mstp`
+（PVSTはCisco独自でLinuxでは動かず、名前が混ざると紛らわしいため）。
+
+| モード | コマンド |
+| --- | --- |
+| 特権 | `show spanning-tree`、`show spanning-tree mst [N]`、`show spanning-tree mst configuration` |
+| 設定 | `spanning-tree mode stp/rapid-stp/mstp`、`[no] spanning-tree vlan <list> [priority N / root primary / root secondary / hello-time / forward-time / max-age]`、`spanning-tree mst <0-4093> priority N / root primary/secondary`、`spanning-tree mst hello-time/forward-time/max-age`、`spanning-tree portfast default`、`spanning-tree portfast bpduguard default`、`spanning-tree mst configuration`（→ `name`、`revision`、`instance N vlan <list>`、`no instance N`、`show`） |
+| インターフェース | `spanning-tree portfast [disable]`、`spanning-tree bpduguard enable/disable`、`spanning-tree bpdufilter enable`、`spanning-tree guard root/none`、`spanning-tree cost N`、`spanning-tree port-priority N`（各`no`形） |
+
+コンテナで動かすための仕組み（`mstpd/fnl.patch`、mstpdのコミット`2e747d8`に当てる）：
+- カーネルがmstpdにポートを任せる「ユーザーSTPモード」はホストの名前空間でしか使えない。そこでカーネルのSTPは
+  切り（`stp_state 0`）、ブリッジを`mst_enabled 1`にして、mstpdの決めた状態を**カーネルのMSTのポート状態**
+  （`bridge mst set dev ethN msti M state S`）として入れる（パッチの`driver_set_new_state`）。カーネルのMSTI 0は
+  設定できないので、CISTはカーネルのMSTI 4094に対応させる（利用者のMSTIは1〜4093）
+- STP無効のブリッジはBPDUを普通に転送してしまうので、各ポートの入口（`tc ... flower dst_mac 01:80:c2:00:00:00
+  action drop`）で捨てる。mstpdはパケットソケットを`ETH_P_ALL`にしてその手前で受け取る（パッチ）
+- mstpd本体の不具合（`brmon.c`がnetlinkの通知を1バイトしか読まず、ポートの追加に気づくのが遅れる）も直している
+- エージェント（`swcli --agent`）は、VLANをカーネルのMSTIに割り当て（MSTI 0のままだと常に転送でループする）、
+  設定をmstpctlで入れ、5秒ごとにmstpdの状態とカーネルの状態を突き合わせる
+- BPDU Guardで止まったポートはmstpdがdownにする。エージェントは`err-disabled`として落としたままにし、
+  `shutdown` → `no shutdown` で戻す（Ciscoと同じ）
+- パスコストは stp/rapid-stp ではCiscoの既定（short：10G=2）、mstp では長いコスト（10G=2000）
+
+制約：PVST/Rapid-PVST（VLANごとに独立したSTP）は無い。portfastでないポートはCiscoと同じく自動でエッジにしない
+（rapid-stpでもPCのポートはportfastを入れないと約30秒待つ）。
+
+実測（スイッチ3台のループ＋PC2台）：stp はルート側のリンク断から約49秒で迂回、rapid-stp は0.2秒間隔のpingが
+1つも欠けずに迂回。MSTPでインスタンスごとにルートとブロックされるポートが分かれることを確認。
+エージェントのCPUはスイッチ1台あたり約0.6%（全VLAN許可のトランクの確認を間引いた後）。
+
 VLANの意味はCiscoに合わせている：
 - 何も設定していないポートは access VLAN 1
 - trunk は allowed vlan（既定は全VLAN）をタグ付きで通し、**native vlan（既定1）だけタグなし**で通す。
@@ -64,7 +101,7 @@ VLANの意味はCiscoに合わせている：
 ## ビルド
 
 ```sh
-docker build -t fnl/l2switch:2 backend/l2switch
+docker build -t fnl/l2switch:4 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
 ```
 
 ## 実機確認

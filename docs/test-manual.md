@@ -113,6 +113,50 @@ wr
 - [ ] `wr` してからラボを「作り直す」（または停止→ホームで削除せずに起動し直す）と設定が残る（10/14〜ホスト側に保存）
 - [ ] 接続ダイアログにVLANの入力欄は出ない（10/14で廃止）
 
+**3-2b スパニングツリー（STP / RSTP / MSTP）**（10/14〜、スイッチは最初から `rapid-stp`（802.1w）で有効）
+
+例：スイッチ3台を三角形につなぎ（ループ）、2台にPCを1台ずつつなぐ
+```
+sh spanning-tree                     ← Root ID / Bridge ID / 各ポートの Role・Sts（FWD/BLK）・Type（Edge等）
+conf t
+spanning-tree vlan 1 root primary    ← このスイッチをルートにする（priority 24576）
+spanning-tree mode stp               ← 古典STP（802.1D）に切り替える（stp / rapid-stp / mstp の3つ、既定はrapid-stp）
+int eth3
+spanning-tree portfast               ← PCをつなぐポートはすぐ転送する（Edge）
+spanning-tree bpduguard enable       ← BPDUを受けたらerr-disabledにする
+end
+```
+- [ ] ループを組んでもPC同士の `ping` が通り、どれか1ポートが `Altn BLK` になる（サーバーが重くならない）
+- [ ] `root primary` や `priority` でルートが変わり、`sh spanning-tree` に反映される。`sh run` に設定が出る
+- [ ] 既定（`rapid-stp`）のまま通信中の経路のポートを `shutdown` すると、**ほぼ止まらずに**切り替わる（実測：0.2秒間隔のpingが1つも欠けない）
+- [ ] 全スイッチを `spanning-tree mode stp` にして同じことをすると、**約50秒後**に迂回路で通信が戻る（古典STP）
+- [ ] `portfast` を入れたポートは `sh spanning-tree` で `P2p Edge` になり、リンクアップ直後から通信できる
+      （入れていないポートは、Ciscoと同じく起動直後や接続直後に約30秒待つ）
+- [ ] BPDUが届くポート（スイッチ同士の `Altn` のポートなど）で `bpduguard enable` すると、`sh int status` で
+      `err-disabled` になり相手は `notconnect` になる。`no spanning-tree bpduguard` → `shutdown` → `no shutdown` で戻る
+- [ ] `spanning-tree guard root` / `bpdufilter enable` / `spanning-tree portfast default` / `spanning-tree portfast bpduguard default` が打てて `sh run` に出る
+
+**MSTP**（VLANごとに別のツリー。3台とも同じリージョン設定にする）
+```
+conf t
+vlan 10,20
+interface range eth1-2
+ switchport mode trunk
+spanning-tree mode mstp
+spanning-tree mst configuration
+ name LAB
+ revision 1
+ instance 1 vlan 10
+ instance 2 vlan 20
+exit
+spanning-tree mst 1 root primary     ← 1台目だけ。2台目は spanning-tree mst 2 root primary
+end
+sh spanning-tree mst / sh spanning-tree mst 1 / sh spanning-tree mst configuration
+```
+- [ ] MST1とMST2でルートが別のスイッチになり、ブロックされるポートがインスタンスごとに違う
+- [ ] 注意：PVST（VLANごとに独立したSTP、Cisco独自）は無い。`spanning-tree vlan 10 ...` は全VLANに効く（注意が出る）。
+      VLANごとに分けたいときはMSTPを使う
+
 **3-3 Router on a stick**（ルーターのコンソールで設定する）
 
 例：PC1（VLAN10）とPC2（VLAN20）をルーター1台でつなぐ
@@ -175,6 +219,36 @@ int eth1.20
 
 > 既知の制約：キャプチャを開いた「メイン画面」を先に閉じる/リロードすると、タブを閉じてもコンテナが残る。
 
+## 6b. リンクの品質・ケーブルの抜き差し（10/14〜）
+
+リンクは何も設定しなければ**帯域100Mbps**（既定。品質ダイアログで「無制限」を選ぶと実測で約8Gbps）。リンクを右クリックすると
+**「リンクの品質...」**と**「ケーブルを抜く／差す」**が出る。設定は自動保存され、動いているラボにはすぐ反映される。
+
+例：PC-1 — SW1 — SW2 — PC-2 と、SW1–SW2の間にもう1本（ループ）をつないだラボ
+
+1. PC-1とPC-2の間のリンクの1つを右クリック →「リンクの品質...」→ 遅延 `50` ms →「保存」。PC-1から `ping PC-2`
+2. 「海外回線」「衛星回線」などのボタンで値をまとめて入れられる。帯域を `1 Mbps` 等にしてPCから大きめのping
+   （`ping -s 1400 ...`）や連続した通信をしてみる
+3. 「パケットロス」を `20` % にしてpingを打つ
+4. スイッチ間のリンクを右クリック →「ケーブルを抜く」。両側のスイッチで `sh int status` / `sh spanning-tree`
+5. もう一度右クリック →「ケーブルを差す」
+
+**期待結果**
+- [ ] 品質を設定したリンクは**紫の線**になり、ラベルに `10Mbps・50ms` のように内容が出る（既定の100Mbpsのままの線は灰色で、何も出ない）
+- [ ] 「既定に戻す」で灰色の線に戻る。帯域で「無制限」を選ぶと注意書きが出て、ラベルに `帯域無制限` と出る
+- [ ] 遅延50msでpingの往復時間が約100ms（行きと帰りの両方に掛かる）、ロス20%でおおよそ36%前後のpingが返らない
+      （行きか帰りのどちらかで落ちる）
+- [ ] ケーブルを抜いたリンクは**赤の破線**で「✕ 切断」と出る。両側のスイッチで `notconnect`（`shutdown`した時の
+      `disabled` とは違う）。ルーターの相手側は `show interface` で `line protocol is down`
+- [ ] ループがあれば、抜いた後に迂回路で通信が戻る（rapid-stp。PCをつないだポートに `spanning-tree portfast` が無いと
+      十数秒止まり、あれば止まらない。portfastが要る理由の体験になる）
+- [ ] 「元に戻す」で品質・ケーブルの抜き差しも戻り、何を戻したかが表示される
+- [ ] ノードを停止→起動しても、品質・ケーブルを抜いた状態がそのまま入り直す。ラボを停止→起動しても同じ
+- [ ] エディタを閉じて開き直しても、線の色・ラベルが残っている
+
+> 仕様：品質の値は片道ごとに掛かる（遅延50msなら往復で約100ms）。帯域を絞ってもSTPのコスト（`sh spanning-tree` の
+> Cost）は変わらない（必要なら `spanning-tree cost` で指定する）。
+
 ## 7. エクスポート / インポート
 
 1. 保存済みのラボで「エクスポート」→ YAML（とannotations）がダウンロードされる。
@@ -199,6 +273,9 @@ int eth1.20
 
 - [ ] ダーク / ライトの切り替えができる
 - [ ] 画面幅を変えても操作不能にならない
+- [ ] 画面下部に「サーバー CPU / メモリ / ディスク」の使用率が出て、10秒ごとに更新される（時刻が変わる）。
+      80%以上で黄色、90%以上で赤になる。マウスを載せるとload averageや空き容量が出る
+- [ ] 上部の📊で、CPU・メモリ・ディスクを個別に出す/出さないを選べる。全部外すとバーが消える。リロードしても選択が残る
 
 ---
 

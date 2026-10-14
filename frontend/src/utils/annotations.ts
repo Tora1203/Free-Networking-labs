@@ -4,6 +4,7 @@
 // containerlab公式ツール向けの既存フォーマットがある可能性もあるが未確認のため、
 // 今回は自分たちの用途に閉じた独自JSONとして保存する（他ツールとの互換性は持たない）。
 import type { Node, Edge } from '@xyflow/react'
+import { normalizeCondition } from './linkCondition'
 
 // L2スイッチのブリッジ名・ポート名はホスト全体での衝突を避けるためハッシュ化した実名で
 // デプロイするが、そのままだと再読み込み時に「p-1e45bb1d」のような実名がI/F名として
@@ -18,6 +19,8 @@ interface PortAnnotation {
   gateway?: string
   // router on a stick用のVLANサブインターフェース一覧（2026-10-07追加）
   subInterfaces?: unknown
+  // リンクの品質・ケーブルの抜き差し（2026-10-14追加）。リンクのsource側のポートに入れる
+  link?: unknown
 }
 
 interface AnnotationsFile {
@@ -152,6 +155,7 @@ export function applyPortAnnotations(edges: Edge[], annotationsText: string): Ed
         targetGateway: targetAnnotation?.gateway,
         sourceSubInterfaces: sourceAnnotation?.subInterfaces,
         targetSubInterfaces: targetAnnotation?.subInterfaces,
+        condition: normalizeCondition(sourceAnnotation?.link ?? targetAnnotation?.link),
       },
     }
   })

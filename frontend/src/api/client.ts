@@ -1,6 +1,8 @@
 // clab-api-server との通信クライアント。
 // 実際のレスポンス形状・エラー形式は docs/api-contract.md を参照（すべて実機確認済み）。
 
+import type { NetemInterfaceInfo, NetemParams } from '../utils/linkCondition'
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://localhost:8090'
 
 export class ApiError extends Error {
@@ -329,4 +331,43 @@ export function getCaptureSessionReady(sessionId: string) {
   return request<CaptureWiresharkVncReadyResponse>(
     `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(sessionId)}/ready`,
   )
+}
+
+// リンクの品質（netem）。2026-10-14追加（utils/linkCondition.ts）。containerNameはexecと同じ
+// `clab-<labName>-<nodeName>`（所有者のチェックがあり、自分のラボのコンテナにしか効かない）。
+// setは指定しなかった項目を0に戻す（値の上書きではなく置き換え、CLIで確認）。
+// resetは何も設定されていないI/Fに対してはエラーになる
+export function setNetem(labName: string, nodeName: string, iface: string, params: NetemParams) {
+  return request<unknown>('/api/v1/tools/netem/set', {
+    method: 'POST',
+    body: JSON.stringify({ containerName: `clab-${labName}-${nodeName}`, interface: iface, ...params }),
+  })
+}
+
+export function resetNetem(labName: string, nodeName: string, iface: string) {
+  return request<unknown>('/api/v1/tools/netem/reset', {
+    method: 'POST',
+    body: JSON.stringify({ containerName: `clab-${labName}-${nodeName}`, interface: iface }),
+  })
+}
+
+export function showNetem(labName: string, nodeName: string) {
+  const containerName = `clab-${labName}-${nodeName}`
+  return request<Record<string, NetemInterfaceInfo[] | null>>(
+    `/api/v1/tools/netem/show?containerName=${encodeURIComponent(containerName)}`,
+  )
+}
+
+// サーバーのCPU・メモリ・ディスクの使用量（2026-10-14追加、画面下部のステータスバー用）。
+// clab-api-server v0.6.0のソースで、ログインしていれば誰でも呼べることを確認
+// （routes.goのコメントは「superuser only」だが、ハンドラに権限の確認は無い）。
+// CPU使用率は1秒間測ってから返すので、応答に1秒ほどかかる。ディスクは「/」
+export interface SystemMetrics {
+  cpu?: { usagePercent?: number; numCPU?: number; loadAvg1?: number; loadAvg5?: number; loadAvg15?: number }
+  mem?: { usagePercent?: number; totalMem?: number; usedMem?: number; availableMem?: number }
+  disk?: { usagePercent?: number; totalDisk?: number; usedDisk?: number; freeDisk?: number; path?: string }
+}
+
+export function getSystemMetrics() {
+  return request<{ metrics?: SystemMetrics }>('/api/v1/health/metrics')
 }

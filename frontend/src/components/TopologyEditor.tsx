@@ -35,8 +35,20 @@ import {
   type EdgeIfaceData,
 } from '../utils/labTopology'
 import { describeHistoryChange } from '../utils/historyDiff'
+import { conditionSummary, normalizeCondition, type LinkCondition } from '../utils/linkCondition'
+import LinkConditionDialog from './LinkConditionDialog'
 import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
-import { errorMessage, freshNodesOf, prepareNodeConfigs, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
+import {
+  applyLinkConditions,
+  errorMessage,
+  freshNodesOf,
+  newLinkRuntimeState,
+  prepareNodeConfigs,
+  readLinkRuntimeState,
+  runNodeSyncs,
+  startLabNode,
+  stopLabNode,
+} from '../utils/labRuntime'
 import {
   ApiError,
   applyLab,
@@ -195,6 +207,10 @@ function runStateTitle(state: LabRunState): string {
   return entries.map(([id, s]) => `${id}: ${s === 'running' ? '起動中' : '停止中'}`).join('\n')
 }
 
+function runningNodesOf(nodeStates: Record<string, string>): Set<string> {
+  return new Set(Object.entries(nodeStates).filter(([, s]) => s === 'running').map(([id]) => id))
+}
+
 // 元に戻すの履歴の上限
 const HISTORY_LIMIT = 100
 
@@ -249,6 +265,10 @@ function TopologyEditorInner() {
   // 接続ダイアログを開いている間はCtrl+Zで裏のトポロジを戻さない（キー処理から参照する）
   const pendingConnectionRef = useRef<PendingConnection>(null)
   pendingConnectionRef.current = pendingConnection
+  // リンクの品質ダイアログを開いている接続（2026-10-14追加）
+  const [conditionEdgeId, setConditionEdgeId] = useState<string | null>(null)
+  const conditionEdgeIdRef = useRef<string | null>(null)
+  conditionEdgeIdRef.current = conditionEdgeId
   const [pendingSourceIface, setPendingSourceIface] = useState('')
   const [pendingTargetIface, setPendingTargetIface] = useState('')
   // PC/ルーター側にだけ表示するIPv4アドレスの入力欄（2026-10-07追加）
@@ -286,6 +306,8 @@ function TopologyEditorInner() {
   const lastAppliedYaml = useRef<string | null>(null)
   // ノードごとに最後に投入できた設定コマンド（これと違うノードにだけ流し直す）
   const lastSynced = useRef(new Map<string, string>())
+  // リンクの品質（netem）・ケーブルの抜き差しを最後に入れた状態（utils/labRuntime.ts applyLinkConditions）
+  const linkStateRef = useRef(newLinkRuntimeState())
   const queueRef = useRef<Promise<void>>(Promise.resolve())
   const syncQueuedRef = useRef(false)
   // 未保存の変更があるか（ホームに戻る・タブを閉じる時の確認用）
@@ -405,6 +427,7 @@ function TopologyEditorInner() {
       if (targets.length > 0) setSyncStatus({ kind: 'busy', message: '設定を反映中...' })
       const { succeeded, failures } = await runNodeSyncs(name, commands, targets)
       for (const [id, command] of succeeded) lastSynced.current.set(id, command)
+      failures.push(...(await applyLinkConditions(name, built, runningNodesOf(nodeStates), fresh, linkStateRef.current)))
       setSyncStatus(
         failures.length > 0
           ? { kind: 'error', message: `保存済み（設定の反映に失敗: ${failures.join(' / ')}）` }
@@ -545,7 +568,7 @@ function TopologyEditorInner() {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return
       const target = e.target as HTMLElement | null
       if (target?.closest('input, textarea, select, [contenteditable="true"], .xterm')) return
-      if (pendingConnectionRef.current) return
+      if (pendingConnectionRef.current || conditionEdgeIdRef.current) return
       const key = e.key.toLowerCase()
       if (key === 'z' && !e.shiftKey) {
         e.preventDefault()
@@ -587,6 +610,9 @@ function TopologyEditorInner() {
       const commands = buildNodeSyncCommands(built)
       const { succeeded, failures } = await runNodeSyncs(name, commands, commands.keys())
       for (const [id, command] of succeeded) lastSynced.current.set(id, command)
+      const running = runningNodesOf(runStateRef.current.nodeStates)
+      linkStateRef.current = newLinkRuntimeState()
+      failures.push(...(await applyLinkConditions(name, built, running, running, linkStateRef.current)))
       return failures
     },
     [refreshRunState],
@@ -628,6 +654,7 @@ function TopologyEditorInner() {
       try {
         await stopLab(name)
         lastSynced.current.clear()
+        linkStateRef.current = newLinkRuntimeState()
         await refreshRunState(name)
         setSyncStatus({ kind: 'ok', message: 'ラボを停止しました' })
       } catch (e) {
@@ -683,10 +710,13 @@ function TopologyEditorInner() {
           let failures: string[] = []
           if (action === 'start') {
             const { nodes, edges } = latestRef.current
-            const commands = buildNodeSyncCommands(buildTopologyContent(nodes, edges, name))
+            const built = buildTopologyContent(nodes, edges, name)
+            const commands = buildNodeSyncCommands(built)
             const result = await runNodeSyncs(name, commands, [nodeId])
             for (const [id, command] of result.succeeded) lastSynced.current.set(id, command)
-            failures = result.failures
+            // 起動し直したノードの端はnetemの設定が消えている（相手側の端は残る）
+            const running = runningNodesOf(runStateRef.current.nodeStates)
+            failures = [...result.failures, ...(await applyLinkConditions(name, built, running, [nodeId], linkStateRef.current))]
           }
           setSyncStatus(
             failures.length > 0
@@ -822,8 +852,9 @@ function TopologyEditorInner() {
         // 開いた時点の内容は保存・反映済みとみなす（開いただけで全ノードに設定を流し直さないため）。
         // 古い形式のラボだけは、次の保存で今の形式に書き直す
         let commands = new Map<string, string>()
+        let built: ReturnType<typeof buildTopologyContent> | null = null
         try {
-          const built = buildTopologyContent(nodes, edges, targetLabName)
+          built = buildTopologyContent(nodes, edges, targetLabName)
           const normalizedYaml = topologyToYaml(built.topologyContent)
           commands = buildNodeSyncCommands(built)
           if (!isOldFormat) {
@@ -837,6 +868,17 @@ function TopologyEditorInner() {
         const state = await refreshRunState(targetLabName).catch(() => runStateRef.current)
         for (const [id, command] of commands) {
           if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
+        }
+        // リンクの品質は、今入っている値を読んで、食い違っていれば入れ直す（ラボの外でノードを起動し直した等）
+        if (built && state.kind === 'running' && !isOldFormat) {
+          const linkBuilt = built
+          const running = runningNodesOf(state.nodeStates)
+          // netemの問い合わせはノードごとに順番に行うので時間がかかる。エディタの表示は待たせず、保存・反映の列で行う
+          void enqueue(async () => {
+            linkStateRef.current = await readLinkRuntimeState(targetLabName, linkBuilt, running)
+            const failures = await applyLinkConditions(targetLabName, linkBuilt, running, [], linkStateRef.current)
+            if (failures.length > 0) setSyncStatus({ kind: 'error', message: `リンクの品質の反映に失敗: ${failures.join(' / ')}` })
+          })
         }
         loadedRef.current = true
         historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, edges) }
@@ -1025,6 +1067,35 @@ function TopologyEditorInner() {
     setContextMenu(null)
   }, [])
 
+  // リンクの品質・ケーブルの抜き差し（2026-10-14追加）。edge.dataに入れるので、自動保存で
+  // 動いているラボに反映され、元に戻すの対象にもなる（utils/linkCondition.ts）
+  const updateEdgeCondition = useCallback((edgeId: string, update: (c: LinkCondition) => LinkCondition) => {
+    setEdges((eds) =>
+      eds.map((e) => {
+        if (e.id !== edgeId) return e
+        const data = (e.data ?? {}) as Partial<EdgeIfaceData>
+        const next = normalizeCondition(update({ ...data.condition }))
+        const { condition: _old, ...rest } = data
+        return { ...e, data: next ? { ...rest, condition: next } : rest }
+      }),
+    )
+  }, [])
+  const toggleCable = useCallback(
+    (edgeId: string) => {
+      setContextMenu(null)
+      updateEdgeCondition(edgeId, (c) => ({ ...c, down: !c.down }))
+    },
+    [updateEdgeCondition],
+  )
+  const applyEdgeCondition = useCallback(
+    (edgeId: string, condition: LinkCondition | undefined) => {
+      setConditionEdgeId(null)
+      // ケーブルの抜き差しはダイアログでは変えない
+      updateEdgeCondition(edgeId, (c) => ({ ...condition, down: c.down }))
+    },
+    [updateEdgeCondition],
+  )
+
   // ノードのコンテナが動いているか（コンソール・キャプチャを使えるか）
   const isNodeRunning = useCallback((nodeId: string) => runState.nodeStates[nodeId] === 'running', [runState])
 
@@ -1142,12 +1213,21 @@ function TopologyEditorInner() {
       const addressLabels = [iface?.sourceAddress, iface?.targetAddress].filter(Boolean)
       const vlanSuffix = addressLabels.length > 0 ? ` [${addressLabels.join('/')}]` : ''
 
+      // リンクの品質を設定した線は紫、ケーブルを抜いた線は赤の破線にし、ラベルに内容を添える（2026-10-14）
+      const condition = iface?.condition
+      const summary = conditionSummary(condition)
+      const conditionSuffix = condition?.down ? ' ✕ 切断' : summary ? ` ⏱ ${summary}` : ''
+      const stroke = condition?.down ? 'var(--edge-down)' : summary ? 'var(--edge-impaired)' : 'var(--edge)'
+
       return {
         ...edge,
         type: edge.type ?? 'floating',
-        label: iface?.sourceIface && iface.targetIface ? `${iface.sourceIface}↔${iface.targetIface}${vlanSuffix}` : undefined,
-        style: { stroke: 'var(--edge)', strokeWidth: 2 },
-        labelStyle: { fill: 'var(--ink-soft)', fontSize: 10 },
+        label:
+          iface?.sourceIface && iface.targetIface
+            ? `${iface.sourceIface}↔${iface.targetIface}${vlanSuffix}${conditionSuffix}`
+            : undefined,
+        style: { stroke, strokeWidth: 2, ...(condition?.down ? { strokeDasharray: '6 4' } : {}) },
+        labelStyle: { fill: condition?.down || summary ? stroke : 'var(--ink-soft)', fontSize: 10 },
         labelBgStyle: { fill: 'var(--surface)' },
         data: { ...edge.data, parallelIndex, parallelCount } satisfies FloatingEdgeData,
       }
@@ -1189,6 +1269,10 @@ function TopologyEditorInner() {
 
   // コンテキストメニューの対象が注釈（ラベル/エリア）かデバイスかで出す項目を変える
   const contextMenuNode = contextMenu?.kind === 'node' ? nodes.find((n) => n.id === contextMenu.nodeId) : undefined
+  const edgeData = (id: string | null | undefined) =>
+    (edges.find((e) => e.id === id)?.data ?? undefined) as Partial<EdgeIfaceData> | undefined
+  const contextMenuEdgeDown = contextMenu?.kind === 'edge' && !!edgeData(contextMenu.edgeId)?.condition?.down
+  const conditionEdge = conditionEdgeId ? edges.find((e) => e.id === conditionEdgeId) : undefined
   const contextMenuIsAnnotation = contextMenuNode?.type === 'labelNode' || contextMenuNode?.type === 'areaNode'
   // コンテナを持たないノード（古い形式のovs-bridgeのスイッチ。読み込み時に今の形式に置き換えるので
   // 通常は無い）にはコンソールが無い。スイッチのコンソールはCisco風CLI（swcli）
@@ -1396,6 +1480,21 @@ function TopologyEditorInner() {
             <div className="topology-editor__context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               <button onClick={() => editEdge(contextMenu.edgeId)}>設定を編集</button>
               <button
+                onClick={() => {
+                  setContextMenu(null)
+                  setConditionEdgeId(contextMenu.edgeId)
+                }}
+                title="帯域・遅延・パケットロスなどを設定します"
+              >
+                リンクの品質...
+              </button>
+              <button
+                onClick={() => toggleCable(contextMenu.edgeId)}
+                title="ケーブルを抜いた状態にします（両端がリンクダウンします）"
+              >
+                {contextMenuEdgeDown ? 'ケーブルを差す' : 'ケーブルを抜く'}
+              </button>
+              <button
                 onClick={() => void onCaptureEdge(contextMenu.edgeId)}
                 disabled={runState.kind !== 'running' || captureStatus.kind === 'starting'}
                 title={runState.kind === 'running' ? 'このリンクのパケットキャプチャを別タブで開きます' : 'ラボを起動してから使えます'}
@@ -1409,6 +1508,18 @@ function TopologyEditorInner() {
             <div className="topology-editor__context-menu-status topology-editor__status topology-editor__status--error">
               {captureStatus.message}
             </div>
+          )}
+
+          {conditionEdge && (
+            <LinkConditionDialog
+              linkName={`${nodeLabel(conditionEdge.source)} ${edgeData(conditionEdge.id)?.sourceIface ?? ''} ⇔ ${nodeLabel(
+                conditionEdge.target,
+              )} ${edgeData(conditionEdge.id)?.targetIface ?? ''}`}
+              initial={edgeData(conditionEdge.id)?.condition}
+              running={runState.kind === 'running'}
+              onApply={(c) => applyEdgeCondition(conditionEdge.id, c)}
+              onCancel={() => setConditionEdgeId(null)}
+            />
           )}
 
           {pendingConnection && (

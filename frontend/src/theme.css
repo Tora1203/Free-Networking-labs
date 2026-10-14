@@ -20,6 +20,9 @@
   --node-switch: #b45309;
   --node-pc: #4d5a52;
   --edge: #8a988e;
+  /* リンクの品質を設定した線・ケーブルを抜いた線（2026-10-14） */
+  --edge-impaired: #7c3aed;
+  --edge-down: #dc2626;
 
   --term-bg: #141f19;
   /* --term-bgは常に暗い色（ターミナルらしい見た目を保つためライト/ダーク共通）なので、
@@ -47,6 +50,8 @@
   --node-switch: #f0a94e;
   --node-pc: #aab6ae;
   --edge: #5c6b60;
+  --edge-impaired: #a78bfa;
+  --edge-down: #f87171;
 
   --term-bg: #0d1310;
 }

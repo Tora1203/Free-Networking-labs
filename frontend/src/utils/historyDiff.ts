@@ -8,6 +8,7 @@ import type { Edge, Node } from '@xyflow/react'
 import type { TopoNodeData } from '../components/TopologyNode'
 import { PALETTE_NODE_CONFIGS } from '../types/lab'
 import type { EdgeIfaceData } from './labTopology'
+import { conditionSummary } from './linkCondition'
 
 export interface HistoryChange {
   // 1行ずつの説明（例：「ルーター「router-1」を削除」）
@@ -128,6 +129,15 @@ export function describeHistoryChange(from: Snapshot, to: Snapshot): HistoryChan
       if (a[gatewayKey] !== b[gatewayKey]) {
         changes.push(`${names.get(node) ?? node}のゲートウェイを ${valueOrNone(a[gatewayKey])} → ${valueOrNone(b[gatewayKey])} に変更`)
       }
+    }
+    // リンクの品質・ケーブルの抜き差し（2026-10-14）
+    if (!!a.condition?.down !== !!b.condition?.down) {
+      changes.push(`${describeEdge(after)}のケーブルを${b.condition?.down ? '抜く' : '差す'}`)
+    }
+    const qualityBefore = conditionSummary(a.condition)
+    const qualityAfter = conditionSummary(b.condition)
+    if (qualityBefore !== qualityAfter) {
+      changes.push(`${describeEdge(after)}の品質を ${qualityBefore || 'なし'} → ${qualityAfter || 'なし'} に変更`)
     }
     if (changes.length === 0 && JSON.stringify(before) !== JSON.stringify(after)) changes.push(`${describeEdge(after)}を変更`)
     if (changes.length > 0) {

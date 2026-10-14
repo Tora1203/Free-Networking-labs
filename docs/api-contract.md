@@ -272,3 +272,29 @@ FE のパレット3種と containerlab kind の対応:
   YAMLとannotationsを消す（空のラボディレクトリは残るが一覧には出ない）。
 - 注意：`clab_admins`所属（superuser）のユーザーは`GET /api/v1/labs`で他ユーザーのラボも見える（labuserで`aaa`=labuser2のラボが出た）。
 
+### 2.8 リンクの品質（netem）（2026-10-14 kawase3、CLIで確認・フロント実装）
+
+リンクの帯域・遅延・ロス等は `POST /api/v1/tools/netem/set|reset`、`GET /api/v1/tools/netem/show` で入れる
+（Swaggerで確認。中身は`containerlab tools netem`と同じで、挙動は**CLI（containerlab 0.79）で確認**。
+TODO(kawase3)：APIを直接叩いた時のレスポンス本文は未確認。フロントはステータスコードだけを見ている）。
+
+- `POST /api/v1/tools/netem/set`：`{"containerName":"clab-<lab>-<node>","interface":"eth1","delay":"50ms","jitter":"5ms","loss":1.5,"rate":10000,"corruption":0.1}`
+  （`rate`はkbit/s、`loss`/`corruption`は%、`jitter`は`delay`が要る）。所有者のチェックがあり自分のラボのコンテナにしか効かない。
+  **送信側（egress）にだけ効く**ので、リンクの両端に同じ値を入れる。**値の置き換え**で、指定しなかった項目は0に戻る。
+- `POST /api/v1/tools/netem/reset`：`{"containerName","interface"}`。**何も設定されていないI/Fにはエラー**
+  （CLIでは`Netlink receive: invalid argument`）。フロントは無視する。
+- `GET /api/v1/tools/netem/show?containerName=...`：`{"clab-<lab>-<node>":[{"interface":"eth1","delay":"50ms","jitter":"5ms","packet_loss":1.5,"rate":10000,"corruption":0}]}`
+  （設定の無いI/Fは`delay:""`・値0。何も無いノードは`null`。`delay`はGoのDuration文字列）。
+- **netemの操作はラボごとに1つずつ**しか受け付けない。同じラボに同時に呼ぶと`Lab 'x' is busy with netem operation.`で
+  断られる（2026-10-14、ブラウザでの確認で判明。showも同じ）。フロントは順番に呼び、busyの時は待って呼び直す。
+- **ノードを停止→起動すると、そのノードの端の設定は消える**（相手側の端は残る）。フロントは起動のたびに入れ直す。
+- ケーブルの抜き差しはnetemではなく、ノードごとの設定コマンド（exec）で片方の端をdownにする（`frontend/src/utils/linkCondition.ts`）。
+
+### 2.9 サーバーの使用状況（2026-10-14 kawase3、ソースで確認・フロント実装）
+
+- `GET /api/v1/health/metrics`：`{"serverInfo":{...},"metrics":{"cpu":{"usagePercent","numCPU","loadAvg1","loadAvg5","loadAvg15","processPercent"},"mem":{"totalMem","usedMem","availableMem","usagePercent",...},"disk":{"path":"/","totalDisk","usedDisk","freeDisk","usagePercent"}}}`（バイト単位）。
+- clab-api-server v0.6.0（bdbd2ec）の`routes.go`のコメントは「superuser only」だが、`SystemMetricsHandler`に権限の確認は無く、
+  **ログインしていれば誰でも呼べる**（ソースで確認）。CPU使用率は1秒測ってから返す（`cpu.Percent(time.Second)`）ので応答に約1秒かかる。
+- メモリの`usagePercent`はキャッシュを除いた使用率（gopsutilの`UsedPercent`）。ディスクは`/`だけ。
+- TODO(kawase3)：実レスポンスは未確認（ブラウザの確認で見る）。
+
