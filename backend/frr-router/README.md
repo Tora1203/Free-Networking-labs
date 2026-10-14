@@ -24,8 +24,15 @@ int eth1.10
 ## ビルド
 
 ```sh
-docker build -t fnl/frr:1 backend/frr-router
+docker build -t fnl/frr:2 backend/frr-router
 ```
+
+## LLDP/CDP（`fnl/frr:2`、2026-10-14〜）
+
+lldpd（`-ccc -l -H 0`）を動かし、LLDPとCDPv2を送る。スイッチの`show lldp neighbors`・`show cdp neighbors`に
+ルーターが出る（Capability R）。名乗る名前は`/etc/frr/frr.conf`のhostname（無ければrunning-config、さらに無ければ
+コンテナのホスト名）。FRRではvtyshの`hostname`がそのセッションの中でしか効かないため、実際にはGUIのノード名に
+なることが多い。ルーター側で近隣を見るコマンド（vtyshの`show lldp neighbors`）は無い。
 
 ## 実機確認（2026-10-14、containerlab CLI）
 

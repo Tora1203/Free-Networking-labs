@@ -650,3 +650,19 @@ API仕様書を公開しているため、バックエンドの構築完了を�
   1Gbpsでは全力で流す人が10人ほど同時にいるとCPUを使い切るが、100Mbpsなら約30本まで耐えられる。
   1Gbps・無制限は品質ダイアログで明示的に選べる。
 
+## 決定事項（2026-10-14追記）：L2スイッチに運用・管理の機能を追加（fnl/l2switch:5、fnl/frr:2）
+
+- ユーザーがGeminiに聞いた候補（MACテーブル・LLDP・LACP・ポートセキュリティ・SPAN・DHCPスヌーピング・ログ等）を
+  今の実装と突き合わせ、CCNA系の演習でよく使うものに絞った。ユーザー判断：「SPANから下はあまり使わない」。
+  入れたもの：ログ（コンソールに流れる）、show interfacesの詳細とカウンタ、MACテーブルの操作、管理用SVI・ping・
+  パスワード（enable secret / line con 0）、LLDP/CDP、EtherChannel（LACP/on）、ポートセキュリティ、`| include`等。
+  入れないもの：SPAN（GUIのパケットキャプチャがある）、storm-control、DHCPスヌーピング/DAI、PAgP、PVST。
+- 実装はLinuxの標準機能に寄せる：LLDP/CDP＝lldpd、EtherChannel＝bond（802.3ad／balance-xor）、
+  ポートセキュリティ＝ブリッジポートのlocked＋mab（知らないMACはエージェントが判断して固定エントリにする）。
+- Ciscoの既定に合わせる：CDPは有効・LLDPは無効、SVIは作った直後shutdown、ポートセキュリティはaccessポートのみ、
+  違反の既定はshutdown。enable secret/passwordを設定した時だけユーザーモード（>）から始める
+  （設定しなければ従来どおり特権モードから。演習で毎回enableを打たせないため）。
+- STPのコストはGUIのリンクの品質（netem）の帯域から決める（既定100Mbps→19）。show interfacesのBWも同じ。
+- ルーターにもlldpdを入れ、スイッチからルーターが見えるようにした。FRRのhostnameはvtyshのセッション内でしか
+  効かないため、名乗る名前は実質GUIのノード名。
+

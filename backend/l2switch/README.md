@@ -9,7 +9,8 @@ L2スイッチを、ホストのOVS（`ovs-bridge` kind）ではなく**普通�
 | `fnl/l2switch:1`（2026-10-13） | alpine + iproute2。VLANはGUIの設定をexecで`bridge vlan`投入 |
 | `fnl/l2switch:2`（2026-10-14） | alpine + iproute2 + python3。**Cisco風CLI（`swcli`）で設定**し、エージェントがbr0に反映 |
 | `fnl/l2switch:3`（2026-10-14） | alpine 3.22（iproute2 6.15、MST対応）＋ mstpd。STP/RSTP/MSTP |
-| `fnl/l2switch:4`（2026-10-14〜） | GUIの「ケーブルを抜く」に対応（`/run/fnl-switch/unplugged`に書かれたポートをdownのままにし、notconnectと表示）。非特権コンテナでmstpdが応答できずSTPが動いていなかった不具合を修正 |
+| `fnl/l2switch:4`（2026-10-14） | GUIの「ケーブルを抜く」に対応（`/run/fnl-switch/unplugged`に書かれたポートをdownのままにし、notconnectと表示）。非特権コンテナでmstpdが応答できずSTPが動いていなかった不具合を修正 |
+| `fnl/l2switch:5`（2026-10-14〜） | ログ（コンソールに流れる）、`show interfaces`の詳細・カウンタ、MACテーブルの操作、管理用SVI・`ping`・パスワード、LLDP/CDP（lldpd）、EtherChannel（bond）、ポートセキュリティ、`| include`等の絞り込み |
 
 ## Cisco風CLI（swcli）
 
@@ -45,6 +46,25 @@ sw#wr
 | 設定 | `interface ethN`、`interface range eth1-3,eth5`、`vlan <list>`、`no vlan <list>`、`hostname`、`do ...`、`end`、`exit` |
 | VLAN | `name WORD`、`no name` |
 | インターフェース | `switchport mode access/trunk`、`switchport access vlan N`、`switchport trunk allowed vlan <list>/add/remove/all/none`、`switchport trunk native vlan N`、`shutdown`、`description`、各`no`形 |
+
+### 運用・管理の機能（2026-10-14〜、`fnl/l2switch:5`）
+
+CCNA系の演習でよく使う機能。すべて非特権のコンテナ（GUIと同じ`privileged: false`＋`NET_ADMIN`）で動作確認済み。
+
+| 機能 | コマンド | 実装 |
+| --- | --- | --- |
+| ログ | `show logging`、`clear logging`、`[no] logging console`。`%LINK-3-UPDOWN`、`%LINEPROTO-5-UPDOWN`、`%LINK-5-CHANGED`、`%SYS-5-CONFIG_I`、`%SPANTREE-2-BLOCK_BPDUGUARD`、`%PM-4-ERR_DISABLE`、`%EC-5-BUNDLE`、`%PORT_SECURITY-2-PSECURE_VIOLATION` | エージェントとCLIが`/run/fnl-switch/log`に追記し、CLIが入力中の行を壊さずにコンソールへ流す（readlineの`rl_forced_update_display`） |
+| インターフェース | `show interfaces [ethN / port-channel N / vlan N]`（状態・MAC・BW・5秒間の送受信レート・カウンタ）、`show interfaces counters`、`clear counters [ethN]`、`show ip interface brief` | `/sys/class/net/*/statistics`。BWはGUIのリンクの品質（netem）の帯域（既定100Mbps）で、STPのコストにも使う（100Mbps→19） |
+| MACテーブル | `show mac address-table [dynamic/static] [address M / interface X / vlan N] / count / aging-time`、`clear mac address-table dynamic [...]`、`mac address-table aging-time N`、`mac address-table static M vlan N interface X` | `bridge fdb`、ブリッジの`ageing_time` |
+| 管理用SVI | `interface vlan N`（→ `ip address A M`、`[no] shutdown`）、`ip default-gateway A`、`ping A [repeat N / size N]` | ブリッジ上のVLANデバイス（vlanN）。作った直後はshutdown（Ciscoと同じ）。管理ネットワーク（eth0）のデフォルトルートは消す |
+| パスワード | `enable secret`（type 9＝scrypt）、`enable password`、`service password-encryption`（type 7）、`line con 0`（→ `password`、`login`、`logging synchronous`）、`disable` | enable secret/passwordがあるとユーザーモード（`>`）から始まる。無ければ従来どおり特権モードから |
+| LLDP/CDP | `[no] lldp run`（既定は無効）、`[no] cdp run`（既定は有効）、インターフェースの`[no] lldp transmit/receive`・`[no] cdp enable`、`show lldp [neighbors [detail]]`、`show cdp [neighbors [detail]]` | lldpd（`-ccc -l -H 0`）。止める時は出口のtcでフレームを捨て、受信は表示しない。CDPはブリッジが転送しないよう入口で捨てる（lldpdはその手前で受け取る）。ルーター（`fnl/frr:2`）もLLDP/CDPを送る |
+| EtherChannel | `channel-group N mode active/passive/on`（desirable/autoはPAgPなので非対応）、`interface port-channel N`、`show etherchannel summary`、`show lacp neighbor` | Linuxのbond（802.3ad／balance-xor）。VLAN・STPはport-channelの設定が効く。BPDUはbondに届けてから捨てる |
+| ポートセキュリティ | `switchport port-security [maximum N / violation protect/restrict/shutdown / mac-address [sticky] [M]]`、`show port-security [interface X / address]`、`clear port-security dynamic/sticky/all` | ブリッジポートの`locked`＋`mab`。知らない送信元MACはエージェントが上限以内なら固定のエントリにして通し、超えたら違反として扱う |
+| 出力の絞り込み | `show ... \| include/exclude/begin/section 正規表現` | |
+
+注意：`shutdown`→`no shutdown`を続けて打ってもerr-disabledから戻るよう、`shutdown`の時点でCLIが解除する。
+PVST・PAgP・DHCPスヌーピング・SPANは無い。ポートセキュリティはaccessポートだけ（Ciscoと同じ）。
 
 ### スパニングツリー（2026-10-14〜、`fnl/l2switch:3`）
 
@@ -101,7 +121,7 @@ VLANの意味はCiscoに合わせている：
 ## ビルド
 
 ```sh
-docker build -t fnl/l2switch:4 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
+docker build -t fnl/l2switch:5 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
 ```
 
 ## 実機確認

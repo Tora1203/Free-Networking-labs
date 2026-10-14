@@ -4,7 +4,7 @@
 > **セッション開始時に読む**、**セッション終了時に更新してコミット**すること。
 > 判断・決定は書かない（それは `direction.md`）。API仕様は書かない（それは `api-contract.md`）。
 
-最終更新: 2026-10-14 / kawase3（リンクの品質（netem）・ケーブルの抜き差し、STPの既定をrapid-stpに、L2スイッチにSTP/RSTP/MSTP（mstpd）、スイッチのwrite memoryをホスト側に保存、元に戻す/やり直すの変更内容表示、自動保存＋差分反映・起動/停止UIを実装、router on a stickのVLAN1不具合修正、ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
+最終更新: 2026-10-14 / kawase3（L2スイッチの運用・管理の機能、リンクの品質（netem）・ケーブルの抜き差し、STPの既定をrapid-stpに、L2スイッチにSTP/RSTP/MSTP（mstpd）、スイッチのwrite memoryをホスト側に保存、元に戻す/やり直すの変更内容表示、自動保存＋差分反映・起動/停止UIを実装、router on a stickのVLAN1不具合修正、ホスト名アクセス対応、YAML往復の確認結果を反映、2026-10-09分：パケットキャプチャ改善、テストマニュアル・バックログ作成、方針決定を反映） ／ 前回: 2026-10-06（ホームタブ削除、L2スイッチのVLAN設定機能＋backend/ovs-helper/を追加）
 最終更新: 2026-09-17 / Bさん（M5完了・PR #7作成、ovs-bridgeブリッジ名衝突対策の実装、api-contract.md TODO解消）
 
 ---
@@ -807,6 +807,11 @@
   試験ラボ（スイッチ3台のループ＋PC2台）でストームなし・ルート変更・約49秒での迂回を確認。イメージ`fnl/l2switch:2`を再ビルド。
   調査：リンクは無制限（直結8.5Gbps）、netemはclab-api-serverのAPIで使える（片方向のみ・ノード再起動で消える）。
   スイッチのエージェントは外からの`ip link set down`を1秒で戻すので、リンク断はスイッチ側の対応が要る。次：リンクの品質変更。
+- **L2スイッチの運用・管理の機能（2026-10-14、be/l2-features）**：`fnl/l2switch:5`・`fnl/frr:2`。ログ（コンソールに流れる）、
+  show interfaces詳細・カウンタ、MACテーブル操作、管理用SVI・ping・enable secret・line con 0、LLDP/CDP（lldpd、ルーターも）、
+  EtherChannel（bond、LACP/on）、ポートセキュリティ（locked+mab）、`| include`等。CLIの非特権ラボで各機能・write memory後の
+  再起動での復元を確認。ブラウザでの確認はまだ（テストマニュアル3-2c）。CPUはスイッチ約1%/台（以前0.6%）、ルーター約2.7%/台
+  （以前から。サブインターフェースのエージェントが毎秒vtyshを呼ぶため。改善候補）。
 - **サーバーの片付け（2026-10-14、ユーザーが実施）**：`/`を29GB→57GBに拡張（LVMの未使用分）、古いスイッチのイメージ・
   ビルドキャッシュ・古いVS Code/Claude Codeの版・npmキャッシュ・aptキャッシュを削除し、ディスク使用率85%→33%（空き37GB）。
   vite開発サーバー（`frontend-dev.service`、5173）は本番がnginxなので停止・無効化（使う時は`systemctl --user start frontend-dev`）。

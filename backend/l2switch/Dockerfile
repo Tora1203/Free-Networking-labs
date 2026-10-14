@@ -2,6 +2,8 @@
 #   fnl/l2switch:1（2026-10-13）：ブリッジのみ。VLANはGUIからexecでbridge vlanを投入
 #   fnl/l2switch:2（2026-10-14）：swcliのrunning-configをエージェントがbr0に反映。GUIからのVLAN設定は廃止
 #   fnl/l2switch:3（2026-10-14）：mstpdでSTP/RSTP/MSTP。カーネルのMST（mst_enabled）のためAlpine 3.22（iproute2 6.15）に
+#   fnl/l2switch:4（2026-10-14）：GUIの「ケーブルを抜く」、非特権コンテナでのmstpdの修正
+#   fnl/l2switch:5（2026-10-14）：ログ、show interfaces、MACテーブル、SVI・ping・パスワード、LLDP/CDP（lldpd）、EtherChannel、ポートセキュリティ
 
 # mstpdはAlpineのパッケージに無いのでソースから作る。コンテナの中で動かすための改修はmstpd/fnl.patch
 FROM alpine:3.22 AS mstpd
@@ -15,7 +17,7 @@ RUN git apply fnl.patch \
  && make -j"$(nproc)" && make install DESTDIR=/out
 
 FROM alpine:3.22
-RUN apk add --no-cache iproute2 iproute2-tc python3 libmnl
+RUN apk add --no-cache iproute2 iproute2-tc python3 libmnl lldpd
 COPY --from=mstpd /out/usr/sbin/mstpd /out/usr/sbin/mstpctl /usr/sbin/
 COPY swcli.py /usr/local/bin/swcli
 COPY fnl-switch-start /usr/local/bin/fnl-switch-start
