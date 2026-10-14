@@ -53,8 +53,10 @@ VLANの意味はCiscoに合わせている：
 
 設定の保存：
 - running-config：`/run/fnl-switch/running.json`。起動のたびにstartup-configから作り直す
-- startup-config：`/etc/fnl-switch/startup.json`（`write memory`で保存）。ノードの停止→起動では残るが、
-  コンテナを作り直す（ラボの「作り直す」・削除）と消える（ルーターのfrr-configと違いホストに置いていない）
+- startup-config：`/etc/fnl-switch/startup.json`（`write memory`で保存）。2026-10-14夕方から、GUIはこの
+  ディレクトリをホストのラボ配下`switch-config/<スイッチ名>/`にbind mountする（ルーターのfrr-configと同じ。
+  ディレクトリはovs-helperの`POST /switch-config`がdeploy前に用意する）。そのためラボの「作り直す」でも残る。
+  bind mountしていない場合（CLIで直接deployしたラボ等）はコンテナ内に置かれ、コンテナを作り直すと消える
 
 エージェント（`swcli --agent`、コンテナのメインプロセス）は1秒ごとにrunning-configと`bridge vlan show`を
 比べ、違うポートだけ設定し直す。後から追加されたポート（ethN）もbr0に参加させる。

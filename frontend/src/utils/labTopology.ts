@@ -2,7 +2,7 @@
 // 元はTopologyEditor.tsxの中にあったが、自動保存＋差分反映（2026-10-14）でホーム画面の「起動」からも
 // 同じ設定投入を行う必要が出たため切り出した（utils/labRuntime.ts参照）。
 import type { Node, Edge } from '@xyflow/react'
-import { dump as dumpYaml } from 'js-yaml'
+import { dump as dumpYaml, load as loadYaml } from 'js-yaml'
 import type { TopoNodeData } from '../components/TopologyNode'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { parseTopologyYaml } from './topologyFromYaml'
@@ -141,6 +141,8 @@ export function buildTopologyContent(
   gatewayByNode: Map<string, string>
   // deployより前にensureFrrConfig()を呼ぶ対象の全ルーターのclabName（2026-10-07追加）
   routerClabNames: string[]
+  // deployより前にensureSwitchConfig()を呼ぶ対象の全L2スイッチのclabName（2026-10-14追加）
+  switchClabNames: string[]
   portAnnotations: Record<string, PortAnnotation>
   switchOriginalIds: Record<string, string>
 } {
@@ -173,19 +175,24 @@ export function buildTopologyContent(
     // 相対パスはlabのトポロジYAML自身からの相対位置になる、M1のテストラボと同じ流儀）。
     // このパスにファイルが事前に存在していないとdeploy自体が失敗するため、deployより前に
     // ensureFrrConfig()で用意する必要がある（buildTopologyContentのroutersから収集する）
-    const frrBinds =
+    const binds =
       data.kind === 'router'
         ? [
             `frr-config/${clabName}/daemons:/etc/frr/daemons`,
             `frr-config/${clabName}/frr.conf:/etc/frr/frr.conf`,
             `frr-config/${clabName}/vtysh.conf:/etc/frr/vtysh.conf`,
           ]
-        : undefined
+        : data.kind === 'l2-switch'
+          ? // スイッチのstartup-config（swcliの`write memory`）をホストに残す（2026-10-14追加。
+            // それまではコンテナ内にあり、ラボの作り直し・削除で消えていた）。ルーターと同じく
+            // 事前にディレクトリが無いとdeployが失敗するので、ensureSwitchConfig()で用意する
+            [`switch-config/${clabName}:/etc/fnl-switch`]
+          : undefined
     nodesMap[clabName] = {
       kind: kindConfig.clabKind,
       ...(kindConfig.image ? { image: kindConfig.image } : {}),
       ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
-      ...(frrBinds ? { binds: frrBinds } : {}),
+      ...(binds ? { binds } : {}),
     }
     if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
   }
@@ -263,8 +270,28 @@ export function buildTopologyContent(
     linuxNodeNames,
     gatewayByNode,
     routerClabNames,
+    switchClabNames: deviceNodes
+      .filter((n) => (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
+      .map((n) => clabNodeNames.get(n.id))
+      .filter((name): name is string => !!name),
     portAnnotations,
     switchOriginalIds,
+  }
+}
+
+// 保存済みのYAMLに、設定の保存先（switch-config）をbind mountしていないスイッチがあるか
+// （2026-10-14以前の形式。動いているラボに反映するとスイッチが作り直されて設定が消える）
+export function hasSwitchWithoutConfigBind(yamlText: string): boolean {
+  try {
+    const doc = loadYaml(yamlText) as { topology?: { nodes?: Record<string, { image?: string; binds?: unknown }> } }
+    return Object.values(doc?.topology?.nodes ?? {}).some(
+      (n) =>
+        typeof n?.image === 'string' &&
+        n.image.startsWith('fnl/l2switch') &&
+        !(Array.isArray(n.binds) && n.binds.some((b) => typeof b === 'string' && b.startsWith('switch-config/'))),
+    )
+  } catch {
+    return false
   }
 }
 

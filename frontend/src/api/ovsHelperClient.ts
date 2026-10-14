@@ -1,5 +1,5 @@
 // backend/ovs-helper/ のクライアント。現在はルーターのFRR設定ファイル（daemons/frr.conf/vtysh.conf）を
-// deploy前に用意する`/frr-config`だけを使う（ラボのディレクトリはユーザーごとに分離されていて
+// deploy前に用意する`/frr-config`と、スイッチの設定保存先を用意する`/switch-config`だけを使う（ラボのディレクトリはユーザーごとに分離されていて
 // ブラウザやclab-api-serverのexecからは書けないため、JWTで認証する専用ヘルパーを立てている）。
 //
 // もともとはL2スイッチ（ovs-bridge kind）のブリッジ作成・VLAN設定用だったが、スイッチを
@@ -34,4 +34,10 @@ async function postToHelper(path: string, body: Record<string, unknown>): Promis
 // 既に存在するファイルは上書きしない（学生の設定を消さないため）ので、再deploy時も毎回呼んで安全
 export function ensureFrrConfig(labName: string, routerName: string): Promise<void> {
   return postToHelper('/frr-config', { labName, routerName })
+}
+
+// L2スイッチのstartup-config（swcliの`write memory`）の保存先switch-config/<switch>/を
+// deployより前に用意する（2026-10-14追加。/etc/fnl-switchにbind mountする）。既にあれば何もしない
+export function ensureSwitchConfig(labName: string, switchName: string): Promise<void> {
+  return postToHelper('/switch-config', { labName, switchName })
 }

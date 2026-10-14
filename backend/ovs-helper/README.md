@@ -117,6 +117,19 @@ sudo visudo -c
 成功時は`200 {"message": "..."}`、認可エラーは`403`、入力不正は`400`、
 `ovs-vsctl`実行失敗は`500`で`{"error": "..."}`を返します。
 
+### `POST /switch-config`
+
+```jsonc
+// リクエストヘッダ: Authorization: Bearer <jwt>
+{ "labName": "lab-xxxxxxxx", "switchName": "switch-1" }
+```
+
+L2スイッチ（`backend/l2switch/`）の`/etc/fnl-switch`にbind mountする空のディレクトリ
+`$CLAB_LABS_ROOT/<username>/<labName>/switch-config/<switchName>/`をdeployより前に用意する（2026-10-14追加）。
+swcliの`write memory`（`startup.json`）がホストに残り、ラボを作り直しても消えなくなる。
+既にあれば何もしない。作成は`/frr-config`と同じラッパー（`frr-config-init.sh`の`switch`モード）で行う。
+ラッパーを更新したら、下のセットアップの`sudo cp`〜`chmod 750`をやり直すこと（sudoersはそのままでよい）。
+
 ### `POST /frr-config`
 
 ```jsonc

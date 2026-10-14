@@ -27,13 +27,15 @@ import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import {
   buildNodeSyncCommands,
+  hasSwitchWithoutConfigBind,
   buildTopologyContent,
   hasContainer,
   parseImportedTopology,
   topologyToYaml,
   type EdgeIfaceData,
 } from '../utils/labTopology'
-import { errorMessage, freshNodesOf, prepareRouters, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
+import { describeHistoryChange } from '../utils/historyDiff'
+import { errorMessage, freshNodesOf, prepareNodeConfigs, runNodeSyncs, startLabNode, stopLabNode } from '../utils/labRuntime'
 import {
   ApiError,
   applyLab,
@@ -168,7 +170,7 @@ function downloadTextFile(filename: string, content: string) {
 }
 
 const OLD_FORMAT_MESSAGE =
-  '古い形式のラボのため、編集は保存のみで反映されません。「作り直す」で今の形式にできます（write memoryしていないルーター設定は消え、GUIで入れていたスイッチのVLANは引き継がれません）'
+  '古い形式のラボのため、編集は保存のみで反映されません。「作り直す」で今の形式にできます（write memoryしていないルーター設定と、スイッチの設定は消えます）'
 
 // 今のパレット定義と違う古い形式のノードか（ovs-bridge/CLI無しのスイッチ、エージェント無しのルーター）
 function needsUpgrade(node: Node): boolean {
@@ -370,7 +372,7 @@ function TopologyEditorInner() {
       let fresh: string[] = []
       if (yamlText !== lastAppliedYaml.current) {
         setSyncStatus({ kind: 'busy', message: '動いているラボに反映中...' })
-        await prepareRouters(name, built.routerClabNames)
+        await prepareNodeConfigs(name, built)
         const result = await applyLab(name)
         lastAppliedYaml.current = yamlText
         fresh = freshNodesOf(result)
@@ -442,12 +444,29 @@ function TopologyEditorInner() {
     future: [],
     current: editorTarget.mode === 'new' ? takeSnapshot(initialNodes, initialEdges) : null,
   })
-  // ボタンの有効/無効の表示用（履歴そのものはhistoryRefにある）
-  const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0 })
+  // ボタンの有効/無効と、押すと何が起きるか（ツールチップ）の表示用（履歴そのものはhistoryRefにある）
+  const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0, undoHint: '', redoHint: '' })
   const syncHistoryCounts = useCallback(() => {
     const h = historyRef.current
-    setHistoryCounts({ past: h.past.length, future: h.future.length })
+    const hint = (target: Snapshot | undefined) => {
+      if (!target || !h.current) return ''
+      const { lines } = describeHistoryChange(h.current, target)
+      return lines.slice(0, 3).join('\n') + (lines.length > 3 ? `\nほか${lines.length - 3}件` : '')
+    }
+    setHistoryCounts({
+      past: h.past.length,
+      future: h.future.length,
+      undoHint: hint(h.past[h.past.length - 1]),
+      redoHint: hint(h.future[h.future.length - 1]),
+    })
   }, [])
+  // 戻した／やり直した直後に、何がどう変わったかをキャンバス上部に数秒出す（2026-10-14）
+  const [historyNotice, setHistoryNotice] = useState<{ action: 'undo' | 'redo'; lines: string[]; seq: number } | null>(null)
+  useEffect(() => {
+    if (!historyNotice) return
+    const timer = setTimeout(() => setHistoryNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [historyNotice])
 
   // 今の状態が履歴の最新と違えば積む（undo直前に、まだ積まれていない直近の変更を拾うためにも使う）
   const commitHistory = useCallback((nodes: Node[], edges: Edge[]) => {
@@ -467,30 +486,37 @@ function TopologyEditorInner() {
     return () => clearTimeout(timer)
   }, [nodes, edges, commitHistory])
 
-  const restoreSnapshot = useCallback((snap: Snapshot) => {
+  // 変わったノード・接続は選択状態にして場所を示す（選択は履歴の比較対象外なので履歴は増えない）
+  const restoreSnapshot = useCallback((from: Snapshot, snap: Snapshot, action: 'undo' | 'redo') => {
+    const change = describeHistoryChange(from, snap)
+    const changedNodes = new Set(change.nodeIds)
+    const changedEdges = new Set(change.edgeIds)
     historyRef.current.current = snap
-    setNodes(snap.nodes)
-    setEdges(snap.edges)
+    setNodes(snap.nodes.map((n) => (changedNodes.has(n.id) ? { ...n, selected: true } : n)))
+    setEdges(snap.edges.map((e) => (changedEdges.has(e.id) ? { ...e, selected: true } : e)))
     setContextMenu(null)
+    setHistoryNotice((prev) => ({ action, lines: change.lines, seq: (prev?.seq ?? 0) + 1 }))
   }, [])
 
   const undo = useCallback(() => {
     const { nodes, edges } = latestRef.current
     commitHistory(nodes, edges)
     const h = historyRef.current
+    const current = h.current
     const prev = h.past.pop()
-    if (!prev || !h.current) return
-    h.future.push(h.current)
-    restoreSnapshot(prev)
+    if (!prev || !current) return
+    h.future.push(current)
+    restoreSnapshot(current, prev, 'undo')
     syncHistoryCounts()
   }, [commitHistory, restoreSnapshot, syncHistoryCounts])
 
   const redo = useCallback(() => {
     const h = historyRef.current
+    const current = h.current
     const next = h.future.pop()
-    if (!next || !h.current) return
-    h.past.push(h.current)
-    restoreSnapshot(next)
+    if (!next || !current) return
+    h.past.push(current)
+    restoreSnapshot(current, next, 'redo')
     syncHistoryCounts()
   }, [restoreSnapshot, syncHistoryCounts])
 
@@ -520,7 +546,7 @@ function TopologyEditorInner() {
     async (name: string, allowRebuild: boolean) => {
       const { nodes, edges } = latestRef.current
       const built = buildTopologyContent(nodes, edges, name)
-      await prepareRouters(name, built.routerClabNames)
+      await prepareNodeConfigs(name, built)
       try {
         await applyLab(name)
       } catch (e) {
@@ -712,7 +738,8 @@ function TopologyEditorInner() {
         // 古い形式のノード（2026-10-13以前のovs-bridgeのスイッチ、2026-10-14以前のエージェント無しの
         // ルーター）は、キャンバス上は今の形式として扱い、次の保存で書き直す。
         // 動いているラボは作り直さないと反映できないので、「作り直す」まで自動反映を止める
-        const isOldFormat = parsed.nodes.some((n) => needsUpgrade(n))
+        // スイッチの設定保存先（switch-config）をbind mountしていないラボ（2026-10-14以前）も同じ扱い
+        const isOldFormat = parsed.nodes.some((n) => needsUpgrade(n)) || hasSwitchWithoutConfigBind(yamlText)
         const nodes = parsed.nodes.map((n) => {
           const kind = (n.data as Partial<TopoNodeData>).kind
           if (!needsUpgrade(n) || !kind) return n
@@ -1123,10 +1150,18 @@ function TopologyEditorInner() {
           <button className="topology-editor__back" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
             ← ホーム
           </button>
-          <button onClick={undo} disabled={historyCounts.past === 0} title="元に戻す（Ctrl+Z）">
+          <button
+            onClick={undo}
+            disabled={historyCounts.past === 0}
+            title={`元に戻す（Ctrl+Z）${historyCounts.undoHint ? `\n${historyCounts.undoHint}` : ''}`}
+          >
             ↶
           </button>
-          <button onClick={redo} disabled={historyCounts.future === 0} title="やり直す（Ctrl+Shift+Z / Ctrl+Y）">
+          <button
+            onClick={redo}
+            disabled={historyCounts.future === 0}
+            title={`やり直す（Ctrl+Shift+Z / Ctrl+Y）${historyCounts.redoHint ? `\n${historyCounts.redoHint}` : ''}`}
+          >
             ↷
           </button>
           <input
@@ -1222,6 +1257,19 @@ function TopologyEditorInner() {
           </button>
         </div>
         <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
+          {historyNotice && (
+            <div key={historyNotice.seq} className="topology-editor__history-notice" role="status" onClick={() => setHistoryNotice(null)}>
+              <div className="topology-editor__history-notice-title">
+                {historyNotice.action === 'undo' ? '↶ 元に戻しました' : '↷ やり直しました'}
+              </div>
+              <ul>
+                {historyNotice.lines.slice(0, 6).map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+                {historyNotice.lines.length > 6 && <li>ほか{historyNotice.lines.length - 6}件</li>}
+              </ul>
+            </div>
+          )}
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}

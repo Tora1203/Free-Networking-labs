@@ -9,9 +9,13 @@
 #   「そのユーザーのラボ配下にfrr-configを作って所有者をそのユーザーにする」だけを行う
 #   このラッパーをsudoersで許可する（link-delete.shと同じ方針）。
 #
-# 呼び出し：sudo -n ovs-helper-frr-config-init <ユーザー名> <ラボ名> <ルーター名>
-#   daemonsの内容は標準入力で受け取る（server.jsのFRR_DEFAULT_DAEMONSが唯一の定義元）。
-#   既存ファイルは絶対に上書きしない（学生が`write memory`した設定を守るため）。
+# 呼び出し：sudo -n ovs-helper-frr-config-init <ユーザー名> <ラボ名> <ノード名> [router|switch]
+#   router（省略時）：frr-config/<ノード名>/にdaemons/frr.conf/vtysh.confを作る。
+#     daemonsの内容は標準入力で受け取る（server.jsのFRR_DEFAULT_DAEMONSが唯一の定義元）。
+#     既存ファイルは絶対に上書きしない（学生が`write memory`した設定を守るため）。
+#   switch（2026-10-14追加）：switch-config/<ノード名>/を空のディレクトリとして作るだけ。
+#     L2スイッチ（backend/l2switch/）の/etc/fnl-switchにbind mountし、swcliの`write memory`
+#     （startup.json）をコンテナの作り直しを越えて残す。中身はコンテナ内のroot（swcli）が書く。
 #
 # セットアップ（初回のみ、sudo必要）:
 #   sudo cp backend/ovs-helper/frr-config-init.sh /usr/local/sbin/ovs-helper-frr-config-init
@@ -27,6 +31,7 @@ ROOT=/var/lib/containerlab/labs
 user="${1:-}"
 lab="${2:-}"
 router="${3:-}"
+mode="${4:-router}"
 
 fail() { echo "refused: $1" >&2; exit 1; }
 
@@ -34,6 +39,7 @@ fail() { echo "refused: $1" >&2; exit 1; }
 printf '%s' "$user"   | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*$' || fail "invalid user"
 printf '%s' "$lab"    | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$'  || fail "invalid lab"
 printf '%s' "$router" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$'  || fail "invalid router"
+case "$mode" in router) sub=frr-config ;; switch) sub=switch-config ;; *) fail "invalid mode" ;; esac
 
 entry="$(getent passwd "$user")" || fail "unknown user"
 uid="$(printf '%s' "$entry" | cut -d: -f3)"
@@ -46,11 +52,12 @@ udir="$ROOT/$user"
 
 # ラボ以下は存在しなければ本人所有で作る（deploy前に呼ばれるため）。
 # 既存のものがシンボリックリンクなら拒否する
-for d in "$udir/$lab" "$udir/$lab/frr-config" "$udir/$lab/frr-config/$router"; do
+for d in "$udir/$lab" "$udir/$lab/$sub" "$udir/$lab/$sub/$router"; do
   [ -L "$d" ] && fail "symlink in path"
   [ -e "$d" ] || install -d -m 0750 -o "$uid" -g "$gid" "$d"
 done
-dir="$udir/$lab/frr-config/$router"
+dir="$udir/$lab/$sub/$router"
+[ "$mode" = switch ] && exit 0
 
 write_if_missing() {  # $1=ファイル名、内容は標準入力
   f="$dir/$1"

@@ -293,29 +293,41 @@ async function handlePortReset(req, res, token) {
 //
 // 既に存在するファイルは絶対に上書きしない（学生が書いた設定を消してしまうため）。
 // 無い時だけ、主要なルーティングプロトコルを一通り有効化した最小構成で新規作成する
-function initFrrConfig(username, labName, routerName) {
+// mode='switch'はL2スイッチの設定保存先（switch-config/<名前>/、空のディレクトリ）を作る（2026-10-14）
+function initNodeConfig(username, labName, nodeName, mode) {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'sudo',
-      ['-n', FRR_CONFIG_INIT_BIN, username, labName, routerName],
+      ['-n', FRR_CONFIG_INIT_BIN, username, labName, nodeName, mode],
       (error, _stdout, stderr) => {
-        if (error) reject(new Error(`FRR設定の用意に失敗しました: ${String(stderr).trim() || error.message}`))
+        const what = mode === 'switch' ? 'スイッチ' : 'FRR'
+        if (error) reject(new Error(`${what}設定の用意に失敗しました: ${String(stderr).trim() || error.message}`))
         else resolve()
       },
     )
-    child.stdin.end(FRR_DEFAULT_DAEMONS)
+    child.stdin.end(mode === 'switch' ? '' : FRR_DEFAULT_DAEMONS)
   })
 }
 
 async function handleFrrConfig(req, res, token) {
+  await handleNodeConfig(req, res, token, 'router')
+}
+
+// L2スイッチの`write memory`（startup.json）をホストに残すための保存先を、deployより前に用意する
+async function handleSwitchConfig(req, res, token) {
+  await handleNodeConfig(req, res, token, 'switch')
+}
+
+async function handleNodeConfig(req, res, token, mode) {
   const payload = await readJsonBody(req)
-  const { labName, routerName } = payload ?? {}
+  const { labName } = payload ?? {}
+  const nodeName = mode === 'switch' ? payload?.switchName : payload?.routerName
   if (typeof labName !== 'string' || !SAFE_PATH_SEGMENT_PATTERN.test(labName)) {
     sendJson(res, 400, { error: 'labNameの形式が不正です' })
     return
   }
-  if (typeof routerName !== 'string' || !SAFE_PATH_SEGMENT_PATTERN.test(routerName)) {
-    sendJson(res, 400, { error: 'routerNameの形式が不正です' })
+  if (typeof nodeName !== 'string' || !SAFE_PATH_SEGMENT_PATTERN.test(nodeName)) {
+    sendJson(res, 400, { error: `${mode === 'switch' ? 'switchName' : 'routerName'}の形式が不正です` })
     return
   }
 
@@ -332,9 +344,9 @@ async function handleFrrConfig(req, res, token) {
 
   // ラボのディレクトリは本人所有(0750)でovs-helper(labuser)からは書けないため、
   // 限定ラッパー経由で作る（2026-10-13：別ユーザーのラボでEACCESになった。frr-config-init.sh参照）
-  await initFrrConfig(username, labName, routerName)
+  await initNodeConfig(username, labName, nodeName, mode)
 
-  sendJson(res, 200, { message: `router ${routerName} のFRR設定を用意しました` })
+  sendJson(res, 200, { message: `${mode} ${nodeName} の設定の保存先を用意しました` })
 }
 
 async function handleVlan(req, res, token) {
@@ -387,6 +399,7 @@ const ROUTES = {
   '/port/reset': handlePortReset,
   '/vlan': handleVlan,
   '/frr-config': handleFrrConfig,
+  '/switch-config': handleSwitchConfig,
 }
 
 const server = createServer((req, res) => {

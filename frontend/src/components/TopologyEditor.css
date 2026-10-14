@@ -247,3 +247,40 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* 元に戻す／やり直すで何が変わったかの表示（2026-10-14） */
+.topology-editor__history-notice {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 14px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  cursor: pointer;
+  animation: topology-editor-notice-in 0.15s ease-out;
+}
+
+.topology-editor__history-notice-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.topology-editor__history-notice ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@keyframes topology-editor-notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}

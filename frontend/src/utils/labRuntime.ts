@@ -18,7 +18,7 @@ import {
   stopNode,
   type ApplyResponse,
 } from '../api/client'
-import { ensureFrrConfig } from '../api/ovsHelperClient'
+import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, parseImportedTopology, topologyToYaml } from './labTopology'
 
@@ -54,9 +54,13 @@ export function freshNodesOf(result: ApplyResponse): string[] {
   return [...(result.addedNodes ?? []), ...(result.recreatedNodes ?? []), ...(result.startedNodes ?? []), ...(result.restartedNodes ?? [])]
 }
 
-// ルーターのbind mount先（frr-config/<router>/）をapplyより前に用意する。既存ファイルは上書きされない
-export async function prepareRouters(labName: string, routerNames: string[]) {
-  await Promise.all(routerNames.map((name) => ensureFrrConfig(labName, name)))
+// ルーター・スイッチのbind mount先（frr-config/<router>/、switch-config/<switch>/）をapplyより前に
+// 用意する。既存のファイルは上書きされない
+export async function prepareNodeConfigs(labName: string, built: { routerClabNames: string[]; switchClabNames: string[] }) {
+  await Promise.all([
+    ...built.routerClabNames.map((name) => ensureFrrConfig(labName, name)),
+    ...built.switchClabNames.map((name) => ensureSwitchConfig(labName, name)),
+  ])
 }
 
 // 保存済みのトポロジでラボを起動し、全ノードに設定を流す（ホーム画面の「起動」用。
@@ -75,7 +79,7 @@ export async function startSavedLab(labName: string): Promise<{ commands: Map<st
     labName,
     serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, readLabTitle(annotationsText)),
   )
-  await prepareRouters(labName, built.routerClabNames)
+  await prepareNodeConfigs(labName, built)
   try {
     await applyLab(labName)
   } catch (e) {
