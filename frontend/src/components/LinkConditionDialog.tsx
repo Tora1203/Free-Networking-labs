@@ -24,12 +24,14 @@ interface Props {
 type Fields = { rate: string; customRate: string; delay: string; jitter: string; loss: string; corrupt: string }
 
 const CUSTOM = 'custom'
+// 帯域の選択肢の値（既定＝''、無制限＝'0'、それ以外はkbit/sの数字）
+const rateValue = (kbit: number | undefined) => (kbit === undefined ? '' : String(kbit))
 
 function toFields(c: LinkCondition | undefined): Fields {
-  const rate = c?.rateKbit ?? 0
+  const rate = c?.rateKbit
   const preset = RATE_PRESETS.some((p) => p.kbit === rate)
   return {
-    rate: preset ? String(rate) : CUSTOM,
+    rate: preset ? rateValue(rate) : CUSTOM,
     customRate: preset ? '' : String(rate),
     delay: c?.delayMs ? String(c.delayMs) : '',
     jitter: c?.jitterMs ? String(c.jitterMs) : '',
@@ -94,7 +96,7 @@ export default function LinkConditionDialog({ linkName, initial, running, onAppl
           <span className="link-condition__inputs">
             <select value={fields.rate} onChange={set('rate')}>
               {RATE_PRESETS.map((p) => (
-                <option key={p.kbit} value={String(p.kbit)}>
+                <option key={p.label} value={rateValue(p.kbit)}>
                   {p.label}
                 </option>
               ))}
@@ -141,7 +143,13 @@ export default function LinkConditionDialog({ linkName, initial, running, onAppl
           <div className="topology-editor__modal-warn">{error}</div>
         ) : (
           <div className="link-condition__note">
-            {preview ? `設定：${preview}` : '設定なし（帯域は無制限、実測で約8Gbps）'}
+            {preview ? `設定：${preview}` : '既定（帯域1Gbps、遅延・ロスなし）'}
+            {fields.rate === '0' && (
+              <>
+                <br />
+                無制限は実測で約8Gbps出ます。大量に流すとサーバーのCPUを使い切るので注意してください。
+              </>
+            )}
             <br />
             値は行きと帰りの両方に掛かります（遅延50msなら往復で約100ms）。
             {running ? '保存するとすぐに反映されます。' : 'ラボを起動した時に反映されます。'}

@@ -1,7 +1,9 @@
 // リンクの品質（帯域・遅延・ゆらぎ・ロス・破損）とケーブルの抜き差し（2026-10-14追加。
 // 「今のリンクは何bpsで動いているのか」から始まった、CMLのリンク品質設定に当たる機能）。
 //
-// リンクはvethで、何も設定しなければ帯域の制限は無い（実測で直結約8.5Gbps）。品質の設定は
+// リンクはvethで、そのままでは帯域の制限が無い（実測で直結約8.5Gbps）。共有サーバー（CPU 4コア）で
+// 1人のiperf等がCPUを使い切らないよう、またルーターのGigabitEthernetらしく、何も設定しないリンクも
+// **既定で1Gbps**に絞る（2026-10-14決定。「無制限」は明示的に選んだ時だけ）。品質の設定は
 // clab-api-serverのnetem API（POST /api/v1/tools/netem/set）で、リンクの両端のI/Fに同じ値を入れる。
 // netemは送信側にしか効かないので、両端に入れることで「行き」と「帰り」の両方に効く
 // （遅延50msなら往復で100ms、ロス1%なら片道ごとに1%）。
@@ -15,7 +17,7 @@
 // `ip link set down`する。どちらの端を落とすかはlinkDownEnd()で決める。
 
 export interface LinkCondition {
-  // 帯域（kbit/s）。未設定＝無制限
+  // 帯域（kbit/s）。未設定＝既定（DEFAULT_RATE_KBIT）、0＝無制限
   rateKbit?: number
   // 片道の遅延（ms）
   delayMs?: number
@@ -35,10 +37,13 @@ export const LIMITS = {
   rateKbit: 10_000_000,
 }
 
-// 帯域の選択肢（kbit/s）。0＝無制限
-export const RATE_PRESETS: { label: string; kbit: number }[] = [
+// 何も設定しないリンクの帯域（kbit/s）
+export const DEFAULT_RATE_KBIT = 1_000_000
+
+// 帯域の選択肢（kbit/s）。undefined＝既定、0＝無制限
+export const RATE_PRESETS: { label: string; kbit: number | undefined }[] = [
+  { label: '1 Gbps（既定）', kbit: undefined },
   { label: '無制限', kbit: 0 },
-  { label: '1 Gbps', kbit: 1_000_000 },
   { label: '100 Mbps', kbit: 100_000 },
   { label: '10 Mbps', kbit: 10_000 },
   { label: '1.5 Mbps（T1）', kbit: 1_544 },
@@ -49,7 +54,7 @@ export const RATE_PRESETS: { label: string; kbit: number }[] = [
 
 // よくある回線をまとめて選べるひな形
 export const CONDITION_PRESETS: { label: string; description: string; condition: LinkCondition }[] = [
-  { label: '品質の設定なし', description: '帯域・遅延・ロスの制限を外す', condition: {} },
+  { label: '既定に戻す', description: '1Gbps・遅延やロスなし', condition: {} },
   { label: '拠点間WAN', description: '10Mbps・片道10ms', condition: { rateKbit: 10_000, delayMs: 10 } },
   { label: '海外回線', description: '片道100ms±10ms', condition: { delayMs: 100, jitterMs: 10 } },
   { label: '衛星回線', description: '1Mbps・片道300ms', condition: { rateKbit: 1_000, delayMs: 300 } },
@@ -62,13 +67,14 @@ function num(value: unknown, max: number): number | undefined {
   return Math.min(n, max)
 }
 
-// 保存データ・入力から読み直す（範囲外・0は外す）。何も残らなければundefined
+// 保存データ・入力から読み直す（範囲外・0は外す。帯域の0＝無制限だけは残す）。何も残らなければundefined
 export function normalizeCondition(value: unknown): LinkCondition | undefined {
   if (!value || typeof value !== 'object') return undefined
   const v = value as Record<string, unknown>
   const c: LinkCondition = {}
   const rate = num(v.rateKbit, LIMITS.rateKbit)
   if (rate !== undefined) c.rateKbit = Math.max(1, Math.round(rate))
+  else if (v.rateKbit === 0 || v.rateKbit === '0') c.rateKbit = 0
   const delay = num(v.delayMs, LIMITS.delayMs)
   if (delay !== undefined) c.delayMs = Math.round(delay)
   const jitter = num(v.jitterMs, LIMITS.jitterMs)
@@ -81,9 +87,6 @@ export function normalizeCondition(value: unknown): LinkCondition | undefined {
   return Object.keys(c).length > 0 ? c : undefined
 }
 
-export function hasImpairment(c: LinkCondition | undefined): boolean {
-  return !!c && !!(c.rateKbit || c.delayMs || c.lossPct || c.corruptPct)
-}
 
 export function formatRate(kbit: number): string {
   if (kbit >= 1_000_000 && kbit % 1_000_000 === 0) return `${kbit / 1_000_000}Gbps`
@@ -91,11 +94,12 @@ export function formatRate(kbit: number): string {
   return `${kbit}kbps`
 }
 
-// 品質の要約（キャンバスのラベル・元に戻すの説明用）。設定が無ければ空文字
+// 品質の要約（キャンバスのラベル・元に戻すの説明用）。既定のままなら空文字
 export function conditionSummary(c: LinkCondition | undefined): string {
   if (!c) return ''
   const parts: string[] = []
-  if (c.rateKbit) parts.push(formatRate(c.rateKbit))
+  if (c.rateKbit === 0) parts.push('帯域無制限')
+  else if (c.rateKbit) parts.push(formatRate(c.rateKbit))
   if (c.delayMs) parts.push(`${c.delayMs}ms${c.jitterMs ? `±${c.jitterMs}ms` : ''}`)
   if (c.lossPct) parts.push(`ロス${c.lossPct}%`)
   if (c.corruptPct) parts.push(`破損${c.corruptPct}%`)
@@ -114,15 +118,16 @@ export interface NetemParams {
   corruption?: number
 }
 
+// 何も設定していないリンクにも既定の帯域を入れる。無制限で遅延・ロスも無い時だけnull（netemを外す）
 export function netemParams(c: LinkCondition | undefined): NetemParams | null {
-  if (!hasImpairment(c) || !c) return null
   const p: NetemParams = {}
-  if (c.delayMs) p.delay = `${c.delayMs}ms`
-  if (c.delayMs && c.jitterMs) p.jitter = `${c.jitterMs}ms`
-  if (c.lossPct) p.loss = c.lossPct
-  if (c.rateKbit) p.rate = c.rateKbit
-  if (c.corruptPct) p.corruption = c.corruptPct
-  return p
+  const rate = c?.rateKbit ?? DEFAULT_RATE_KBIT
+  if (rate) p.rate = rate
+  if (c?.delayMs) p.delay = `${c.delayMs}ms`
+  if (c?.delayMs && c.jitterMs) p.jitter = `${c.jitterMs}ms`
+  if (c?.lossPct) p.loss = c.lossPct
+  if (c?.corruptPct) p.corruption = c.corruptPct
+  return Object.keys(p).length > 0 ? p : null
 }
 
 // 「今入っている設定」と「入れたい設定」を比べるための文字列（設定なし＝空文字）
