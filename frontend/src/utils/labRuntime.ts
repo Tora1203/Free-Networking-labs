@@ -19,7 +19,7 @@ import {
   type ApplyResponse,
 } from '../api/client'
 import { ensureFrrConfig } from '../api/ovsHelperClient'
-import { serializeAnnotations } from './annotations'
+import { readLabTitle, serializeAnnotations } from './annotations'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, parseImportedTopology, topologyToYaml } from './labTopology'
 
 export function errorMessage(e: unknown, fallback: string): string {
@@ -71,7 +71,10 @@ export async function startSavedLab(labName: string): Promise<{ commands: Map<st
   const built = buildTopologyContent(nodes, edges, labName)
   // 古い形式（ovs-bridgeのスイッチ）のラボはここで今の形式に書き直してから起動する
   await putLabTopologyYaml(labName, topologyToYaml(built.topologyContent))
-  await putLabAnnotations(labName, serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds))
+  await putLabAnnotations(
+    labName,
+    serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, readLabTitle(annotationsText)),
+  )
   await prepareRouters(labName, built.routerClabNames)
   try {
     await applyLab(labName)

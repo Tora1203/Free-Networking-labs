@@ -24,7 +24,7 @@ import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
-import { serializeAnnotations } from '../utils/annotations'
+import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import {
   buildNodeSyncCommands,
   buildTopologyContent,
@@ -344,7 +344,9 @@ function TopologyEditorInner() {
       return
     }
     const yamlText = topologyToYaml(built.topologyContent)
-    const annotationsText = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds)
+    // 表示名（ラボ名欄）。保存後も変えられ、annotationsに入るだけなのでラボの作り直しは起きない
+    const title = latestRef.current.labName.trim() || name
+    const annotationsText = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
     try {
       if (yamlText !== lastSavedYaml.current) {
         setSyncStatus({ kind: 'busy', message: '保存中...' })
@@ -354,6 +356,7 @@ function TopologyEditorInner() {
       if (annotationsText !== lastSavedAnnotations.current) {
         await putLabAnnotations(name, annotationsText)
         lastSavedAnnotations.current = annotationsText
+        rememberLabDisplayName(name, title)
       }
       if (runStateRef.current.kind !== 'running') {
         setSyncStatus({ kind: 'ok', message: '保存済み' })
@@ -719,7 +722,9 @@ function TopologyEditorInner() {
         setNodes(nodes)
         setEdges(edges)
         counters.current = parsedCounters
-        setLabName(getLabDisplayName(targetLabName))
+        const title = readLabTitle(annotationsText) ?? getLabDisplayName(targetLabName)
+        setLabName(title)
+        latestRef.current = { ...latestRef.current, labName: title }
         savedNameRef.current = targetLabName
         setSavedLabName(targetLabName)
 
@@ -733,7 +738,7 @@ function TopologyEditorInner() {
           if (!isOldFormat) {
             lastSavedYaml.current = normalizedYaml
             lastAppliedYaml.current = normalizedYaml
-            lastSavedAnnotations.current = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds)
+            lastSavedAnnotations.current = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
           }
         } catch {
           // 種別情報の無いノード等。次の保存でエラーとして表示される
@@ -1130,12 +1135,15 @@ function TopologyEditorInner() {
             value={labName}
             onChange={(e) => setLabName(e.target.value)}
             disabled={loadStatus.kind === 'loading'}
-            readOnly={!!savedLabName}
-            title={savedLabName ? '保存済みのラボの名前は変更できません' : '最初のノードを置いた時点でこの名前で保存されます'}
+            title={
+              savedLabName
+                ? `表示名はいつでも変えられます（ラボのID: ${savedLabName}。IDは最初の保存で決まり変わりません）`
+                : '最初のノードを置いた時点でこの名前で保存されます'
+            }
           />
           {loadStatus.kind === 'loading' && <span className="topology-editor__status">トポロジを読み込み中...</span>}
           {loadStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{loadStatus.message}</span>}
-          {labName.trim() && !isSafeLabName(labName.trim()) && (
+          {!savedLabName && labName.trim() && !isSafeLabName(labName.trim()) && (
             <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前で保存されます">
               実際の名前: {toSafeLabName(labName)}
             </span>

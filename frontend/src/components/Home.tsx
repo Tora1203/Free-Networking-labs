@@ -4,6 +4,7 @@ import {
   ApiError,
   deleteLab,
   deleteLabFile,
+  getLabAnnotations,
   getLabs,
   getLabTopologyFiles,
   stopLab,
@@ -12,6 +13,7 @@ import {
   type TopologyFileEntry,
 } from '../api/client'
 import { getLabDisplayName } from '../utils/labName'
+import { readLabTitle } from '../utils/annotations'
 import { startSavedLab } from '../utils/labRuntime'
 import { useAuthStore } from '../store/authStore'
 import { useUiStore } from '../store/uiStore'
@@ -28,7 +30,8 @@ const stateLabel: Record<NodeState, string> = {
 // 起動していなくても一覧に出す。保存済みラボの一覧（GET /labs/topology/files、自分のものだけ）に、
 // 動いている/停止中のコンテナの状態（GET /api/v1/labs）を重ねる。
 // GET /api/v1/labs は clab_admins 所属だと他ユーザーのラボも返すため、そちらは自分のものだけ使う
-type HomeLab = Lab & { runKind: 'running' | 'stopped' | 'none'; yamlFileName?: string; annotationsFileName?: string }
+// title：annotationsに保存した表示名（2026-10-14〜。無ければこのブラウザのlocalStorageの名前）
+type HomeLab = Lab & { runKind: 'running' | 'stopped' | 'none'; yamlFileName?: string; annotationsFileName?: string; title?: string }
 
 function toLabs(files: TopologyFileEntry[], raw: RawLabsResponse, username: string | null): HomeLab[] {
   const names = new Set(files.map((f) => f.labName))
@@ -109,7 +112,17 @@ export default function Home() {
 
   const refresh = useCallback(() => {
     Promise.all([getLabTopologyFiles(), getLabs()])
-      .then(([files, raw]) => setLabs(toLabs(files, raw, username)))
+      .then(async ([files, raw]) => {
+        const list = toLabs(files, raw, username)
+        setLabs(list)
+        // 表示名はannotationsにあるので、ラボごとに取ってから差し替える（取れなければ従来の名前のまま）
+        const titles = await Promise.all(
+          list.map((lab) =>
+            lab.annotationsFileName ? getLabAnnotations(lab.name).then(readLabTitle).catch(() => undefined) : undefined,
+          ),
+        )
+        setLabs(list.map((lab, i) => ({ ...lab, title: titles[i] })))
+      })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'ラボ一覧の取得に失敗しました'))
   }, [username])
 
@@ -122,7 +135,7 @@ export default function Home() {
       const labName = lab.name
       if (
         action === 'destroy' &&
-        !window.confirm(`ラボ「${getLabDisplayName(labName)}」を削除します。保存したトポロジやルーターの設定も消え、元に戻せません。よろしいですか？`)
+        !window.confirm(`ラボ「${lab.title ?? getLabDisplayName(labName)}」を削除します。保存したトポロジやルーターの設定も消え、元に戻せません。よろしいですか？`)
       )
         return
       if (action === 'stop' && !window.confirm('ラボを停止します。write memoryしていないルーターの設定は消えます。よろしいですか？')) return
@@ -174,11 +187,11 @@ export default function Home() {
           const labBusy = busy[lab.name]
           // 保存時に日本語名等が使われた場合、実際のAPI上の名前は安全な名前に変換されている
           // （utils/labName.ts参照）。localStorageに記録された元の名前があればそちらを表示する。
-          const displayName = getLabDisplayName(lab.name)
+          const displayName = lab.title ?? getLabDisplayName(lab.name)
           return (
             <div className="lab-card" key={lab.name}>
               <div className="lab-card__top">
-                <span className="lab-card__name" title={displayName !== lab.name ? `実際の名前: ${lab.name}` : undefined}>
+                <span className="lab-card__name" title={displayName !== lab.name ? `ラボのID: ${lab.name}` : undefined}>
                   {displayName}
                 </span>
                 <span className="lab-card__owner">@{lab.owner}</span>
