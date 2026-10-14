@@ -307,28 +307,47 @@ def show_mac(cfg):
 
 
 # ---------------------------------------------------------------------------
-# コマンドの文法（Cisco風：各キーワードは一意に決まる範囲で省略できる）
+# コマンドの文法（Cisco風）。表示メッセージは英語（2026-10-14：端末で日本語が文字化けしたため）
 # ---------------------------------------------------------------------------
-# 要素：キーワード（文字列）か、引数を表す <...>。
-#   <vlan>  1〜4094     <vlans> VLANリスト(1,10-20)    <iface> eth1（e1/et1も可）
+# 文法は「キーワード／引数」の木。各キーワードは一意に決まる範囲で省略でき（conf t、int e1、sw mo acc）、
+# 完全一致のキーワードは前方一致より優先する。キーワードに一致しない時だけ引数として解釈する。
+#   <vlan>  1-4094   <vlans> VLANリスト(1,10-20)   <iface> eth1（e1 / eth 1 / Ethernet1も可）
 #   <ifaces> eth1-3,eth5   <word> 1語   <line> 行の残り全部
 
+IFACE_WORD = re.compile(r'e(t(h(e(r(n(e(t)?)?)?)?)?)?)?', re.I)
+
+
 def norm_iface(tok):
-    m = re.fullmatch(r'e(?:t(?:h(?:ernet)?)?)?(\d+)', tok, re.I)
+    m = re.fullmatch(r'e(?:t(?:h(?:e(?:r(?:n(?:e(?:t)?)?)?)?)?)?)?(\d+)', tok, re.I)
     return f'eth{int(m.group(1))}' if m and int(m.group(1)) >= 1 else None
 
 
 def norm_iface_range(tok):
     names = []
     for part in tok.split(','):
-        m = re.fullmatch(r'(e(?:t(?:h(?:ernet)?)?)?)?(\d+)(?:-(\d+))?', part, re.I)
+        m = re.fullmatch(r'(?:e(?:t(?:h(?:e(?:r(?:n(?:e(?:t)?)?)?)?)?)?)?)?(\d+)(?:-(?:e(?:t(?:h)?)?)?(\d+))?', part, re.I)
         if not m:
             return None
-        a, b = int(m.group(2)), int(m.group(3) or m.group(2))
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
         if not (1 <= a <= b <= 64):
             return None
         names += [f'eth{i}' for i in range(a, b + 1)]
     return names or None
+
+
+def tokenize(line):
+    """空白で分け、`eth 1` / `ethernet 1-3` のように名前と番号が離れていたら1語にまとめる"""
+    raw = line.split()
+    tokens = []
+    i = 0
+    while i < len(raw):
+        tok = raw[i]
+        if IFACE_WORD.fullmatch(tok) and i + 1 < len(raw) and re.match(r'\d', raw[i + 1]):
+            tok += raw[i + 1]
+            i += 1
+        tokens.append(tok)
+        i += 1
+    return tokens
 
 
 ARG_CHECK = {
@@ -339,24 +358,89 @@ ARG_CHECK = {
     '<word>': lambda t: True,
     '<line>': lambda t: True,
 }
-KEYWORD_HELP = {
-    'configure': '設定モードに入る', 'terminal': '端末から設定する', 'copy': '設定をコピーする',
-    'show': '状態や設定を表示する', 'write': '設定を保存する', 'memory': 'startup-configに保存',
-    'interfaces': 'インターフェースの情報', 'mac': 'MACアドレステーブル', 'address-table': 'MACアドレステーブル',
-    'vlan': 'VLAN', 'interface': 'インターフェースの設定', 'range': '複数のインターフェース',
-    'switchport': 'スイッチポートの設定', 'mode': 'ポートのモード', 'access': 'アクセスポート',
-    'trunk': 'トランクポート', 'allowed': '許可するVLAN', 'native': 'ネイティブVLAN（タグなし）',
-    'no': '設定を消す・既定に戻す', 'do': '特権モードのコマンドを実行', 'hostname': 'ホスト名',
-    'name': 'VLANの名前', 'description': '説明', 'shutdown': 'ポートを無効にする',
-    'end': '特権モードに戻る', 'exit': '1つ上のモードに戻る', 'running-config': '現在の設定',
-    'startup-config': '保存済みの設定', 'status': 'ポートの状態', 'brief': '一覧', 'add': '追加',
-    'remove': '削除', 'all': 'すべて', 'none': 'なし',
-}
 ARG_HELP = {
-    '<vlan>': '<1-4094>  VLAN ID', '<vlans>': 'WORD  VLANリスト（例 10,20,30-40）',
-    '<iface>': 'ethN  インターフェース（例 eth1）', '<ifaces>': 'WORD  範囲（例 eth1-3,eth5）',
-    '<word>': 'WORD', '<line>': 'LINE',
+    '<vlan>': ('<1-4094>', 'VLAN ID'),
+    '<vlans>': ('WORD', 'VLAN IDs of the allowed VLANs (e.g. 10,20,30-40)'),
+    '<iface>': ('ethN', 'Interface (e.g. eth1)'),
+    '<ifaces>': ('WORD', 'Interface range (e.g. eth1-3,eth5)'),
+    '<word>': ('WORD', ''),
+    '<line>': ('LINE', ''),
 }
+KEYWORD_HELP = {
+    'configure': 'Enter configuration mode', 'terminal': 'Configure from the terminal',
+    'copy': 'Copy from one file to another', 'show': 'Show running system information',
+    'write': 'Write running configuration to memory', 'memory': 'Write to NV memory',
+    'enable': 'Turn on privileged commands', 'interfaces': 'Interface status and configuration',
+    'mac': 'MAC configuration', 'address-table': 'MAC forwarding table', 'mac-address-table': 'MAC forwarding table',
+    'vlan': 'VLAN commands', 'interface': 'Select an interface to configure', 'range': 'Interface range command',
+    'switchport': 'Set switching mode characteristics', 'mode': 'Set trunking mode of the interface',
+    'access': 'Set access mode characteristics of the interface', 'trunk': 'Set trunking characteristics of the interface',
+    'allowed': 'Set allowed VLAN characteristics when interface is in trunking mode',
+    'native': 'Set trunking native characteristics when interface is in trunking mode',
+    'no': 'Negate a command or set its defaults', 'do': 'To run exec commands in config mode',
+    'hostname': 'Set system\'s network name', 'name': 'Ascii name of the VLAN', 'description': 'Interface specific description',
+    'shutdown': 'Shutdown the selected interface', 'end': 'Exit from configure mode',
+    'exit': 'Exit from the current mode', 'quit': 'Exit from the EXEC', 'running-config': 'Current operating configuration',
+    'startup-config': 'Contents of startup configuration', 'status': 'Show interface line status',
+    'brief': 'VTP all VLAN status in brief', 'add': 'add VLANs to the current list',
+    'remove': 'remove VLANs from the current list', 'all': 'all VLANs', 'none': 'no VLANs',
+}
+
+
+class Node:
+    """文法の木の1要素。children：キーワード/引数 → Node、func：ここで終わるコマンドの処理"""
+    def __init__(self):
+        self.children = {}
+        self.func = None
+        self.help = ''
+
+
+def build_tree(entries):
+    root = Node()
+    for pattern, func, help_ in entries:
+        node = root
+        for elem in pattern:
+            node = node.children.setdefault(elem, Node())
+        node.func = func
+        node.help = help_
+    return root
+
+
+class ParseError(Exception):
+    def __init__(self, message, pos=None):
+        super().__init__(message)
+        self.pos = pos  # 何語目でエラーになったか（^の位置）
+
+
+def match_children(node, tok):
+    """tokに一致する子。キーワードの完全一致 > キーワードの前方一致（一意なら）> 引数"""
+    low = tok.lower()
+    keywords = [k for k in node.children if not k.startswith('<')]
+    if low in keywords:
+        return [(low, node.children[low])]
+    prefixed = [k for k in keywords if k.startswith(low)]
+    if prefixed:
+        return [(k, node.children[k]) for k in prefixed]
+    return [(k, c) for k, c in node.children.items() if k.startswith('<') and ARG_CHECK[k](tok)]
+
+
+def walk(root, tokens):
+    """tokensを木に沿って辿る。(最後のNode, 引数のリスト)。曖昧・不正ならParseError"""
+    node = root
+    args = []
+    for i, tok in enumerate(tokens):
+        if '<line>' in node.children and not any(k for k, _ in match_children(node, tok) if not k.startswith('<')):
+            args.append(' '.join(tokens[i:]))
+            return node.children['<line>'], args
+        found = match_children(node, tok)
+        if not found:
+            raise ParseError('% Invalid input detected at \'^\' marker.', i)
+        if len(found) > 1:
+            raise ParseError(f'% Ambiguous command:  "{" ".join(tokens[: i + 1])}"')
+        key, node = found[0]
+        if key.startswith('<'):
+            args.append(tok)
+    return node, args
 
 
 class Cli:
@@ -364,146 +448,145 @@ class Cli:
         self.mode = 'exec'
         self.ifaces = []  # interfaceモードの対象
         self.vlan = None  # vlanモードの対象
-        self.grammar = self.build_grammar()
+        self.trees = {mode: build_tree(entries) for mode, entries in self.build_grammar().items()}
 
     # ---- 文法 ----
     def build_grammar(self):
+        p = lambda f: (lambda a: print(f(self.cfg())))  # noqa: E731
         show = [
-            (['show', 'running-config'], lambda a: print(show_running(self.cfg())), '現在の設定'),
-            (['show', 'startup-config'], self.show_startup, '保存済みの設定'),
-            (['show', 'vlan', 'brief'], lambda a: print(show_vlan_brief(self.cfg())), 'VLANとアクセスポートの一覧'),
-            (['show', 'vlan'], lambda a: print(show_vlan_brief(self.cfg())), 'VLANとアクセスポートの一覧'),
-            (['show', 'interfaces', 'status'], lambda a: print(show_interfaces_status(self.cfg())), 'ポートの状態'),
-            (['show', 'interfaces', 'trunk'], lambda a: print(show_interfaces_trunk(self.cfg())), 'トランクポート'),
-            (['show', 'mac', 'address-table'], lambda a: print(show_mac(self.cfg())), '学習したMACアドレス'),
+            (['show', 'running-config'], p(show_running), 'Current operating configuration'),
+            (['show', 'startup-config'], self.show_startup, 'Contents of startup configuration'),
+            (['show', 'vlan'], p(show_vlan_brief), 'VTP VLAN status'),
+            (['show', 'vlan', 'brief'], p(show_vlan_brief), 'VTP all VLAN status in brief'),
+            (['show', 'interfaces'], p(show_interfaces_status), 'Interface status and configuration'),
+            (['show', 'interfaces', 'status'], p(show_interfaces_status), 'Show interface line status'),
+            (['show', 'interfaces', 'trunk'], p(show_interfaces_trunk), 'Show interface trunk information'),
+            (['show', 'mac', 'address-table'], p(show_mac), 'MAC forwarding table'),
+            (['show', 'mac-address-table'], p(show_mac), 'MAC forwarding table'),
         ]
         common_cfg = [
-            (['end'], self.do_end, '特権モードに戻る'),
-            (['exit'], self.do_exit, '1つ上のモードに戻る'),
-            (['do', '<line>'], self.do_do, '特権モードのコマンドを実行'),
+            (['end'], self.do_end, 'Exit from configure mode'),
+            (['exit'], self.do_exit, 'Exit from the current mode'),
+            (['do', '<line>'], self.do_do, 'To run exec commands in config mode'),
         ]
         return {
             'exec': show + [
-                (['configure', 'terminal'], self.do_conf, '設定モードに入る'),
-                (['write', 'memory'], self.do_write, '設定を保存する'),
-                (['write'], self.do_write, '設定を保存する'),
-                (['copy', 'running-config', 'startup-config'], self.do_write, '設定を保存する'),
-                (['exit'], self.do_logout, 'コンソールを抜ける'),
-                (['quit'], self.do_logout, 'コンソールを抜ける'),
+                (['configure'], self.do_conf, 'Enter configuration mode'),
+                (['configure', 'terminal'], self.do_conf, 'Configure from the terminal'),
+                (['enable'], lambda a: None, 'Turn on privileged commands'),
+                (['write'], self.do_write, 'Write running configuration to memory'),
+                (['write', 'memory'], self.do_write, 'Write to NV memory'),
+                (['copy', 'running-config', 'startup-config'], self.do_write, 'Copy to startup configuration'),
+                (['exit'], self.do_logout, 'Exit from the EXEC'),
+                (['quit'], self.do_logout, 'Exit from the EXEC'),
             ],
             'config': common_cfg + [
-                (['hostname', '<word>'], self.do_hostname, 'ホスト名'),
-                (['interface', 'range', '<ifaces>'], self.do_interface_range, '複数のインターフェースをまとめて設定'),
-                (['interface', '<iface>'], self.do_interface, 'インターフェースの設定'),
-                (['vlan', '<vlans>'], self.do_vlan, 'VLANを作る'),
-                (['no', 'vlan', '<vlans>'], self.do_no_vlan, 'VLANを消す'),
+                (['hostname', '<word>'], self.do_hostname, "Set system's network name"),
+                (['interface', '<iface>'], self.do_interface, 'Select an interface to configure'),
+                (['interface', 'range', '<ifaces>'], self.do_interface_range, 'Interface range command'),
+                (['vlan', '<vlans>'], self.do_vlan, 'Vlan commands'),
+                (['no', 'vlan', '<vlans>'], self.do_no_vlan, 'Delete VLANs'),
             ],
             'vlan': common_cfg + [
-                (['name', '<word>'], self.do_vlan_name, 'VLANの名前'),
-                (['no', 'name'], self.do_vlan_no_name, 'VLANの名前を消す'),
+                (['name', '<word>'], self.do_vlan_name, 'Ascii name of the VLAN'),
+                (['no', 'name'], self.do_vlan_no_name, 'Reset the VLAN name'),
             ],
             'interface': common_cfg + [
-                (['switchport', 'mode', 'access'], lambda a: self.set_port(mode='access'), 'アクセスポートにする'),
-                (['switchport', 'mode', 'trunk'], lambda a: self.set_port(mode='trunk'), 'トランクポートにする'),
-                (['switchport', 'access', 'vlan', '<vlan>'], self.do_access_vlan, 'アクセスVLAN'),
-                (['no', 'switchport', 'access', 'vlan'], lambda a: self.set_port(access_vlan=None), 'アクセスVLANを1に戻す'),
-                (['switchport', 'trunk', 'allowed', 'vlan', 'all'], lambda a: self.set_port(allowed=None), '全VLANを許可'),
-                (['switchport', 'trunk', 'allowed', 'vlan', 'add', '<vlans>'], self.do_allowed_add, '許可VLANを追加'),
-                (['switchport', 'trunk', 'allowed', 'vlan', 'remove', '<vlans>'], self.do_allowed_remove, '許可VLANを削除'),
-                (['switchport', 'trunk', 'allowed', 'vlan', 'none'], lambda a: self.set_port(allowed=[]), 'どのVLANも許可しない'),
-                (['switchport', 'trunk', 'allowed', 'vlan', '<vlans>'], self.do_allowed, '許可VLANを指定'),
-                (['no', 'switchport', 'trunk', 'allowed', 'vlan'], lambda a: self.set_port(allowed=None), '全VLAN許可に戻す'),
-                (['switchport', 'trunk', 'native', 'vlan', '<vlan>'], self.do_native, 'ネイティブVLAN（タグなし）'),
-                (['no', 'switchport', 'trunk', 'native', 'vlan'], lambda a: self.set_port(native=None), 'ネイティブVLANを1に戻す'),
-                (['shutdown'], lambda a: self.set_port(shutdown=True), 'ポートを無効にする'),
-                (['no', 'shutdown'], lambda a: self.set_port(shutdown=None), 'ポートを有効にする'),
-                (['description', '<line>'], self.do_description, '説明'),
-                (['no', 'description'], lambda a: self.set_port(description=None), '説明を消す'),
+                (['switchport', 'mode', 'access'], lambda a: self.set_port(mode='access'), 'Set trunking mode to ACCESS unconditionally'),
+                (['switchport', 'mode', 'trunk'], lambda a: self.set_port(mode='trunk'), 'Set trunking mode to TRUNK unconditionally'),
+                (['switchport', 'access', 'vlan', '<vlan>'], self.do_access_vlan, 'Set VLAN when interface is in access mode'),
+                (['switchport', 'trunk', 'allowed', 'vlan', '<vlans>'], self.do_allowed, 'Set allowed VLANs'),
+                (['switchport', 'trunk', 'allowed', 'vlan', 'add', '<vlans>'], self.do_allowed_add, 'add VLANs to the current list'),
+                (['switchport', 'trunk', 'allowed', 'vlan', 'remove', '<vlans>'], self.do_allowed_remove, 'remove VLANs from the current list'),
+                (['switchport', 'trunk', 'allowed', 'vlan', 'all'], lambda a: self.set_port(allowed=None), 'all VLANs'),
+                (['switchport', 'trunk', 'allowed', 'vlan', 'none'], lambda a: self.set_port(allowed=[]), 'no VLANs'),
+                (['switchport', 'trunk', 'native', 'vlan', '<vlan>'], self.do_native, 'Set native VLAN when interface is in trunking mode'),
+                (['no', 'switchport', 'mode'], lambda a: self.set_port(mode=None), 'Reset the mode to access'),
+                (['no', 'switchport', 'access', 'vlan'], lambda a: self.set_port(access_vlan=None), 'Reset the access VLAN to 1'),
+                (['no', 'switchport', 'trunk', 'allowed', 'vlan'], lambda a: self.set_port(allowed=None), 'Allow all VLANs'),
+                (['no', 'switchport', 'trunk', 'native', 'vlan'], lambda a: self.set_port(native=None), 'Reset the native VLAN to 1'),
+                (['shutdown'], lambda a: self.set_port(shutdown=True), 'Shutdown the selected interface'),
+                (['no', 'shutdown'], lambda a: self.set_port(shutdown=None), 'Enable the selected interface'),
+                (['description', '<line>'], self.do_description, 'Interface specific description'),
+                (['no', 'description'], lambda a: self.set_port(description=None), 'Remove the description'),
             ],
         }
 
-    @staticmethod
-    def elem_matches(elem, tok):
-        if elem.startswith('<'):
-            return ARG_CHECK[elem](tok)
-        return elem.startswith(tok.lower())
+    def parse(self, tokens):
+        """今のモードで解釈する。interface/vlanモードで通らなければ、Ciscoと同じく設定モードの
+        コマンド（別のinterfaceへの移動等）として解釈し直す。(モード, Node, 引数)"""
+        try:
+            node, args = walk(self.trees[self.mode], tokens)
+            return self.mode, node, args
+        except ParseError:
+            if self.mode not in ('interface', 'vlan'):
+                raise
+            try:
+                node, args = walk(self.trees['config'], tokens)
+                return 'config', node, args
+            except ParseError:
+                pass
+            raise
 
-    def candidates(self, tokens):
-        """tokensに前方一致する文法の一覧（引数の値も返す）"""
-        result = []
-        for pattern, func, help_ in self.grammar[self.mode]:
-            args = []
-            ok = True
-            for i, tok in enumerate(tokens):
-                if i >= len(pattern):
-                    ok = False
-                    break
-                elem = pattern[i]
-                if elem == '<line>':
-                    args.append(' '.join(tokens[i:]))
-                    break
-                if not self.elem_matches(elem, tok):
-                    ok = False
-                    break
-                if elem.startswith('<'):
-                    args.append(tok)
-            if ok:
-                result.append((pattern, func, help_, args))
-        return result
-
-    def resolve(self, tokens):
-        cands = self.candidates(tokens)
-        full = [c for c in cands if len(c[0]) == len(tokens) or (c[0][-1] == '<line>' and len(tokens) >= len(c[0]))]
-        if not cands:
-            return None, '% Invalid input detected'
-        if not full:
-            return None, '% Incomplete command.'
-        # 引数よりキーワードの完全一致を優先し、それでも複数なら最初に完全一致したもの
-        def score(c):
-            return sum(1 for e, t in zip(c[0], tokens) if not e.startswith('<') and e == t.lower())
-        best = max(full, key=score)
-        # 同じ位置で違うキーワードに前方一致する（例 "s" → show/switchport）なら曖昧
-        for i, tok in enumerate(tokens):
-            kws = {c[0][i] for c in full if i < len(c[0]) and not c[0][i].startswith('<')}
-            if len(kws) > 1 and tok.lower() not in kws:
-                return None, f'% Ambiguous command:  "{" ".join(tokens)}"'
-        return best, None
-
+    # ---- ? ヘルプ ----
     def help(self, line):
-        """「?」：次に入力できるもの（途中まで打った語なら、それに一致するもの）を一覧する"""
-        tokens = line.split()
+        tokens = tokenize(line)
         partial = bool(tokens) and not line.endswith(' ')
-        prefix_tokens = tokens[:-1] if partial else tokens
-        idx = len(prefix_tokens)
-        seen = {}
-        for pattern, _func, help_, _args in self.candidates(prefix_tokens):
-            if idx < len(pattern):
-                elem = pattern[idx]
-                if partial and not self.elem_matches(elem, tokens[-1]):
+        prefix = tokens[:-1] if partial else tokens
+        try:
+            _, node, _ = self.parse(prefix)
+        except ParseError as e:
+            print(e)
+            return
+        rows = []
+        for key, child in node.children.items():
+            if key == '<line>' and node.func is None and not partial:
+                rows.append(ARG_HELP[key])
+                continue
+            if partial:
+                tok = tokens[-1]
+                if key.startswith('<'):
+                    if not ARG_CHECK[key](tok):
+                        continue
+                elif not key.startswith(tok.lower()):
                     continue
-                if elem.startswith('<'):
-                    label, _, desc = ARG_HELP[elem].partition('  ')
-                else:
-                    label, desc = elem, (help_ if idx == len(pattern) - 1 else KEYWORD_HELP.get(elem, ''))
-                seen.setdefault(label, desc)
-            elif idx == len(pattern) and not partial:
-                seen.setdefault('<cr>', '')
-        if not seen:
+            if key.startswith('<'):
+                rows.append(ARG_HELP[key])
+            else:
+                rows.append((key, child.help if child.func and not child.children else KEYWORD_HELP.get(key, child.help)))
+        if partial:
+            # 「conf?」のように語の途中で?を打った時は、一致するキーワード名だけを並べる（Ciscoと同じ）
+            names = [label for label, _ in rows]
+            print('  '.join(names) if names else '% Unrecognized command')
+            return
+        if node.func is not None and node is not self.trees[self.mode]:
+            rows.append(('<cr>', ''))
+        if not rows:
             print('% Unrecognized command')
-        for label, desc in sorted(seen.items()):
-            print(f'  {label:<20}{desc}')
+        for label, desc in sorted(rows, key=lambda r: (r[0].startswith('<') and r[0] != '<cr>', r[0] == '<cr>', r[0])):
+            print(f'  {label:<18}{desc}')
 
+    # ---- Tab補完 ----
     def complete(self, text, state):
         import readline
-        line = readline.get_line_buffer()[: readline.get_endidx()]
-        tokens = line.split()
-        prefix_tokens = tokens if line.endswith(' ') or not tokens else tokens[:-1]
-        idx = len(prefix_tokens)
-        opts = sorted({
-            p[idx] for p, *_ in self.candidates(prefix_tokens)
-            if idx < len(p) and not p[idx].startswith('<') and p[idx].startswith(text.lower())
-        })
-        return (opts[state] + ' ') if state < len(opts) else None
+        if state == 0:
+            line = readline.get_line_buffer()[: readline.get_begidx()]
+            self._matches = []
+            try:
+                _, node, _ = self.parse(tokenize(line))
+            except ParseError:
+                return None
+            opts = [k for k in node.children if not k.startswith('<') and k.startswith(text.lower())]
+            # インターフェース名も補完する（int e<Tab> → eth、eth<Tab> → eth1 eth2 ...）
+            if '<iface>' in node.children or '<ifaces>' in node.children:
+                ports = all_ports(self.cfg())
+                opts += [p for p in ports if p.startswith(text.lower())]
+            # 一意に決まる時だけ補完し、空白を足す（Ciscoと同じく、曖昧なら2回目のTabで候補一覧）
+            self._matches = sorted(set(opts))
+        if state < len(self._matches):
+            m = self._matches[state]
+            return m + ' ' if len(self._matches) == 1 else m
+        return None
 
     # ---- 設定の操作 ----
     def cfg(self):
@@ -633,59 +716,84 @@ class Cli:
                 'vlan': f'{host}(config-vlan)#'}[self.mode]
 
     def execute(self, line):
-        tokens = line.split()
+        tokens = tokenize(line)
         if not tokens:
             return
-        cand, err = self.resolve(tokens)
-        if err and self.mode in ('interface', 'vlan'):
-            # Ciscoと同じく、interface/vlanモードのままでも設定モードのコマンド（別のinterfaceへの
-            # 切り替え等）を打てる。その場合は設定モードに戻ってから実行する
-            saved = self.mode
-            self.mode = 'config'
-            cand, config_err = self.resolve(tokens)
-            if config_err:
-                self.mode = saved
-            else:
-                err = None
-        if err:
-            print(err)
+        try:
+            mode, node, args = self.parse(tokens)
+        except ParseError as e:
+            if e.pos is not None:
+                # Ciscoと同じく、どこで間違えたかを^で示す
+                offset = len(self.prompt()) + len(' '.join(tokens[: e.pos])) + (1 if e.pos else 0)
+                print(' ' * offset + '^')
+            print(e)
             return
-        pattern, func, _, args = cand
-        func(args)
+        if node.func is None:
+            print('% Incomplete command.')
+            return
+        self.mode = mode
+        node.func(args)
 
     def run(self):
         import readline
+        import termios
         readline.set_completer(self.complete)
         readline.set_completer_delims(' ')
         readline.parse_and_bind('tab: complete')
-        readline.parse_and_bind('"?": "\\C-v?\\n"')  # ?で即座にヘルプ（行は消さずに残す、下で再入力）
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        readline.parse_and_bind('set show-all-if-ambiguous on')  # 候補が複数ならすぐ一覧を出す
+        # ? は打った瞬間にヘルプを出す（Ciscoと同じ。入力中の行はそのまま残す）
+        readline.parse_and_bind('"?": "\\C-v?\\n"')
+        # Ctrl+Z：入力中の行を実行してから特権モードに戻る（Ciscoと同じ）。端末のサスペンド（SIGTSTP）を
+        # 止めてreadlineに届くようにし、行末に「^Z」を付けて確定させる
+        readline.parse_and_bind('"\\C-z": "\\C-e ^Z\\n"')
+        saved_tty = None
+        try:
+            fd = sys.stdin.fileno()
+            saved_tty = termios.tcgetattr(fd)
+            attrs = termios.tcgetattr(fd)
+            attrs[6][termios.VSUSP] = 0
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except (termios.error, OSError, ValueError):
+            saved_tty = None
         signal.signal(signal.SIGTSTP, signal.SIG_IGN)
-        print('\nFree-Networking-labs L2 switch CLI（? でヘルプ、Tabで補完）\n')
+        print('\nFree-Networking-labs L2 switch  (type ? for help, Tab to complete)\n')
         pending = ''
-        while True:
-            try:
-                line = self.input_with(pending)
-            except EOFError:
-                if self.mode == 'exec':
+        try:
+            while True:
+                try:
+                    line = self.input_with(pending)
+                except KeyboardInterrupt:
+                    # Ctrl+C：入力を捨てる。設定モードなら特権モードに戻る（Ciscoと同じ）
                     print()
-                    return
-                print()
-                self.mode = 'exec'
+                    self.mode = 'exec'
+                    pending = ''
+                    continue
+                except EOFError:
+                    print()
+                    if self.mode == 'exec':
+                        return
+                    self.mode = 'exec'
+                    pending = ''
+                    continue
                 pending = ''
-                continue
-            pending = ''
-            if line.endswith('?'):
-                body = line[:-1]
-                self.help(body)
-                pending = body
-                continue
-            try:
-                self.execute(line)
-            except EOFError:
-                return
-            except Exception as e:
-                print(f'% Error: {e}')
+                ctrl_z = line.endswith('^Z')
+                if ctrl_z:
+                    line = line[:-2]
+                if line.endswith('?') and not ctrl_z:
+                    pending = line[:-1]
+                    self.help(pending)
+                    continue
+                try:
+                    self.execute(line)
+                except EOFError:
+                    return
+                except Exception as e:
+                    print(f'% Error: {e}')
+                if ctrl_z:
+                    self.mode = 'exec'
+        finally:
+            if saved_tty is not None:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, saved_tty)
 
     def input_with(self, text):
         import readline

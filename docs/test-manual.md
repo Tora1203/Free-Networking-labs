@@ -95,7 +95,9 @@ wr
 - [ ] 同じVLANのPC同士は `ping` が通る / 別VLANのPC同士は `ping` が通らない
 - [ ] `sh vlan br` / `sh int status` / `sh int trunk` / `sh mac add` / `sh run` が表示される
 - [ ] 何も設定していないポートはVLAN 1（全部同じVLAN）として通信できる
-- [ ] 範囲外のVLAN（例 `sw acc vl 5000`）や間違ったコマンドは `% Invalid input detected` になる
+- [ ] 範囲外のVLAN（例 `sw acc vl 5000`）や間違ったコマンドは、間違えた位置に `^` が出て `% Invalid input detected` になる
+- [ ] `?` で候補と説明が出る（`sw ?`、`conf?`）。Tabで補完できる（`int e` + Tab で `eth1 eth2 ...` の候補）
+- [ ] Ctrl+Z で特権モード（`#`）に戻る。interfaceモードのままで `int eth2` と打つと別のポートに移れる
 - [ ] `wr` してからスイッチを停止→起動すると設定が残り、`wr` していない変更は消える
 - [ ] 接続ダイアログにVLANの入力欄は出ない（10/14で廃止）
 
