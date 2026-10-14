@@ -873,8 +873,9 @@ function TopologyEditorInner() {
         if (built && state.kind === 'running' && !isOldFormat) {
           const linkBuilt = built
           const running = runningNodesOf(state.nodeStates)
-          linkStateRef.current = await readLinkRuntimeState(targetLabName, linkBuilt, running)
+          // netemの問い合わせはノードごとに順番に行うので時間がかかる。エディタの表示は待たせず、保存・反映の列で行う
           void enqueue(async () => {
+            linkStateRef.current = await readLinkRuntimeState(targetLabName, linkBuilt, running)
             const failures = await applyLinkConditions(targetLabName, linkBuilt, running, [], linkStateRef.current)
             if (failures.length > 0) setSyncStatus({ kind: 'error', message: `リンクの品質の反映に失敗: ${failures.join(' / ')}` })
           })

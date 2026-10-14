@@ -135,6 +135,21 @@ function routerUnpluggedOf(built: BuiltTopology): Set<string> {
   return result
 }
 
+// clab-api-serverはnetemの操作をラボごとに1つずつしか受け付けず、同時に呼ぶと
+// 「Lab 'x' is busy with netem operation.」で断られる（2026-10-14、ブラウザでの確認で判明）。
+// そのためnetemの呼び出しは1つずつ順番に行い、別のタブ等と重なって断られた時は少し待って呼び直す
+const NETEM_BUSY_RETRIES = 8
+async function netemCall<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await call()
+    } catch (e) {
+      if (attempt >= NETEM_BUSY_RETRIES || !/busy/i.test(errorMessage(e, ''))) throw e
+      await new Promise((resolve) => setTimeout(resolve, 300 + attempt * 200))
+    }
+  }
+}
+
 // 動いているノードのリンクの端に、品質の設定を入れる（前回入れた値と違う端だけ）。
 // freshは中身が初期状態に戻ったノード（新しく作られた・起動し直した）で、その隣のノードも
 // リンクの相手側の端が作り直されていることがあるので一緒に入れ直す。
@@ -152,6 +167,8 @@ export async function applyLinkConditions(
     freshSet.add(node)
     for (const neighbor of built.neighbors.get(node) ?? []) freshSet.add(neighbor)
   }
+  // netemは1つずつ順番に（netemCall参照）、ルーターの差し直し（exec）はまとめて並行に行う
+  const netemJobs: (() => Promise<void>)[] = []
   const tasks: Promise<void>[] = []
   const failures: string[] = []
   const linkPorts = new Set(Object.keys(built.portAnnotations))
@@ -168,12 +185,21 @@ export async function applyLinkConditions(
       state.netem.set(key, wanted)
       continue
     }
-    tasks.push(
-      (params ? setNetem(labName, node, iface, params) : resetNetem(labName, node, iface).catch(() => undefined)).then(
-        () => void state.netem.set(key, wanted),
-        (e) => void failures.push(`${node} ${iface}: ${errorMessage(e, 'リンクの品質を設定できませんでした')}`),
-      ),
-    )
+    netemJobs.push(async () => {
+      try {
+        if (params) {
+          await netemCall(() => setNetem(labName, node, iface, params))
+        } else {
+          // 何も設定されていないI/Fのresetはエラーになるので、busy以外の失敗は無視する
+          await netemCall(() => resetNetem(labName, node, iface)).catch((e) => {
+            if (/busy/i.test(errorMessage(e, ''))) throw e
+          })
+        }
+        state.netem.set(key, wanted)
+      } catch (e) {
+        failures.push(`${node} ${iface}: ${errorMessage(e, 'リンクの品質を設定できませんでした')}`)
+      }
+    })
   }
   const routerUnplugged = routerUnpluggedOf(built)
   for (const key of state.routerUnplugged) {
@@ -187,6 +213,11 @@ export async function applyLinkConditions(
     )
   }
   state.routerUnplugged = routerUnplugged
+  tasks.push(
+    (async () => {
+      for (const job of netemJobs) await job()
+    })(),
+  )
   await Promise.all(tasks)
   return failures
 }
@@ -200,20 +231,18 @@ export async function readLinkRuntimeState(labName: string, built: BuiltTopology
   for (const key of Object.keys(built.portAnnotations)) {
     if (running.has(splitPortKey(key)[0])) state.netem.set(key, '')
   }
-  await Promise.all(
-    [...built.netemByNode.keys()]
-      .filter((node) => running.has(node))
-      .map(async (node) => {
-        try {
-          const result = await showNetem(labName, node)
-          for (const info of Object.values(result).flat()) {
-            if (info) state.netem.set(`${node}:${info.interface}`, netemKeyFromShow(info))
-          }
-        } catch {
-          // 読めなければ設定なしとみなす（入れ直しになるだけ）
-        }
-      }),
-  )
+  // showも同じくラボごとに1つずつしか受け付けないので順番に呼ぶ
+  for (const node of built.netemByNode.keys()) {
+    if (!running.has(node)) continue
+    try {
+      const result = await netemCall(() => showNetem(labName, node))
+      for (const info of Object.values(result).flat()) {
+        if (info) state.netem.set(`${node}:${info.interface}`, netemKeyFromShow(info))
+      }
+    } catch {
+      // 読めなければ設定なしとみなす（入れ直しになるだけ）
+    }
+  }
   return state
 }
 

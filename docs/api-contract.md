@@ -285,6 +285,8 @@ TODO(kawase3)：APIを直接叩いた時のレスポンス本文は未確認。�
   （CLIでは`Netlink receive: invalid argument`）。フロントは無視する。
 - `GET /api/v1/tools/netem/show?containerName=...`：`{"clab-<lab>-<node>":[{"interface":"eth1","delay":"50ms","jitter":"5ms","packet_loss":1.5,"rate":10000,"corruption":0}]}`
   （設定の無いI/Fは`delay:""`・値0。何も無いノードは`null`。`delay`はGoのDuration文字列）。
+- **netemの操作はラボごとに1つずつ**しか受け付けない。同じラボに同時に呼ぶと`Lab 'x' is busy with netem operation.`で
+  断られる（2026-10-14、ブラウザでの確認で判明。showも同じ）。フロントは順番に呼び、busyの時は待って呼び直す。
 - **ノードを停止→起動すると、そのノードの端の設定は消える**（相手側の端は残る）。フロントは起動のたびに入れ直す。
 - ケーブルの抜き差しはnetemではなく、ノードごとの設定コマンド（exec）で片方の端をdownにする（`frontend/src/utils/linkCondition.ts`）。
 
