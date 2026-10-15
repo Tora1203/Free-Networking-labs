@@ -37,6 +37,9 @@ import { WebSocketServer, WebSocket } from 'ws'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PROXY_PORT = Number(process.env.CAPTURE_PROXY_PORT ?? 8084)
+// 待ち受けるアドレス（2026-10-15〜既定は127.0.0.1）。ブラウザからはnginx（443）経由でしか使わないので、
+// LANに直接開かない（開くと認証の無い前段を素通りで叩ける窓口が増えるため）。開発で直接使う時だけ0.0.0.0に
+const LISTEN_HOST = process.env.LISTEN_HOST ?? '127.0.0.1'
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
 const TLS_CERT_PATH = process.env.CAPTURE_PROXY_TLS_CERT ?? path.join(__dirname, 'certs', 'cert.pem')
 const TLS_KEY_PATH = process.env.CAPTURE_PROXY_TLS_KEY ?? path.join(__dirname, 'certs', 'key.pem')
@@ -50,6 +53,9 @@ function parseCapturePath(rawUrl) {
   const [pathPart, queryRaw] = rawUrl.split('?')
   const m = /^\/capture\/([^/]+)(\/.*)?$/.exec(pathPart)
   if (!m) return null
+  // 中継するのはWiresharkのnoVNC（/api/v1/capture/wireshark-vnc-sessions/<id>/vnc/...）だけ。
+  // 以前は任意のパスを中継していた（トークンを持つ本人の権限を超えはしないが、窓口を広げない、2026-10-15）
+  if (!/^\/api\/v1\/capture\/wireshark-vnc-sessions\/[^/]+\/vnc(\/|$)/.test(m[2] ?? '')) return null
   const params = new URLSearchParams(queryRaw ?? '')
   const label = params.get('label')
   params.delete('label')
@@ -60,6 +66,11 @@ function parseCapturePath(rawUrl) {
     query: query ? `?${query}` : '',
     label,
   }
+}
+
+// ログに出すURL。パスに埋め込んだトークン（JWT）を伏せる（journalに24時間有効なトークンが残っていた、2026-10-15）
+function redactUrl(rawUrl) {
+  return String(rawUrl ?? '').replace(/^\/capture\/[^/?]+/, '/capture/<token>')
 }
 
 function upstreamPathFor(parsed) {
@@ -142,13 +153,13 @@ const tlsOptions = { cert: fs.readFileSync(TLS_CERT_PATH), key: fs.readFileSync(
 const server = https.createServer(tlsOptions, (req, res) => {
   const parsed = parseCapturePath(req.url ?? '')
   if (!parsed) {
-    console.log(`[http] 404 no-match: ${req.method} ${req.url}`)
+    console.log(`[http] 404 no-match: ${req.method} ${redactUrl(req.url)}`)
     res.writeHead(404, { 'Content-Type': 'text/plain' })
     res.end('not found: expected /capture/<token>/<path>')
     return
   }
   trackSession(parsed)
-  console.log(`[http] ${req.method} ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
+  console.log(`[http] ${req.method} ${redactUrl(req.url)} -> upstream ${upstreamPathFor(parsed)}`)
 
   const proxyReq = https.request(
     {
@@ -194,11 +205,11 @@ const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const parsed = parseCapturePath(req.url ?? '')
   if (!parsed) {
-    console.log(`[ws] reject no-match: ${req.url}`)
+    console.log(`[ws] reject no-match: ${redactUrl(req.url)}`)
     socket.destroy()
     return
   }
-  console.log(`[ws] upgrade ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
+  console.log(`[ws] upgrade ${redactUrl(req.url)} -> upstream ${upstreamPathFor(parsed)}`)
 
   // noVNCが要求するサブプロトコル（通常"binary"）をそのまま上流にも伝える。
   // 2026-10-08実機確認：この`Sec-WebSocket-Protocol`ヘッダーが無いと、Wireshark VNCコンテナ内の
@@ -254,6 +265,6 @@ server.on('upgrade', (req, socket, head) => {
   })
 })
 
-server.listen(PROXY_PORT, () => {
+server.listen(PROXY_PORT, LISTEN_HOST, () => {
   console.log(`capture-proxy listening on https://localhost:${PROXY_PORT}/capture/<token>/... (upstream: ${CLAB_API_BASE_URL})`)
 })

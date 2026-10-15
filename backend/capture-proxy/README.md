@@ -108,6 +108,7 @@ npm start
 
 環境変数（`.env.example`参照）:
 - `CAPTURE_PROXY_PORT`: 待受ポート（デフォルト `8084`）
+- `LISTEN_HOST`: 待ち受けるアドレス（デフォルト `127.0.0.1`。ブラウザからはnginxの`/capture/`経由で使う。2026-10-15〜）
 - `CLAB_API_BASE_URL`: `clab-api-server`のベースURL（デフォルト `https://localhost:8090`）
 - `CAPTURE_PROXY_TLS_CERT` / `CAPTURE_PROXY_TLS_KEY`: TLS証明書/秘密鍵のパス
   （デフォルト `certs/cert.pem` / `certs/key.pem`）

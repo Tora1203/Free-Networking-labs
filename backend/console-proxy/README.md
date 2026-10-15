@@ -33,6 +33,7 @@ CLAB_API_BASE_URL=https://localhost:8090 PROXY_PORT=8082 npm start
 
 環境変数（省略時のデフォルトは`.env.example`参照）:
 - `PROXY_PORT`: 待受ポート（デフォルト `8082`）
+- `LISTEN_HOST`: 待ち受けるアドレス（デフォルト `127.0.0.1`。ブラウザからはnginxの`/console`経由で使う。2026-10-15〜）
 - `CLAB_API_BASE_URL`: `clab-api-server`のベースURL（デフォルト `https://localhost:8090`。
   自己署名証明書を許容する設定になっている）
 

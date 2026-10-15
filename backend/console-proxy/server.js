@@ -19,6 +19,9 @@ import { createServer } from 'node:http'
 import { URL } from 'node:url'
 
 const PROXY_PORT = Number(process.env.PROXY_PORT ?? 8082)
+// 待ち受けるアドレス（2026-10-15〜既定は127.0.0.1）。ブラウザからはnginx（443）経由でしか使わないので、
+// LANに直接開かない（開くと認証の無い前段を素通りで叩ける窓口が増えるため）。開発で直接使う時だけ0.0.0.0に
+const LISTEN_HOST = process.env.LISTEN_HOST ?? '127.0.0.1'
 const CLAB_API_BASE_URL = process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
 const AUTH_TIMEOUT_MS = 5000
 
@@ -98,6 +101,6 @@ function connectUpstream(client, sessionId, token) {
   client.on('error', () => upstream.close())
 }
 
-httpServer.listen(PROXY_PORT, () => {
+httpServer.listen(PROXY_PORT, LISTEN_HOST, () => {
   console.log(`console-proxy listening on ws://localhost:${PROXY_PORT}/console (upstream: ${upstreamWsBase})`)
 })
