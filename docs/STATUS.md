@@ -819,6 +819,11 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **セキュリティの点検（2026-10-15、be/security）**：結果と管理者の作業は`docs/security.md`。済：8082/8083/8084を127.0.0.1だけで
+  待ち受け（本番も再起動済み、nginx経由のconsole/ovs/captureの動作を確認）、ovs-helperの古い窓口（/bridge・/port/reset・/vlan）と
+  link-delete.shを削除、CORSを絞る、トークンの確認を200の時だけに、capture-proxyのログのトークンを伏せる・中継をnoVNCのパスだけに、
+  nginxの/loginに回数制限（試験用nginxで41回目から429を確認）。要対応（sudo）：ufw、sudoersのlink-deleteの削除、nginxへの反映、
+  利用者のアカウント（labuser2がdocker・clab_adminsに入っている、利用者がSSHで入れる）。
 - **不具合修正：別のユーザーと同じ名前のラボ（2026-10-15、fe/lab-name-unique）**：ユーザーごとのラボ一覧は分かれているが、
   コンテナ名（clab-<ID>-<ノード名>）はサーバー全体で1つなので、別のユーザーが同じIDのラボを作れてしまい、後から起動した方が
   「not found or not owned」で起動できなかった（既定の名前は年月日時なので、授業で同じ時間に作ると全員が衝突する）。

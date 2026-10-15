@@ -7,7 +7,7 @@
 #   所有権分離）。そのため別ユーザー（例：labuser2）のラボに`frr-config/<router>/`を作ろうとすると
 #   `EACCES: permission denied`でdeployできなかった。ovs-helperを丸ごとrootにするのではなく、
 #   「そのユーザーのラボ配下にfrr-configを作って所有者をそのユーザーにする」だけを行う
-#   このラッパーをsudoersで許可する（link-delete.shと同じ方針）。
+#   このラッパーをsudoersで許可する（ovs-bridge時代のlink-delete.shと同じ方針。link-delete.shは2026-10-15に削除）。
 #
 # 呼び出し：sudo -n ovs-helper-frr-config-init <ユーザー名> <ラボ名> <ノード名> [router|switch]
 #   router（省略時）：frr-config/<ノード名>/にdaemons/frr.conf/vtysh.confを作る。
