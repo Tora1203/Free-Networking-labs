@@ -819,6 +819,10 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **キャプチャの残ったコンテナをサーバー側で掃除（2026-10-15、be/capture-cleanup）**：capture-proxyがセッションごとに
+  VNCのWebSocketを数え、0になって60秒（`CAPTURE_IDLE_SECONDS`）繋ぎ直されなければDELETE。偽のAPIサーバーで
+  「閉じたら消える／ページだけで接続しないものも消える／リロード相当の繋ぎ直しでは消えない」を確認、本番のcapture-proxyも再起動済み。
+  実機のWiresharkでの確認はまだ（要トークン）。clab-api-serverは使用中でも作ってから2時間でセッションを消す点に注意（既定TTL）。
 - **サーバーの片付け（2026-10-14、ユーザーが実施）**：`/`を29GB→57GBに拡張（LVMの未使用分）、古いスイッチのイメージ・
   ビルドキャッシュ・古いVS Code/Claude Codeの版・npmキャッシュ・aptキャッシュを削除し、ディスク使用率85%→33%（空き37GB）。
   vite開発サーバー（`frontend-dev.service`、5173）は本番がnginxなので停止・無効化（使う時は`systemctl --user start frontend-dev`）。

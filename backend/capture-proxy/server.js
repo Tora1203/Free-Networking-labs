@@ -82,6 +82,61 @@ function injectTitle(html, label) {
   return /<\/body>/i.test(withTitle) ? withTitle.replace(/<\/body>/i, `${script}</body>`) : `${withTitle}${script}`
 }
 
+// ---- 使われなくなったセッションの片付け（2026-10-15） ----
+// これまではブラウザ側（captureClient.ts）がタブの`closed`を見て削除していたが、メイン画面を
+// リロード・閉じるとその見張りごと消え、Wiresharkコンテナが残っていた。clab-api-server自身は
+// 「作ってから2時間（CAPTURE_WIRESHARK_SESSION_TTL）」でしか消さない。
+// そこでこのプロキシが、セッションごとにVNCのWebSocketの数を数え、0になって（タブを閉じた）
+// IDLE_MS経っても繋ぎ直されなければ、最後に見たトークンでDELETEする。タブのリロードは数秒で
+// 繋ぎ直すので消さない。ページは開いたのにWebSocketが一度も来ないもの（読み込み中に閉じた等）も同様
+const IDLE_MS = Number(process.env.CAPTURE_IDLE_SECONDS ?? 60) * 1000
+const sessions = new Map() // sessionId → { token, sockets, timer }
+
+function sessionIdOf(parsed) {
+  return /^\/api\/v1\/capture\/wireshark-vnc-sessions\/([^/]+)\//.exec(parsed.rest)?.[1] ?? null
+}
+
+function trackSession(parsed) {
+  const id = sessionIdOf(parsed)
+  if (!id) return null
+  let s = sessions.get(id)
+  if (!s) {
+    s = { token: parsed.token, sockets: 0, timer: null }
+    sessions.set(id, s)
+  }
+  s.token = parsed.token // 再ログインで新しいトークンになっていればそれを使う
+  if (s.sockets === 0) scheduleClose(id, s)
+  return id
+}
+
+function scheduleClose(id, s) {
+  clearTimeout(s.timer)
+  s.timer = setTimeout(() => closeSession(id), IDLE_MS)
+}
+
+function closeSession(id) {
+  const s = sessions.get(id)
+  if (!s || s.sockets > 0) return
+  sessions.delete(id)
+  const req = https.request(
+    {
+      hostname: upstreamOrigin.hostname,
+      port: upstreamOrigin.port || (upstreamIsTls ? 443 : 80),
+      path: `/api/v1/capture/wireshark-vnc-sessions/${encodeURIComponent(id)}`,
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${s.token}` },
+      rejectUnauthorized: false,
+    },
+    (res) => {
+      // 404はブラウザ側が先に消していた（タブを閉じた時）ということなので問題ない
+      console.log(`[idle] session ${id} unused for ${IDLE_MS / 1000}s -> DELETE ${res.statusCode}`)
+      res.resume()
+    },
+  )
+  req.on('error', (err) => console.log(`[idle] session ${id} DELETE failed: ${err.message}`))
+  req.end()
+}
+
 const tlsOptions = { cert: fs.readFileSync(TLS_CERT_PATH), key: fs.readFileSync(TLS_KEY_PATH) }
 
 const server = https.createServer(tlsOptions, (req, res) => {
@@ -92,6 +147,7 @@ const server = https.createServer(tlsOptions, (req, res) => {
     res.end('not found: expected /capture/<token>/<path>')
     return
   }
+  trackSession(parsed)
   console.log(`[http] ${req.method} ${req.url} -> upstream ${upstreamPathFor(parsed)}`)
 
   const proxyReq = https.request(
@@ -151,6 +207,16 @@ server.on('upgrade', (req, socket, head) => {
   const requestedProtocol = req.headers['sec-websocket-protocol']
 
   wss.handleUpgrade(req, socket, head, (client) => {
+    const sessionId = trackSession(parsed)
+    const tracked = sessionId ? sessions.get(sessionId) : null
+    if (tracked) {
+      tracked.sockets++
+      clearTimeout(tracked.timer)
+      client.on('close', () => {
+        tracked.sockets--
+        if (tracked.sockets === 0 && sessions.get(sessionId) === tracked) scheduleClose(sessionId, tracked)
+      })
+    }
     const upstream = new WebSocket(
       `${upstreamOrigin.protocol === 'https:' ? 'wss' : 'ws'}://${upstreamOrigin.host}${upstreamPathFor(parsed)}`,
       requestedProtocol ? requestedProtocol.split(',').map((p) => p.trim()) : undefined,
