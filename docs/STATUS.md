@@ -810,8 +810,9 @@
 - **L2スイッチの運用・管理の機能（2026-10-14、be/l2-features）**：`fnl/l2switch:5`・`fnl/frr:2`。ログ（コンソールに流れる）、
   show interfaces詳細・カウンタ、MACテーブル操作、管理用SVI・ping・enable secret・line con 0、LLDP/CDP（lldpd、ルーターも）、
   EtherChannel（bond、LACP/on）、ポートセキュリティ（locked+mab）、`| include`等。CLIの非特権ラボで各機能・write memory後の
-  再起動での復元を確認。ブラウザでの確認はまだ（テストマニュアル3-2c）。CPUはスイッチ約1%/台（以前0.6%）、ルーター約2.7%/台
-  （以前から。サブインターフェースのエージェントが毎秒vtyshを呼ぶため。改善候補）。
+  再起動での復元を確認。ブラウザでの確認はまだ（テストマニュアル3-2c）。CPUはスイッチ約1%/台（以前0.6%）。ルーターは
+  サブインターフェースのエージェントが毎秒vtyshを起動していたのが約2.5%/台を使っていたため、2秒ごとにして約1.2%/台に（2026-10-15）。
+  LLDP/CDPの既定（CDP有効・LLDP無効）・enable secret時だけ>から始める動きはユーザー承認済み。
 - **サーバーの片付け（2026-10-14、ユーザーが実施）**：`/`を29GB→57GBに拡張（LVMの未使用分）、古いスイッチのイメージ・
   ビルドキャッシュ・古いVS Code/Claude Codeの版・npmキャッシュ・aptキャッシュを削除し、ディスク使用率85%→33%（空き37GB）。
   vite開発サーバー（`frontend-dev.service`、5173）は本番がnginxなので停止・無効化（使う時は`systemctl --user start frontend-dev`）。
