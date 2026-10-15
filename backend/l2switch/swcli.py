@@ -2019,6 +2019,11 @@ def norm_iface_range(tok):
 
 def tokenize(line):
     """空白で分け、`eth 1` / `ethernet 1-3` のように名前と番号が離れていたら1語にまとめる"""
+    # Ciscoと同じ `interface range eth1 - 3 , eth5` も通す（rangeの行でだけ-と,の前後の空白を詰める。
+    # descriptionの「a - b」等は変えない）
+    m = re.match(r'(\s*int\S*\s+ran\S*\s+)(.*)$', line, re.I)
+    if m:
+        line = m.group(1) + re.sub(r'([a-z])\s+(\d)', r'\1\2', re.sub(r'\s*([-,])\s*', r'\1', m.group(2)), flags=re.I)
     raw = line.split()
     tokens = []
     i = 0

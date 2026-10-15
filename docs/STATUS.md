@@ -819,6 +819,11 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **自動テストの最低限（2026-10-15、be/capture-cleanup）**：frontendにvitestを入れ（`npm test`、37件）、
+  labTopology（YAMLの組み立て・種類の判定・保存→読み込みの往復・設定コマンド・シェルに渡る値の検証）と
+  linkConditionをテスト。frr:1→:2の不具合を一時的に戻すと落ちることを確認。swcliはunittest（15件、ホストでも
+  コンテナでも動く）。その中で`interface range eth2 - 3`（Ciscoの空白入りの書き方）が通らないのを見つけて修正
+  （fnl/l2switch:5を作り直し済み）。frontend/はBさんの担当だが、テストの追加のみでアプリのコードは変えていない。
 - **キャプチャの残ったコンテナをサーバー側で掃除（2026-10-15、be/capture-cleanup）**：capture-proxyがセッションごとに
   VNCのWebSocketを数え、0になって60秒（`CAPTURE_IDLE_SECONDS`）繋ぎ直されなければDELETE。偽のAPIサーバーで
   「閉じたら消える／ページだけで接続しないものも消える／リロード相当の繋ぎ直しでは消えない」を確認、本番のcapture-proxyも再起動済み。

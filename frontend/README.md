@@ -31,3 +31,13 @@ npm start
 ```sh
 npm run lint
 ```
+
+## テスト
+
+```sh
+npm test
+```
+
+vitest（2026-10-15〜）。トポロジ⇔containerlab YAMLの変換・保存と読み込みの往復・ノードごとの設定コマンド
+（`src/utils/labTopology.test.ts`）と、リンクの品質の値の変換（`src/utils/linkCondition.test.ts`）。
+イメージのタグを上げた時に古いルーターがPCと判定された不具合（2026-10-15）のような退行を防ぐためのもの。
