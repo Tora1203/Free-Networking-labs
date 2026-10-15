@@ -427,3 +427,18 @@ export function buildNodeSyncCommands(built: ReturnType<typeof buildTopologyCont
   }
   return commands
 }
+
+// ノードを初期状態に戻す（wipe）時に、コンテナを作り直す前に流すコマンド。コンテナを作り直しても、
+// bind mountした保存先（ルーターのfrr-config/、スイッチのswitch-config/）はホストに残るため、
+// write memoryした設定はここで消す。PCは保存する設定が無いので何も要らない（null）。
+// ルーターのfrr.confはbackend/ovs-helper/frr-config-init.shが最初に作る内容と同じにする。
+// bind mountされたファイルはmv/rmせず、同じファイルの中身を書き換える（コンテナの中からは差し替えられない）
+const NODE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+export function buildWipeCommand(kind: PaletteNodeKind | undefined, nodeName: string): string | null {
+  if (kind === 'router') {
+    if (!NODE_NAME_PATTERN.test(nodeName)) throw new Error(`ノード名「${nodeName}」は使えない文字を含んでいます`)
+    return `sh -c 'printf "frr version 10.2.1\\nfrr defaults traditional\\nhostname ${nodeName}\\n!\\nline vty\\n!\\n" > /etc/frr/frr.conf'`
+  }
+  if (kind === 'l2-switch') return `sh -c 'rm -f /etc/fnl-switch/startup.json /etc/fnl-switch/startup.json.tmp'`
+  return null
+}

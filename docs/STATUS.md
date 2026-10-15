@@ -822,7 +822,12 @@
 - **操作マニュアル3冊（利用者編・管理者編・評価者編）をPDFで作成（2026-10-15、docs/manual）**：原稿はMarkdown、PDFはDocker（`tools/manual/`、WeasyPrint＋
   Noto CJK）で変換。利用者編の演習例（VLAN・Router on a stick・OSPF）は使い捨てのラボで実際に通ることを確認（EtherChannel・STPは10/14に確認済み）。
   **未確認として本文に明記**：サーバー再起動後のラボの復旧、`nologin`のアカウントでAPIにログインできるか。スクリーンショットは入れていない
-  （図はSVG）。wipe（PR #26）をマージしてから最終版にする。
+  （図はSVG）。wipe（PR #26）は2026-10-15にマージ済みなので、利用者編の記述は今の機能と合っている。
+- **ノードごとの初期状態に戻す（wipe）（2026-10-15、fe/node-wipe）**：ノードの右クリック→「初期状態に戻す（wipe）」。保存した設定
+  （write memory）を消してコンテナを作り直す。**API v0.6.0では`POST /labs?reconfigure=true&nodeFilter=`でノードが消えたまま残る**
+  ことが分かり（api-contract.md 2.4を訂正）、「ノードを除いてapply→戻してapply」にした。隣のノードの設定も流し直す。
+  使い捨てのラボでAPIの手順（設定の消去・除いてapply・戻してapply・ノードの復活・隣のPCのアドレスが消えること）を確認済み。
+  **ブラウザでの確認はまだ**（テストマニュアルに項目を追加）。
 - **GitHub Actionsでテストを自動実行（2026-10-15、be/ci）**：`.github/workflows/ci.yml`。push（main）とPRのたびに、frontend（tsc・lint・
   `npm test`・本番ビルド）、swcli（pyflakes・unittest）、Nodeのプロキシ3つの構文チェックを実行。Dockerやサーバーが要る確認は対象外。
   ローカルでは各コマンドが通ることを確認済みだが、**GitHub上で初めて動かすのはこのPR**（失敗したらログを見て直す）。

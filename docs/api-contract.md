@@ -138,6 +138,12 @@
     `POST /api/v1/labs?reconfigure=true&nodeFilter=<ノード名>` に**同じ**`topologyContent`を渡すことで、
     指定ノードだけコンテナを破棄→再作成できる（`container_id`が変わり、コンテナ内の状態は消える。
     他ノードは触られない）。FEの「wipeボタン」はこの呼び出しで実現できる
+    - **【2026-10-15 訂正】API v0.6.0では使えない**：指定ノードのコンテナを消した後、「`<ラボ>` lab has already been
+      deployed」で`500`になり、**ノードが消えたまま残る**。代わりに「そのノードとリンクを除いたトポロジを`PUT
+      topology/yaml`→`apply`（ノードとリンクが消える）→元のトポロジを`PUT`→`apply`（作り直される）」で行う
+      （実機確認済み。`frontend/src/utils/labRuntime.ts`の`wipeLabNode`）。隣のノードの端のvethも作り直されるので、
+      隣の中の設定（PCのアドレス等）も消える→流し直す。ルーター・スイッチはbind mountで設定が残るため、
+      先にexecで保存した設定を消す（`labTopology.ts`の`buildWipeCommand`）
 - **`POST /api/v1/labs/{labName}/exec`（コマンド実行）・`GET /api/v1/labs/{labName}/interfaces`
   （2026-10-06、Swagger仕様で存在確認）**：どちらもコンテナ単位（`nodeFilter`/`node`クエリで
   指定）。`ovs-bridge` kindのノードはコンテナを持たないため、この2つではホスト側のOVS
