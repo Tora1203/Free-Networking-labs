@@ -43,7 +43,7 @@ sw#wr
 | モード | コマンド |
 | --- | --- |
 | 特権 | `show running-config / startup-config / vlan [brief] / interfaces status / interfaces trunk / mac address-table`、`configure terminal`、`write [memory]`、`copy running-config startup-config`、`exit` |
-| 設定 | `interface ethN`、`interface range eth1-3,eth5`、`vlan <list>`、`no vlan <list>`、`hostname`、`do ...`、`end`、`exit` |
+| 設定 | `interface ethN`、`interface range eth1-3,eth5`（`eth1 - 3 , eth5`も可）、`vlan <list>`、`no vlan <list>`、`hostname`、`do ...`、`end`、`exit` |
 | VLAN | `name WORD`、`no name` |
 | インターフェース | `switchport mode access/trunk`、`switchport access vlan N`、`switchport trunk allowed vlan <list>/add/remove/all/none`、`switchport trunk native vlan N`、`shutdown`、`description`、各`no`形 |
 
@@ -123,6 +123,17 @@ VLANの意味はCiscoに合わせている：
 ```sh
 docker build -t fnl/l2switch:5 backend/l2switch   # mstpdをGitHubから取ってビルドするのでネットワークが要る
 ```
+
+## テスト
+
+```sh
+cd backend/l2switch && python3 -m unittest -v test_swcli
+```
+
+CLIの解釈（略語・`interface range`・エラーの`^`・`| include`等）、パスワード（type 7/9）、
+running-configを流し込み直すと同じ設定になるか、`write memory`を確かめる。設定の置き場所を一時ディレクトリに、
+ポートの一覧を固定の値に差し替えるので、コンテナの外（ホストのPython 3）でも動く。ブリッジ・mstpd・lldpdを
+実際に動かす部分は対象外（実機確認）。
 
 ## 実機確認
 

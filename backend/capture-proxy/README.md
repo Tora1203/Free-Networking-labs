@@ -83,6 +83,17 @@ HTMLレスポンスに埋め込むように修正（`injectTitle()`参照）。
 （Wireshark側で右クリック→Copy→任意の形式を選ぶ→サイドバーのテキストエリアに
 反映→そこから選択してCtrl+Cすればブラウザのクリップボードに入る、という手順）。
 
+## 使われなくなったセッションの片付け（2026-10-15）
+
+ブラウザ側（`captureClient.ts`）はタブの`closed`を見てセッションを消すが、メイン画面をリロード・閉じると
+その見張りごと無くなり、Wiresharkコンテナが残っていた（clab-api-serverは作ってから2時間＝
+`CAPTURE_WIRESHARK_SESSION_TTL`の既定で消すだけ。使用中でも2時間で消える点に注意）。
+
+このプロキシがセッションごとにVNCのWebSocketの数を数え、0になって`CAPTURE_IDLE_SECONDS`（既定60秒）
+繋ぎ直されなければ、最後に見たトークンで`DELETE /api/v1/capture/wireshark-vnc-sessions/{id}`する。
+タブのリロードは数秒で繋ぎ直すので消えない。ページを開いたのにWebSocketが来ないものも同じ時間で消す。
+プロキシを一度も通らなかったセッション（準備中にメイン画面を閉じた等）は対象外で、2時間のTTLで消える。
+
 ## 起動方法
 
 ```sh
@@ -100,6 +111,7 @@ npm start
 - `CLAB_API_BASE_URL`: `clab-api-server`のベースURL（デフォルト `https://localhost:8090`）
 - `CAPTURE_PROXY_TLS_CERT` / `CAPTURE_PROXY_TLS_KEY`: TLS証明書/秘密鍵のパス
   （デフォルト `certs/cert.pem` / `certs/key.pem`）
+- `CAPTURE_IDLE_SECONDS`: VNCの接続が無くなってからセッションを消すまでの秒数（デフォルト `60`）
 
 ## 常駐させる
 
