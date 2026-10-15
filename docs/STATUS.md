@@ -819,6 +819,11 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **ノードごとの初期状態に戻す（wipe）（2026-10-15、fe/node-wipe）**：ノードの右クリック→「初期状態に戻す（wipe）」。保存した設定
+  （write memory）を消してコンテナを作り直す。**API v0.6.0では`POST /labs?reconfigure=true&nodeFilter=`でノードが消えたまま残る**
+  ことが分かり（api-contract.md 2.4を訂正）、「ノードを除いてapply→戻してapply」にした。隣のノードの設定も流し直す。
+  使い捨てのラボでAPIの手順（設定の消去・除いてapply・戻してapply・ノードの復活・隣のPCのアドレスが消えること）を確認済み。
+  **ブラウザでの確認はまだ**（テストマニュアルに項目を追加）。
 - **GitHub Actionsでテストを自動実行（2026-10-15、be/ci）**：`.github/workflows/ci.yml`。push（main）とPRのたびに、frontend（tsc・lint・
   `npm test`・本番ビルド）、swcli（pyflakes・unittest）、Nodeのプロキシ3つの構文チェックを実行。Dockerやサーバーが要る確認は対象外。
   ローカルでは各コマンドが通ることを確認済みだが、**GitHub上で初めて動かすのはこのPR**（失敗したらログを見て直す）。

@@ -9,6 +9,7 @@ import { serializeAnnotations } from './annotations'
 import {
   buildNodeSyncCommands,
   buildTopologyContent,
+  buildWipeCommand,
   hasSwitchWithoutConfigBind,
   parseImportedTopology,
   topologyToYaml,
@@ -222,5 +223,21 @@ describe('hasSwitchWithoutConfigBind', () => {
     delete doc.topology.nodes['l2-switch-1'].binds
     expect(hasSwitchWithoutConfigBind(JSON.stringify(doc))).toBe(true)
     expect(hasSwitchWithoutConfigBind(':::')).toBe(false)
+  })
+})
+
+describe('buildWipeCommand（ノードを初期状態に戻す）', () => {
+  it('ルーターはfrr.confを最初の内容に、スイッチはstartup.jsonを消す、PCは何もしない', () => {
+    expect(buildWipeCommand('router', 'router-1')).toBe(
+      `sh -c 'printf "frr version 10.2.1\\nfrr defaults traditional\\nhostname router-1\\n!\\nline vty\\n!\\n" > /etc/frr/frr.conf'`,
+    )
+    expect(buildWipeCommand('l2-switch', 'l2-switch-1')).toContain('rm -f /etc/fnl-switch/startup.json')
+    expect(buildWipeCommand('pc', 'pc-1')).toBeNull()
+    expect(buildWipeCommand(undefined, 'x')).toBeNull()
+  })
+
+  it('シェルに渡るので、使えない文字を含むルーター名は拒否する', () => {
+    expect(() => buildWipeCommand('router', "r'; reboot; '")).toThrow()
+    expect(() => buildWipeCommand('router', '$(id)')).toThrow()
   })
 })
