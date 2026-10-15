@@ -17,9 +17,25 @@ export function isSafeLabName(name: string): boolean {
   return SAFE_NAME_PATTERN.test(name)
 }
 
-export function toSafeLabName(name: string): string {
+// ラボのID（コンテナ名 clab-<ID>-<ノード名> にもなる）。ユーザーごとのラボ一覧は分かれているが、
+// コンテナ名はサーバー全体で1つしか使えないため、別のユーザーが同じ名前のラボを作ると後から起動した方が
+// 「not found or not owned」で起動できなかった（2026-10-15。既定の名前は年月日時なので、授業で同じ時間に
+// 作ると全員が同じ名前になる）。新しいラボのIDは先頭にユーザー名を付けて、ユーザー間で重ならないようにする。
+// 既に保存済みのラボのIDは変えない（ID＝ディレクトリ名・コンテナ名なので、変えると別のラボになる）
+export function labIdPrefix(username: string | null | undefined): string {
+  return (username ?? '').replace(/[^A-Za-z0-9_-]/g, '-').replace(/^[^A-Za-z0-9]+/, '')
+}
+
+export function toSafeLabName(name: string, username?: string | null): string {
   const trimmed = name.trim()
-  return isSafeLabName(trimmed) ? trimmed : `lab-${fnv1aHash(trimmed)}`
+  const base = isSafeLabName(trimmed) ? trimmed : `lab-${fnv1aHash(trimmed)}`
+  const prefix = labIdPrefix(username)
+  return !prefix || base.startsWith(`${prefix}-`) ? base : `${prefix}-${base}`
+}
+
+// 表示名どうしが同じか（前後の空白・全角半角・大文字小文字の違いは同じとみなす）
+export function labTitleKey(title: string): string {
+  return title.trim().normalize('NFKC').toLowerCase()
 }
 
 function readMap(): Record<string, string> {

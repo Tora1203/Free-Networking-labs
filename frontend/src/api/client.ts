@@ -199,8 +199,20 @@ export interface ApplyResponse {
 
 // 保存済みトポロジをラボに反映する。動いていなければdeploy（停止中なら起動）、
 // 動いていれば差分だけ反映し、既存ノードは作り直さない
-export function applyLab(labName: string) {
-  return request<ApplyResponse>(`/api/v1/labs/${encodeURIComponent(labName)}/apply`, { method: 'POST' })
+export async function applyLab(labName: string) {
+  try {
+    return await request<ApplyResponse>(`/api/v1/labs/${encodeURIComponent(labName)}/apply`, { method: 'POST' })
+  } catch (e) {
+    // 同じIDのラボを別のユーザーが動かしていると、APIは「not found or not owned by user」を返す
+    // （コンテナ名がサーバー全体で1つしか使えないため。2026-10-15以前に作ったラボで起こりうる。utils/labName.ts参照）
+    if (e instanceof ApiError && e.status === 404 && /not owned/i.test(e.message)) {
+      throw new ApiError(
+        404,
+        `ラボのID「${labName}」は別のユーザーのラボが使用中のため起動できません。新しいラボを作り、トポロジをYAMLで書き出して取り込んでください`,
+      )
+    }
+    throw e
+  }
 }
 
 // 保存済みラボ（未起動のものも含む）の一覧。`deploymentState`は常に"undeployed"で、
