@@ -48,7 +48,10 @@ const GRID_SPACING_Y = 140
 function guessPaletteKind(clabKind: string | undefined, image: string | undefined): PaletteNodeKind {
   if (clabKind === 'ovs-bridge') return 'l2-switch' // 2026-10-13以前のラボ
   if (image?.startsWith('fnl/l2switch')) return 'l2-switch' // :1（2026-10-13）も含む
-  if (image === PALETTE_NODE_CONFIGS.router.image) return 'router'
+  // ルーターのイメージのタグが上がっても（fnl/frr:1 → :2）古いラボのルーターをルーターと分かるよう、前方一致で見る。
+  // 2026-10-15まで今のタグとの完全一致で見ていたため、タグを上げた時に古いルーターがPCと判定され、
+  // 次の自動保存でルーター用のbind mountと権限が外れていた
+  if (image?.startsWith('fnl/frr:')) return 'router'
   if (image?.startsWith('quay.io/frrouting/frr')) return 'router' // 2026-10-14以前のラボ（エージェント無し）
   return 'pc'
 }

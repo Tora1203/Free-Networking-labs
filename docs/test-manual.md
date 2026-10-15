@@ -157,6 +157,46 @@ sh spanning-tree mst / sh spanning-tree mst 1 / sh spanning-tree mst configurati
 - [ ] 注意：PVST（VLANごとに独立したSTP、Cisco独自）は無い。`spanning-tree vlan 10 ...` は全VLANに効く（注意が出る）。
       VLANごとに分けたいときはMSTPを使う
 
+**3-2c スイッチの運用・管理の機能**（10/14〜、`fnl/l2switch:5`。既存のラボは「作り直す」が必要）
+
+例：SW1・SW2をケーブル2本でつなぎ、それぞれにPCを1台、SW2にルーターを1台つなぐ
+
+1. **ログ**：SW1のコンソールを開いたまま、GUIでSW1–SW2のケーブルを「抜く」→「差す」
+2. **インターフェース**：`sh int eth1`、`sh int counters`、`clear counters`、`sh ip int br`
+3. **MACテーブル**：PC同士でpingしてから `sh mac add`、`sh mac add int eth1`、`clear mac add dyn`、
+   `conf t` → `mac add aging-time 60` / `mac add static 0011.2233.4455 vlan 1 int eth1`
+4. **管理用SVI**：SW1で `int vlan 1` → `ip add 10.0.0.11 255.255.255.0` → `no sh`、PCから `ping 10.0.0.11`、
+   SW1から `ping 10.0.0.2`（PCのアドレス）
+5. **パスワード**：`enable secret cisco` → `line con 0` → `password lab` → `login` → `end` → `exit`
+6. **LLDP/CDP**：両方のスイッチで `lldp run`。30秒ほど待って `sh cdp nei`、`sh lldp nei`、`sh lldp nei detail`
+7. **EtherChannel**：両方のスイッチで `int range eth2-3` → `sw mo tr` → `channel-group 1 mode active`
+   （片方は `passive` でもよい）。`sh etherchannel summary`、`sh lacp nei`、`sh spanning-tree`
+8. **ポートセキュリティ**：PCのポートで `sw port-security` → `sw port-security mac-address sticky`。
+   PCで `ip link add link eth1 name m1 type macvlan` → `ip a add 10.0.0.9/24 dev m1` → `ip link set m1 up` →
+   `ping -I m1 10.0.0.2`（2台目の機器のつもり）。`sh port-security`、`sh port-security int eth1`、`sh int status`
+   → `int eth1` → `shutdown` → `no shutdown`
+
+**期待結果**
+- [ ] 1：コンソールに `%LINEPROTO-5-UPDOWN ... changed state to down` と `%LINK-3-UPDOWN` が流れ、入力中の行は崩れない。
+      `sh logging` にも残る。`conf t` → `end` で `%SYS-5-CONFIG_I`
+- [ ] 2：BWが `100000 Kbit/sec`（リンクの品質の既定）。品質で帯域を変えると変わり、`sh spanning-tree` のCostも変わる
+      （100Mbps→19、1Gbps→4）。pingを流すと「5 second input rate」とカウンタが増える
+- [ ] 3：PCのMACが `DYNAMIC` で出て、`clear` で消える。staticは `STATIC` で出て `sh run` にも出る
+- [ ] 4：`sh ip int br` で `Vlan1 10.0.0.11 ... up up`。PCとスイッチの間でpingが通る（`!!!!!`）。作った直後は
+      administratively down（Ciscoと同じ）
+- [ ] 5：コンソールを開き直すと `Password:` を聞かれ、入ると `SW1>`。`enable` でもパスワードを聞かれ `SW1#` になる。
+      `sh run` に `enable secret 9 $9$...` が出る（平文では出ない）
+- [ ] 6：相手のスイッチ（Capability `S` / `B`）とルーター（`R`）が出る。`no cdp enable` したポートは相手の `sh cdp nei` から消える
+      （holdtimeが切れるまで最大120秒）
+- [ ] 7：`Po1(SU)` と `eth2(P) eth3(P)`。`sh spanning-tree` にはeth2/eth3ではなく `Po1` が1本だけ出る（ループにならない）。
+      GUIでeth2のケーブルを抜いてもPC間のpingは止まらず、`eth2(D)` と `%EC-5-UNBUNDLE` が出る
+- [ ] 8：2台目のMACで通信すると `%PORT_SECURITY-2-PSECURE_VIOLATION` が出て eth1 が `err-disabled`。
+      `sh run` に `switchport port-security mac-address sticky xxxx.xxxx.xxxx` が入っている。`shutdown` → `no shutdown` で戻る。
+      `sw port-security violation restrict` にすると、元のPCの通信は続いたまま違反の数だけ増える
+
+> 仕様：PAgP（desirable/auto）・PVST・SPAN・DHCPスヌーピングは無い。ルーター側でLLDP/CDPの近隣を見るコマンドは無い
+> （スイッチ側から見る）。ルーターが名乗る名前はGUIのノード名（FRRではvtyshのhostnameが保存されないため）。
+
 **3-3 Router on a stick**（ルーターのコンソールで設定する）
 
 例：PC1（VLAN10）とPC2（VLAN20）をルーター1台でつなぐ

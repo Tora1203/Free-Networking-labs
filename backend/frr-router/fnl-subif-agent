@@ -9,8 +9,24 @@
 #
 # 設定から消えたサブインターフェース（no ip address 等で設定が空になり、running-configに
 # 出なくなったもの）はデバイスも削除する。VLAN IDは名前の「.」の後ろ（1〜4094）。
+#
+# あわせて、vtyshのhostnameをLLDP/CDPで名乗る名前に反映する（2026-10-14〜、lldpd）
+lldp_name=
 while :; do
   if conf=$(vtysh -c "show running-config" 2>/dev/null); then
+    # FRRではvtyshのhostnameはそのセッションの中でしか効かず、write memoryするとfrr.confに残る。
+    # そのためfrr.confのhostnameを優先し、無ければデーモンのrunning-configの値を使う
+    host=$(sed -n 's/^hostname \(.*\)$/\1/p;T;q' /etc/frr/frr.conf 2>/dev/null)
+    if [ -z "$host" ]; then
+      host=$(printf '%s\n' "$conf" | sed -n 's/^hostname \(.*\)$/\1/p;T;q')
+      [ -n "$host" ] || host=$(hostname)
+    fi
+    if [ "$host" != "$lldp_name" ] && lldpcli configure system hostname "$host" >/dev/null 2>&1; then
+      lldpcli configure lldp portidsubtype ifname >/dev/null 2>&1
+      lldpcli configure system capabilities enabled router >/dev/null 2>&1
+      lldpcli configure system ip management pattern '!eth0,eth*' >/dev/null 2>&1
+      lldp_name=$host
+    fi
     want=$(printf '%s\n' "$conf" | sed -n 's/^interface \(eth[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
     for name in $want; do
       parent=${name%.*}
@@ -30,5 +46,7 @@ while :; do
       esac
     done
   fi
-  sleep 1
+  # 確認は2秒ごと（サブインターフェースができるまで最大2秒）。毎秒だとvtyshの起動だけでルーター1台あたり
+  # CPUを約2.5%使っていた（2026-10-15計測。FRRのデーモン側の負荷はほぼ0）
+  sleep 2
 done
