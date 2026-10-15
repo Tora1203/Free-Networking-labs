@@ -819,6 +819,11 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **ノードごとの初期状態に戻す（wipe）（2026-10-15、fe/node-wipe）**：ノードの右クリック→「初期状態に戻す（wipe）」。保存した設定
+  （write memory）を消してコンテナを作り直す。**API v0.6.0では`POST /labs?reconfigure=true&nodeFilter=`でノードが消えたまま残る**
+  ことが分かり（api-contract.md 2.4を訂正）、「ノードを除いてapply→戻してapply」にした。隣のノードの設定も流し直す。
+  使い捨てのラボでAPIの手順（設定の消去・除いてapply・戻してapply・ノードの復活・隣のPCのアドレスが消えること）を確認済み。
+  **ブラウザでの確認はまだ**（テストマニュアルに項目を追加）。
 - **セキュリティの点検（2026-10-15、be/security）**：結果と管理者の作業は`docs/security.md`。済：8082/8083/8084を127.0.0.1だけで
   待ち受け（本番も再起動済み、nginx経由のconsole/ovs/captureの動作を確認）、ovs-helperの古い窓口（/bridge・/port/reset・/vlan）と
   link-delete.shを削除、CORSを絞る、トークンの確認を200の時だけに、capture-proxyのログのトークンを伏せる・中継をnoVNCのパスだけに、

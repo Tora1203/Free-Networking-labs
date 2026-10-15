@@ -771,14 +771,15 @@ function TopologyEditorInner() {
           const built = buildTopologyContent(nodes, edges, name)
           const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
           await wipeLabNode(name, built, nodeId, kind, runStateRef.current.nodeStates[nodeId] === 'running')
-          lastSynced.current.delete(nodeId)
+          // 隣のノードも、つながっていたvethが作り直されて中の設定（アドレス等）が消えているので流し直す
+          const affected = [nodeId, ...(built.neighbors.get(nodeId) ?? [])]
+          for (const id of affected) lastSynced.current.delete(id)
           await refreshRunState(name)
-          // 作り直したノードは中の設定が空なので、アドレス・ケーブル・リンクの品質を流し直す
           const commands = buildNodeSyncCommands(built)
-          const result = await runNodeSyncs(name, commands, [nodeId])
-          for (const [id, command] of result.succeeded) lastSynced.current.set(id, command)
           const running = runningNodesOf(runStateRef.current.nodeStates)
-          const failures = [...result.failures, ...(await applyLinkConditions(name, built, running, [nodeId], linkStateRef.current))]
+          const result = await runNodeSyncs(name, commands, affected.filter((id) => running.has(id)))
+          for (const [id, command] of result.succeeded) lastSynced.current.set(id, command)
+          const failures = [...result.failures, ...(await applyLinkConditions(name, built, running, affected, linkStateRef.current))]
           setSyncStatus(
             failures.length > 0
               ? { kind: 'error', message: `初期状態に戻しました（設定の反映に失敗: ${failures.join(' / ')}）` }

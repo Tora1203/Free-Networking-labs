@@ -21,8 +21,8 @@ import {
   showNetem,
   startNode,
   stopNode,
-  wipeNode,
   type ApplyResponse,
+  type TopologyContent,
 } from '../api/client'
 import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
@@ -274,17 +274,23 @@ export async function listLabNames(): Promise<{ ids: Set<string>; titles: Map<st
 }
 
 // ノードを初期状態に戻す（CMLのwipe）：保存した設定（write memory）を消し、コンテナを作り直す。
-// 他のノードとリンクはそのまま。作り直したノードの設定（アドレス・ケーブル・リンクの品質）は呼び出し側で流し直す。
+// 他のノードとリンクはそのまま。作り直したノードと、その隣のノードの設定（アドレス・ケーブル・リンクの品質）は
+// 呼び出し側で流し直す（隣のノードも、つながっていたvethが作り直されるため、中の設定が消える）。
+//
 // 1. 止まっているノードは先に起動する（設定を消すコマンドを流すため）
 // 2. 保存した設定を消す（labTopology.buildWipeCommand）
-// 3. POST /labs?reconfigure=true&nodeFilter=<ノード>で、そのノードだけ作り直す（api-contract.md 2.4）
+// 3. そのノードを除いたトポロジをapplyして、コンテナとリンクを消す
+// 4. 元のトポロジに戻してapplyし、作り直す
+// 3→4にするのは、POST /labs?reconfigure=true&nodeFilter=<ノード>（9/24に確認した方法）がAPI v0.6.0では
+// 「ノードを消した後で、デプロイ済みのラボだとして失敗する」ため（2026-10-15確認。ノードが消えたまま残る）。
+// 3の途中で失敗しても、元のトポロジは必ず保存し直す
 export async function wipeLabNode(
   labName: string,
   built: BuiltTopology,
   nodeId: string,
   kind: PaletteNodeKind | undefined,
   running: boolean,
-) {
+): Promise<ApplyResponse> {
   const command = buildWipeCommand(kind, nodeId)
   if (command) {
     if (!running) await startNode(labName, nodeId)
@@ -292,5 +298,21 @@ export async function wipeLabNode(
   }
   // 設定の保存先が消えていないことを確かめてから作り直す（無いとbind mountでdeployが失敗する）
   await prepareNodeConfigs(labName, built)
-  await wipeNode(built.topologyContent, nodeId)
+
+  const full = built.topologyContent
+  const without: TopologyContent = {
+    ...full,
+    topology: {
+      ...full.topology,
+      nodes: Object.fromEntries(Object.entries(full.topology.nodes).filter(([id]) => id !== nodeId)),
+      links: full.topology.links.filter((l) => !l.endpoints.some((e) => e.split(':')[0] === nodeId)),
+    },
+  }
+  try {
+    await putLabTopologyYaml(labName, topologyToYaml(without))
+    await applyLab(labName)
+  } finally {
+    await putLabTopologyYaml(labName, topologyToYaml(full))
+  }
+  return applyLab(labName)
 }
