@@ -1,0 +1,5 @@
+#!/bin/sh
+# LLDPとCDPv2を送る（スイッチの show lldp/cdp neighbors にこのルーターが出る）。名前はvtyshのhostnameに
+# エージェントが合わせる。-ccc：CDPv2を常に送る、-l：LLDPを常に送る、-H 0：LLDPとCDPの両方を残す
+# （fnl-startから起動する時と、エージェントが止まったlldpdを起動し直す時の、2か所から使う）
+exec lldpd -ccc -l -H 0 -k -I 'eth*,!eth0' -P FNL-Router -S 'Free-Networking-labs router (FRRouting)' >/dev/null 2>&1

@@ -24,10 +24,10 @@ int eth1.10
 ## ビルド
 
 ```sh
-docker build -t fnl/frr:2 backend/frr-router
+docker build -t fnl/frr:3 backend/frr-router
 ```
 
-## LLDP/CDP（`fnl/frr:2`、2026-10-14〜）
+## LLDP/CDP（`fnl/frr:3`、2026-10-14〜）
 
 lldpd（`-ccc -l -H 0`）を動かし、LLDPとCDPv2を送る。スイッチの`show lldp neighbors`・`show cdp neighbors`に
 ルーターが出る（Capability R）。名乗る名前は`/etc/frr/frr.conf`のhostname（無ければrunning-config、さらに無ければ

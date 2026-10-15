@@ -882,6 +882,15 @@
   （clab-api-serverと同じ対応）。クリップボード自動同期が実際に機能するかは引き続き実機確認を
 
 ---
+- **コードレビュー（PR #22、15件）の修正（2026-10-15、be/review-fixes）**：`fnl/l2switch:6`・`fnl/frr:3`。
+  高：swcliがCtrl+Cで落ちる（pingは途中結果を出す／実行中の例外も捕捉）、channel-group等でbridgeから外れて戻るとSTP設定が消える（ifindexも見て入れ直す）、
+  static MACの`fdb replace`が失敗しても適用済み扱いだった（成功した時だけ記録）、`line con 0`+`login`でパスワード未設定だと入れなくなる（未設定の間は通す）、
+  `description a | b`が出力フィルタとして分割された（show/ping等だけに限定）。中：SVIのline protocolがport-channelを見ていない、`lldpcli configure`にタイムアウト、
+  bondの入れ直しを10秒に1回までに、ログ表示スレッドが`| include`のバッファに書く問題（コマンド実行中は流さない）、
+  ポートセキュリティ違反のfork多発（まとめて1回、1周期100件まで、`last_seen`は60秒で捨てる）、ルーターのlldpd監視（`fnl-subif-agent`が75秒送っていなければ`fnl-lldpd-start`で起動し直す）。
+  低：`set_*`の重複を`merge_changes`に、全角数字のIPアドレスを拒否、Python 3.12未満でも動くようネストしたf-stringを解消。
+  未対応：1秒ごとの処理の軽量化（#12。実測約60ms/tick、4vCPUで問題ない範囲）。テストは`test_swcli`が18件に。
+
 
 ## Bさん（フロントエンド）
 

@@ -12,7 +12,29 @@
 #
 # あわせて、vtyshのhostnameをLLDP/CDPで名乗る名前に反映する（2026-10-14〜、lldpd）
 lldp_name=
+# lldpdが送らなくなっていないか30秒ごとに確かめ、75秒送っていなければ起動し直す（スイッチのエージェントと同じ。
+# ラボの起動直後にlldpdが止まることがあった。2026-10-15）
+last_tx=
+tx_since=$(date +%s)
+last_check=0
 while :; do
+  now=$(date +%s)
+  if [ $((now - last_check)) -ge 30 ]; then
+    last_check=$now
+    if grep -qx 1 /sys/class/net/eth[1-9]*/carrier 2>/dev/null; then
+      tx=$(timeout 5 lldpcli -f keyvalue show statistics summary 2>/dev/null | sed -n 's/^lldp\.summary\.tx\.tx=//p')
+      if [ -n "$tx" ] && [ "$tx" != "$last_tx" ]; then
+        last_tx=$tx; tx_since=$now
+      elif [ $((now - tx_since)) -gt 75 ]; then
+        pkill lldpd
+        sleep 1
+        /usr/local/bin/fnl-lldpd-start &
+        lldp_name=; last_tx=; tx_since=$now
+      fi
+    else
+      last_tx=; tx_since=$now
+    fi
+  fi
   if conf=$(vtysh -c "show running-config" 2>/dev/null); then
     # FRRではvtyshのhostnameはそのセッションの中でしか効かず、write memoryするとfrr.confに残る。
     # そのためfrr.confのhostnameを優先し、無ければデーモンのrunning-configの値を使う
