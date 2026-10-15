@@ -43,7 +43,7 @@
 | 障害時の復旧 | サーバー再起動後にラボ・OVS設定・プロキシが戻るか |
 | バックアップ | ラボ定義は `/var/lib/containerlab/labs/<user>/` に保存される。バックアップ方針なし |
 | JWT有効期限 | 切れたら再ログイン。UI側の扱い（作業中の編集内容が消えないか）を確認 |
-| 自動テスト | **2026-10-15に最低限を追加**：frontendはvitest（`npm test`、トポロジ⇔YAML・往復・設定コマンド・リンクの品質）、swcliはunittest（`python3 -m unittest test_swcli`）。CIでの自動実行・コンポーネント（画面）のテストはまだ |
+| 自動テスト | **2026-10-15に最低限を追加**：frontendはvitest（`npm test`、トポロジ⇔YAML・往復・設定コマンド・リンクの品質）、swcliはunittest（`python3 -m unittest test_swcli`）。**CIでの自動実行は2026-10-15に追加**（`.github/workflows/ci.yml`）。コンポーネント（画面）のテストはまだ |
 
 ### C-1. 本番形態の比較（実装前の検討メモ）
 
