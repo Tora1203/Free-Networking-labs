@@ -824,6 +824,9 @@
   ことが分かり（api-contract.md 2.4を訂正）、「ノードを除いてapply→戻してapply」にした。隣のノードの設定も流し直す。
   使い捨てのラボでAPIの手順（設定の消去・除いてapply・戻してapply・ノードの復活・隣のPCのアドレスが消えること）を確認済み。
   **ブラウザでの確認はまだ**（テストマニュアルに項目を追加）。
+- **GitHub Actionsでテストを自動実行（2026-10-15、be/ci）**：`.github/workflows/ci.yml`。push（main）とPRのたびに、frontend（tsc・lint・
+  `npm test`・本番ビルド）、swcli（pyflakes・unittest）、Nodeのプロキシ3つの構文チェックを実行。Dockerやサーバーが要る確認は対象外。
+  ローカルでは各コマンドが通ることを確認済みだが、**GitHub上で初めて動かすのはこのPR**（失敗したらログを見て直す）。
 - **セキュリティの点検（2026-10-15、be/security）**：結果と管理者の作業は`docs/security.md`。済：8082/8083/8084を127.0.0.1だけで
   待ち受け（本番も再起動済み、nginx経由のconsole/ovs/captureの動作を確認）、ovs-helperの古い窓口（/bridge・/port/reset・/vlan）と
   link-delete.shを削除、CORSを絞る、トークンの確認を200の時だけに、capture-proxyのログのトークンを伏せる・中継をnoVNCのパスだけに、

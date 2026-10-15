@@ -1,0 +1,69 @@
+# プッシュ・PRのたびに、テストと型チェックを自動で動かす（2026-10-15）。
+# コンテナ（Docker）やサーバーが要る確認は対象外で、実機で行う（docs/test-manual.md）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend（型・lint・テスト・ビルド）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: 型チェック（tsc）
+        run: npx tsc -b
+      - name: lint
+        run: npm run lint
+      - name: テスト
+        run: npm test
+      - name: 本番ビルド
+        run: npm run build
+
+  swcli:
+    name: swcli（L2スイッチのCLI）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 静的チェック（pyflakes）
+        run: |
+          pip install pyflakes
+          python -m pyflakes backend/l2switch/swcli.py backend/l2switch/test_swcli.py
+      - name: テスト
+        working-directory: backend/l2switch
+        run: python -m unittest -v test_swcli
+
+  backend-js:
+    name: backend（Nodeのプロキシの構文）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 構文チェック
+        run: |
+          for f in backend/console-proxy/server.js backend/ovs-helper/server.js backend/capture-proxy/server.js; do
+            node --check "$f" && echo "ok: $f"
+          done
