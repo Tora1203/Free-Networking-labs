@@ -643,10 +643,16 @@ def discovery_view(cfg):
 
 
 class LldpAgent:
+    # lldpdは30秒ごとに送る。これだけ送信数が増えなければ止まっているとみなす
+    STALL_SEC = 75
+
     def __init__(self):
         self.proc = None
         self.hostname = None
         self.filters = {}  # ポート → (ifindex, LLDPを止めるか, CDPを止めるか)
+        self.last_check = 0
+        self.last_tx = None
+        self.tx_at = 0
 
     def tick(self, cfg, ports):
         if self.proc is None or self.proc.poll() is not None:
@@ -654,8 +660,19 @@ class LldpAgent:
             self.proc = subprocess.Popen(
                 ['lldpd', '-d', '-ccc', '-l', '-H', '0', '-k', '-I', 'eth*,!eth0', '-P', LLDP_PLATFORM,
                  '-S', 'Free-Networking-labs L2 switch'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             self.hostname = None
+            self.last_tx, self.tx_at = None, time.time()
+            return
+        if self.stalled(ports):
+            # lldpdは監視役と本体の2つのプロセスなので、まとめて止める
+            for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, None)):
+                try:
+                    os.killpg(self.proc.pid, sig)
+                    self.proc.wait(wait)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            self.proc = None
             return
         if self.hostname != cfg['hostname']:
             r = sh('lldpcli', 'configure', 'system', 'hostname', cfg['hostname'])
@@ -677,6 +694,29 @@ class LldpAgent:
                     sh('tc', 'filter', 'add', 'dev', name, 'egress', 'protocol', 'all', 'pref', pref,
                        'flower', 'dst_mac', mac, 'action', 'drop')
             self.filters[name] = want
+
+    def stalled(self, ports):
+        """lldpdが送らなくなっていないか（30秒ごとに確かめる）。ラボの起動直後、ポートが組み上がる途中で
+        lldpdが立ち上がると、送信も受信もしないまま止まることがあった（2026-10-15、本番のラボで確認。
+        lldpd側の原因は未特定で、起動し直すと直る）。つながっているポートがない時は送らないので見ない"""
+        now = time.time()
+        if now - self.last_check < 30:
+            return False
+        self.last_check = now
+        if not any(carrier(n) for n in ports):
+            self.last_tx, self.tx_at = None, now
+            return False
+        try:
+            # lldpd自体が固まっていても待ち続けないよう、時間を区切る
+            r = subprocess.run(['lldpcli', '-f', 'json0', 'show', 'statistics', 'summary'],
+                               capture_output=True, text=True, timeout=5)
+            tx = int(json.loads(r.stdout)['lldp'][0]['summary'][0]['tx'][0]['tx'])
+        except (subprocess.TimeoutExpired, ValueError, KeyError, IndexError, TypeError):
+            tx = None
+        if tx is not None and tx != self.last_tx:
+            self.last_tx, self.tx_at = tx, now
+            return False
+        return now - self.tx_at > self.STALL_SEC
 
 
 def parse_age(text):
