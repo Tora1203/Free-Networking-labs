@@ -819,6 +819,10 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **操作マニュアル3冊（利用者編・管理者編・評価者編）をPDFで作成（2026-10-15、docs/manual）**：原稿はMarkdown、PDFはDocker（`tools/manual/`、WeasyPrint＋
+  Noto CJK）で変換。利用者編の演習例（VLAN・Router on a stick・OSPF）は使い捨てのラボで実際に通ることを確認（EtherChannel・STPは10/14に確認済み）。
+  **未確認として本文に明記**：サーバー再起動後のラボの復旧、`nologin`のアカウントでAPIにログインできるか。スクリーンショットは入れていない
+  （図はSVG）。wipe（PR #26）は2026-10-15にマージ済みなので、利用者編の記述は今の機能と合っている。
 - **ノードごとの初期状態に戻す（wipe）（2026-10-15、fe/node-wipe）**：ノードの右クリック→「初期状態に戻す（wipe）」。保存した設定
   （write memory）を消してコンテナを作り直す。**API v0.6.0では`POST /labs?reconfigure=true&nodeFilter=`でノードが消えたまま残る**
   ことが分かり（api-contract.md 2.4を訂正）、「ノードを除いてapply→戻してapply」にした。隣のノードの設定も流し直す。
