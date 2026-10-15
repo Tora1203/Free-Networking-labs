@@ -23,7 +23,7 @@ import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
-import { getLabDisplayName, isSafeLabName, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
+import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import {
   buildNodeSyncCommands,
@@ -41,6 +41,7 @@ import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
 import {
   applyLinkConditions,
   errorMessage,
+  listLabNames,
   freshNodesOf,
   newLinkRuntimeState,
   prepareNodeConfigs,
@@ -55,7 +56,6 @@ import {
   destroyLab,
   getLabAnnotations,
   getLabs,
-  getLabTopologyFiles,
   getLabTopologyYaml,
   putLabAnnotations,
   putLabTopologyYaml,
@@ -64,6 +64,7 @@ import {
 } from '../api/client'
 import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
+import { useAuthStore } from '../store/authStore'
 import './TopologyEditor.css'
 
 // パレットの種別ごとに「R1」「SW1」「PC1」のような短い表示名を振るための接頭辞とカウンター
@@ -300,6 +301,8 @@ function TopologyEditorInner() {
   // ---------------------------------------------------------------------------
   const latestRef = useRef({ nodes, edges, labName })
   const savedNameRef = useRef<string | null>(null)
+  // 保存済みの表示名（表示名を変えた時に、自分の他のラボと重ならないかを見るため）
+  const savedTitleRef = useRef<string | null>(null)
   const runStateRef = useRef<LabRunState>(runState)
   const lastSavedYaml = useRef<string | null>(null)
   const lastSavedAnnotations = useRef<string | null>(null)
@@ -355,12 +358,15 @@ function TopologyEditorInner() {
       setSyncStatus({ kind: 'error', message: 'ラボ名を入力すると自動保存されます' })
       return null
     }
-    const safeName = toSafeLabName(displayName)
-    const [files, labs] = await Promise.all([getLabTopologyFiles(), getLabs()])
-    if (files.some((f) => f.labName === safeName) || safeName in labs) {
+    // IDは先頭にユーザー名を付ける（別のユーザーと重ならないように、utils/labName.ts）。
+    // 自分のラボと表示名が同じ場合も保存しない（ホームの一覧で見分けられないため、2026-10-15）
+    const safeName = toSafeLabName(displayName, useAuthStore.getState().username)
+    const { ids, titles } = await listLabNames()
+    if (ids.has(safeName) || titles.has(labTitleKey(displayName))) {
       setSyncStatus({ kind: 'error', message: `「${displayName}」という名前のラボが既にあります。名前を変えると保存されます` })
       return null
     }
+    savedTitleRef.current = displayName
     rememberLabDisplayName(safeName, displayName)
     savedNameRef.current = safeName
     setSavedLabName(safeName)
@@ -387,8 +393,18 @@ function TopologyEditorInner() {
     }
     const yamlText = topologyToYaml(built.topologyContent)
     // 表示名（ラボ名欄）。保存後も変えられ、annotationsに入るだけなのでラボの作り直しは起きない
-    const title = latestRef.current.labName.trim() || name
+    let title = latestRef.current.labName.trim() || name
+    // 表示名を変えた時は、自分の他のラボと重ならないか確かめる。重なれば表示名は前のままで保存する
+    let titleConflict: string | null = null
+    if (savedTitleRef.current !== null && title !== savedTitleRef.current) {
+      const owner = (await listLabNames()).titles.get(labTitleKey(title))
+      if (owner && owner !== name) {
+        titleConflict = title
+        title = savedTitleRef.current
+      }
+    }
     const annotationsText = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
+    const conflictMessage = titleConflict ? `「${titleConflict}」という名前のラボが既にあるため、表示名は「${title}」のままです` : null
     try {
       if (yamlText !== lastSavedYaml.current) {
         setSyncStatus({ kind: 'busy', message: '保存中...' })
@@ -398,7 +414,12 @@ function TopologyEditorInner() {
       if (annotationsText !== lastSavedAnnotations.current) {
         await putLabAnnotations(name, annotationsText)
         lastSavedAnnotations.current = annotationsText
+        savedTitleRef.current = title
         rememberLabDisplayName(name, title)
+      }
+      if (conflictMessage) {
+        setSyncStatus({ kind: 'error', message: conflictMessage })
+        if (runStateRef.current.kind !== 'running') return
       }
       if (runStateRef.current.kind !== 'running') {
         setSyncStatus({ kind: 'ok', message: '保存済み' })
@@ -801,12 +822,13 @@ function TopologyEditorInner() {
     if (editorTarget.mode !== 'edit') {
       // 新規作成：YYYYMMDDHHが既存のラボと同じなら、-2, -3...を付けて空いている名前にする
       // （同じ時間帯に2つ目を作ると最初の保存が「同名あり」で止まってしまうため）
-      void Promise.all([getLabTopologyFiles(), getLabs()])
-        .then(([files, labs]) => {
-          const taken = new Set([...files.map((f) => f.labName), ...Object.keys(labs)])
+      const username = useAuthStore.getState().username
+      void listLabNames()
+        .then(({ ids, titles }) => {
+          const taken = (c: string) => ids.has(toSafeLabName(c, username)) || titles.has(labTitleKey(c))
           const base = defaultLabName()
           let candidate = base
-          for (let i = 2; taken.has(candidate); i++) candidate = `${base}-${i}`
+          for (let i = 2; taken(candidate); i++) candidate = `${base}-${i}`
           setLabName((current) => (current === base ? candidate : current))
         })
         .catch(() => undefined)
@@ -845,6 +867,7 @@ function TopologyEditorInner() {
         counters.current = parsedCounters
         const title = readLabTitle(annotationsText) ?? getLabDisplayName(targetLabName)
         setLabName(title)
+        savedTitleRef.current = title
         latestRef.current = { ...latestRef.current, labName: title }
         savedNameRef.current = targetLabName
         setSavedLabName(targetLabName)
@@ -1329,7 +1352,7 @@ function TopologyEditorInner() {
           {loadStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{loadStatus.message}</span>}
           {!savedLabName && labName.trim() && !isSafeLabName(labName.trim()) && (
             <span className="topology-editor__status" title="ラボ名は英数字・ハイフン・アンダースコアのみAPIが受け付けるため、実際には自動生成した名前で保存されます">
-              実際の名前: {toSafeLabName(labName)}
+              実際の名前: {toSafeLabName(labName, useAuthStore.getState().username)}
             </span>
           )}
           {savedLabName && runState.kind !== 'unknown' && (

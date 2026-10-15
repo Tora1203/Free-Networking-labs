@@ -11,6 +11,8 @@ import {
   destroyLab,
   execInLab,
   getLabAnnotations,
+  getLabs,
+  getLabTopologyFiles,
   getLabTopologyYaml,
   putLabAnnotations,
   putLabTopologyYaml,
@@ -25,6 +27,7 @@ import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, parseImportedTopology, topologyToYaml } from './labTopology'
 import { netemKey, netemKeyFromShow } from './linkCondition'
+import { getLabDisplayName, labTitleKey } from './labName'
 
 type BuiltTopology = ReturnType<typeof buildTopologyContent>
 
@@ -250,3 +253,20 @@ export async function readLinkRuntimeState(labName: string, built: BuiltTopology
 // フルネームでも通る）。containerlabの「seamless dataplane」でリンクは保たれる
 export const startLabNode = (labName: string, nodeName: string) => startNode(labName, nodeName)
 export const stopLabNode = (labName: string, nodeName: string) => stopNode(labName, nodeName)
+
+// 使われているラボのIDと、自分のラボの表示名（新しいラボの名前・表示名の変更が重ならないかを見る用、2026-10-15）。
+// ids：保存済みのラボと、見えている動いているラボ（管理者には他のユーザーのものも見える）のID。
+// titles：表示名（labTitleKeyで揃えたもの）→ そのラボのID
+export async function listLabNames(): Promise<{ ids: Set<string>; titles: Map<string, string> }> {
+  const [files, labs] = await Promise.all([getLabTopologyFiles(), getLabs()])
+  const ids = new Set([...files.map((f) => f.labName), ...Object.keys(labs)])
+  const titles = new Map<string, string>()
+  const read = await Promise.all(
+    files.map(async (f) => {
+      const title = f.hasAnnotations ? await getLabAnnotations(f.labName).then(readLabTitle).catch(() => undefined) : undefined
+      return [f.labName, title ?? getLabDisplayName(f.labName)] as const
+    }),
+  )
+  for (const [id, title] of read) titles.set(labTitleKey(title), id)
+  return { ids, titles }
+}
