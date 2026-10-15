@@ -4,6 +4,7 @@
 #   fnl/l2switch:3（2026-10-14）：mstpdでSTP/RSTP/MSTP。カーネルのMST（mst_enabled）のためAlpine 3.22（iproute2 6.15）に
 #   fnl/l2switch:4（2026-10-14）：GUIの「ケーブルを抜く」、非特権コンテナでのmstpdの修正
 #   fnl/l2switch:5（2026-10-14）：ログ、show interfaces、MACテーブル、SVI・ping・パスワード、LLDP/CDP（lldpd）、EtherChannel、ポートセキュリティ
+#   fnl/l2switch:6（2026-10-15）：コードレビュー（PR #22）の指摘を修正（Ctrl+Cで落ちない、STP設定の入れ直し、static MACの再試行ほか）
 
 # mstpdはAlpineのパッケージに無いのでソースから作る。コンテナの中で動かすための改修はmstpd/fnl.patch
 FROM alpine:3.22 AS mstpd

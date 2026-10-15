@@ -85,6 +85,16 @@ class ParsingTest(unittest.TestCase):
         self.assertIsNone(sw.mask_to_prefix('255.0.255.0'))
         self.assertEqual(sw.prefix_to_mask(20), '255.255.240.0')
 
+    def test_ipv4_rejects_fullwidth_digits(self):
+        self.assertTrue(sw.is_ipv4('10.0.0.1'))
+        self.assertFalse(sw.is_ipv4('１０.0.0.1'))
+        self.assertIsNone(sw.mask_to_prefix('２５５.255.255.0'))
+
+    def test_merge_changes(self):
+        d = {'a': 1, 'b': 2}
+        sw.merge_changes(d, {'a': None, 'c': 3})
+        self.assertEqual(d, {'b': 2, 'c': 3})
+
     def test_mac(self):
         self.assertEqual(sw.parse_mac('aabb.ccdd.eeff'), 'aa:bb:cc:dd:ee:ff')
         self.assertEqual(sw.parse_mac('AA-BB-CC-DD-EE-FF'), 'aa:bb:cc:dd:ee:ff')
@@ -131,6 +141,11 @@ class CliTest(CliTestCase):
             self.assertEqual(sw.port_view(cfg, name)['mode'], 'trunk')
             self.assertEqual(sw.port_view(cfg, name)['allowed'], [10, *range(20, 31)])
         self.assertEqual(sw.port_view(cfg, 'eth1')['mode'], 'access')
+
+    def test_pipe_only_for_show(self):
+        # 設定の文字の`|`は出力フィルタとして扱わない（description uplink | core）
+        self.configure(['interface eth1', 'description uplink | core'])
+        self.assertEqual(sw.port_view(sw.load(sw.RUNNING), 'eth1')['description'], 'uplink | core')
 
     def test_pipe_include(self):
         self.configure(['hostname SW1', 'interface eth1', 'description uplink'])

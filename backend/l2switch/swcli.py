@@ -224,8 +224,19 @@ def format_vlan_list(vlans):
 # エージェント：running-config → br0
 # ---------------------------------------------------------------------------
 
-def sh(*args):
-    return subprocess.run(args, capture_output=True, text=True)
+def sh(*args, timeout=None):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:  # 相手が固まっても待ち続けない
+        return subprocess.CompletedProcess(args, 124, '', 'timeout')
+
+
+def iface_index(name):
+    try:
+        with open(f'/sys/class/net/{name}/ifindex') as f:
+            return f.read().strip()
+    except OSError:
+        return None
 
 
 def desired_vlans(p):
@@ -473,9 +484,13 @@ class StpAgent:
             self.apply_bridge(cfg, st)
             self.bridge_key = key
             changed = True
+        for name in list(self.port_keys):
+            if name not in ports:  # bridgeから外れた（channel-groupに入れた等）。戻ってきたら入れ直す
+                self.port_keys.pop(name)
         for name in ports:
             p = port_view(cfg, name)
-            pkey = json.dumps([p, st['mode'], oper_edge(st, p), oper_bpduguard(st, p), port_speed(name)], sort_keys=True)
+            # ifindexも含める：bondの作り直し等でデバイスが新しくなったら入れ直す
+            pkey = json.dumps([p, st['mode'], oper_edge(st, p), oper_bpduguard(st, p), port_speed(name), iface_index(name)], sort_keys=True)
             if self.port_keys.get(name) != pkey and self.apply_port(name, p, st):
                 self.port_keys[name] = pkey
                 changed = True
@@ -675,11 +690,11 @@ class LldpAgent:
             self.proc = None
             return
         if self.hostname != cfg['hostname']:
-            r = sh('lldpcli', 'configure', 'system', 'hostname', cfg['hostname'])
+            r = sh('lldpcli', 'configure', 'system', 'hostname', cfg['hostname'], timeout=5)
             if r.returncode == 0:
-                sh('lldpcli', 'configure', 'lldp', 'portidsubtype', 'ifname')
-                sh('lldpcli', 'configure', 'system', 'capabilities', 'enabled', 'bridge')
-                sh('lldpcli', 'configure', 'system', 'ip', 'management', 'pattern', 'vlan*')
+                sh('lldpcli', 'configure', 'lldp', 'portidsubtype', 'ifname', timeout=5)
+                sh('lldpcli', 'configure', 'system', 'capabilities', 'enabled', 'bridge', timeout=5)
+                sh('lldpcli', 'configure', 'system', 'ip', 'management', 'pattern', 'vlan*', timeout=5)
                 self.hostname = cfg['hostname']
         g = discovery_view(cfg)
         for name in ports:
@@ -871,8 +886,9 @@ class PsecAgent:
             if link_status(name, p) != 'connected':
                 st['dynamic'] = []
             secure = {(parse_mac(m['mac']), vlan) for m in ps['macs']} | {(m, vlan) for m in st['dynamic']}
-            for mac, v in locked.get(name, []):
-                sh('bridge', 'fdb', 'del', mac, 'dev', name, 'master', 'vlan', str(v))
+            dels = []
+            for mac, v in locked.get(name, [])[:100]:  # MACを大量に流されても1周期で処理する数を絞る
+                dels.append(f'fdb del {mac} dev {name} master vlan {v}')
                 if (mac, v) in secure:
                     continue
                 if v == vlan and len(secure) < ps['max']:
@@ -902,7 +918,15 @@ class PsecAgent:
                     st['dynamic'] = []
                     secure = {(parse_mac(m['mac']), vlan) for m in ps['macs']}
                     break
+            if dels:  # lockedエントリはまとめて1回で消す（1件ごとにプロセスを起動しない）
+                try:
+                    subprocess.run(['bridge', '-force', '-batch', '-'], input='\n'.join(dels) + '\n',
+                                   capture_output=True, text=True, timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
             self.reconcile(name, secure)
+        for key in [k for k, t in self.last_seen.items() if time.time() - t > 60]:
+            del self.last_seen[key]  # 違反の記録が増え続けないよう古いものを捨てる
         if sticky_add:
             # stickyで覚えたMACはrunning-configに入る（write memoryすれば残る。Ciscoと同じ）
             run = load(RUNNING)
@@ -920,10 +944,12 @@ class PsecAgent:
         have = self.applied.get(name, set())
         for mac, v in have - want:
             sh('bridge', 'fdb', 'del', mac, 'dev', name, 'master', 'vlan', str(v))
+        done = have & want
         for mac, v in want - have:
-            sh('bridge', 'fdb', 'replace', mac, 'dev', name, 'master', 'static', 'vlan', str(v))
-        if want:
-            self.applied[name] = set(want)
+            if sh('bridge', 'fdb', 'replace', mac, 'dev', name, 'master', 'static', 'vlan', str(v)).returncode == 0:
+                done.add((mac, v))
+        if done:
+            self.applied[name] = done
         else:
             self.applied.pop(name, None)
 
@@ -1000,6 +1026,8 @@ class Agent:
         self.status = {}  # ポート → 前回の状態（ログを出すため）
         self.applied_aging = None
         self.applied_static = set()  # (mac, vlan, port)
+        self.bond_warned = set()
+        self.bond_tried = {}  # (メンバー, po) → 最後にbondへ入れ直そうとした時刻（失敗し続けてもリンクを揺らし続けない）
         self.last_rate = 0.0
         self.prev_stats = {}
         self.last_rotate = 0.0
@@ -1124,12 +1152,22 @@ class Agent:
                 if not os.path.exists(f'/sys/class/net/{m}'):
                     continue
                 if os.path.basename(os.path.realpath(f'/sys/class/net/{m}/master')) != po:
+                    if time.time() - self.bond_tried.get((m, po), 0) < 10:
+                        continue
+                    self.bond_tried[(m, po)] = time.time()
                     up = is_up_flag(m)
                     sh('ip', 'link', 'set', m, 'down')
                     sh('ip', 'link', 'set', m, 'nomaster')
                     # BPDUはbondに届けてから捨てる（mstpdはpoNで受け取る）。メンバーの入口では捨てない
                     sh('tc', 'filter', 'del', 'dev', m, 'ingress', 'pref', '1')
-                    sh('ip', 'link', 'set', m, 'master', po)
+                    r = sh('ip', 'link', 'set', m, 'master', po)
+                    if r.returncode != 0 and (m, po) not in self.bond_warned:
+                        self.bond_warned.add((m, po))  # 失敗が続いても警告は1回だけ（ログを溢れさせない）
+                        log_event(f'%EC-5-ERRPROT: Failed to add {m} to {po}: {r.stderr.strip()}')
+                    if r.returncode != 0:
+                        self.bond_tried[(m, po)] = time.time() + 290  # 失敗し続けるなら5分は触らない（リンクを揺らさない）
+                    else:
+                        self.bond_warned.discard((m, po))
                     if up:
                         sh('ip', 'link', 'set', m, 'up')
         members = {m for g in groups.values() for m in g['members']}
@@ -1176,9 +1214,12 @@ class Agent:
         want = {(e['mac'], e['vlan'], e['iface']) for e in m['static'] if os.path.exists(f'/sys/class/net/{e["iface"]}')}
         for mac, vlan, port in self.applied_static - want:
             sh('bridge', 'fdb', 'del', mac, 'dev', port, 'master', 'vlan', str(vlan))
+        done = self.applied_static & want
         for mac, vlan, port in want - self.applied_static:
-            sh('bridge', 'fdb', 'replace', mac, 'dev', port, 'master', 'static', 'vlan', str(vlan))
-        self.applied_static = want
+            # 失敗（VLANがまだ無い等）したら記録しない。次の周期で入れ直す
+            if sh('bridge', 'fdb', 'replace', mac, 'dev', port, 'master', 'static', 'vlan', str(vlan)).returncode == 0:
+                done.add((mac, vlan, port))
+        self.applied_static = done
 
     def sync_svi(self, cfg):
         """interface vlan N（vlanNデバイス）とip default-gatewayを反映する"""
@@ -1372,7 +1413,7 @@ def svi_ids(cfg):
 
 def vlan_has_up_port(cfg, vid):
     """VLAN vidを通すポートのうち、つながっているものがあるか（SVIのline protocolの判定。Ciscoと同じ）"""
-    for name in system_ports():
+    for name in bridge_ports(cfg):  # channel-groupのメンバーは見ず、port-channelで見る
         p = port_view(cfg, name)
         if any(v == vid for v, _ in desired_vlans(p)) and link_status(name, p) == 'connected':
             return True
@@ -1387,6 +1428,8 @@ def svi_status(cfg, vid):
 
 
 def mask_to_prefix(mask):
+    if not mask.isascii():  # 全角数字をintが通してしまう
+        return None
     try:
         bits = ''.join(f'{int(o):08b}' for o in mask.split('.'))
     except ValueError:
@@ -1403,7 +1446,7 @@ def prefix_to_mask(prefix):
 
 def is_ipv4(text):
     parts = text.split('.')
-    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+    return len(parts) == 4 and all(p.isascii() and p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
 # ---- パスワード（enable secret / enable password / line console）（2026-10-14〜） ----
@@ -1586,8 +1629,9 @@ def show_lacp_neighbor(cfg):
                 continue
             flags = ('F' if pt['state'] & 0x2 else 'S') + ('A' if pt['state'] & 0x1 else 'P')
             key = int(pt['key'] or 0)
-            out.append(f'{m:<10}{flags:<8}{pt["prio"]:<10}{cisco_mac(pt["mac"]):<16}{"-":<7}{"0x0":<7}{f"0x{key:X}":<7}'
-                       f'{f"0x{int(pt["port"] or 0):X}":<8}0x{pt["state"]:X}')
+            key_hex, port_hex = f'0x{key:X}', f'0x{int(pt["port"] or 0):X}'
+            out.append(f'{m:<10}{flags:<8}{pt["prio"]:<10}{cisco_mac(pt["mac"]):<16}{"-":<7}{"0x0":<7}{key_hex:<7}'
+                       f'{port_hex:<8}0x{pt["state"]:X}')
     return '\n'.join(out)
 
 
@@ -2228,6 +2272,15 @@ def filter_output(lines, kind, pattern):
     return out
 
 
+def merge_changes(d, changes, unset=lambda k, v: v is None):
+    """設定の辞書に変更を入れる。値がNone（unset）のキーは消す"""
+    for k, v in changes.items():
+        if unset(k, v):
+            d.pop(k, None)
+        else:
+            d[k] = v
+
+
 class Cli:
     def __init__(self):
         self.mode = 'exec'
@@ -2602,12 +2655,7 @@ class Cli:
 
     def set_svi(self, **changes):
         def fn(cfg):
-            v = cfg.setdefault('svi', {}).setdefault(str(self.svi), {})
-            for k, val in changes.items():
-                if val is None:
-                    v.pop(k, None)
-                else:
-                    v[k] = val
+            merge_changes(cfg.setdefault('svi', {}).setdefault(str(self.svi), {}), changes)
         self.modify(fn)
 
     def do_svi_address(self, a):
@@ -2620,11 +2668,7 @@ class Cli:
     def set_auth(self, **changes):
         def fn(cfg):
             au = cfg.setdefault('auth', {})
-            for k, v in changes.items():
-                if v is None:
-                    au.pop(k, None)
-                else:
-                    au[k] = v
+            merge_changes(au, changes)
             if not au:
                 cfg.pop('auth')
         self.modify(fn)
@@ -2683,13 +2727,13 @@ class Cli:
         au = auth_view(self.cfg())
         if au['console_login']:
             if not au['console_password']:
-                print('Password required, but none set')
-                time.sleep(2)
-                raise EOFError
-            print('\nUser Access Verification\n')
-            if not self.check_password('Password: ', lambda pw: pw == au['console_password'], '% Bad passwords'):
-                time.sleep(1)
-                raise EOFError
+                # 入れなくなると復旧できない（設定はホスト側に残る）ので、パスワード未設定の間は通す
+                print('% Password required, but none set (login skipped)')
+            else:
+                print('\nUser Access Verification\n')
+                if not self.check_password('Password: ', lambda pw: pw == au['console_password'], '% Bad passwords'):
+                    time.sleep(1)
+                    raise EOFError
         self.mode = 'user' if au['enable_secret'] or au['enable_password'] else 'exec'
 
     def do_ping(self, a, size=100):
@@ -2704,21 +2748,29 @@ class Cli:
         except ValueError:
             dev = None
         times = []
-        for i in range(count):
-            if dev is None or dev == 'eth0':
-                ok = False
-                time.sleep(0.2)
-            else:
-                r = sh('ping', '-c', '1', '-W', '2', '-s', str(max(size - 28, 8)), target)
-                m = re.search(r'time=([\d.]+) ms', r.stdout)
-                ok = r.returncode == 0 and m is not None
-                if ok:
-                    times.append(float(m.group(1)))
-            sys.stdout.write('!' if ok else '.')
-            if (i + 1) % 70 == 0:
-                sys.stdout.write('\n')
-            sys.stdout.flush()
+        sent = 0
+        try:
+            for i in range(count):
+                if dev is None or dev == 'eth0':
+                    ok = False
+                    time.sleep(0.2)
+                else:
+                    r = sh('ping', '-c', '1', '-W', '2', '-s', str(max(size - 28, 8)), target)
+                    m = re.search(r'time=([\d.]+) ms', r.stdout)
+                    ok = r.returncode == 0 and m is not None
+                    if ok:
+                        times.append(float(m.group(1)))
+                sys.stdout.write('!' if ok else '.')
+                if (i + 1) % 70 == 0:
+                    sys.stdout.write('\n')
+                sys.stdout.flush()
+                sent = i + 1
+        except KeyboardInterrupt:  # Ctrl+C：途中までの結果を出して終わる（swcli自体は落とさない）
+            pass
         print()
+        count = max(sent, len(times))
+        if count == 0:
+            return
         line = f'Success rate is {len(times) * 100 // count} percent ({len(times)}/{count})'
         if times:
             ms = [max(1, round(t)) for t in times]
@@ -2759,11 +2811,7 @@ class Cli:
     def set_mac(self, **changes):
         def fn(cfg):
             m = cfg.setdefault('mac', {})
-            for k, v in changes.items():
-                if v is None or (k == 'aging' and v == MAC_AGING_DEFAULT):
-                    m.pop(k, None)
-                else:
-                    m[k] = v
+            merge_changes(m, changes, lambda k, v: v is None or (k == 'aging' and v == MAC_AGING_DEFAULT))
             if not m:
                 cfg.pop('mac')
         self.modify(fn)
@@ -2794,11 +2842,7 @@ class Cli:
         def fn(cfg):
             for name in self.ifaces:
                 ps = port_cfg(cfg, name).setdefault('psec', {})
-                for k, v in changes.items():
-                    if v is None:
-                        ps.pop(k, None)
-                    else:
-                        ps[k] = v
+                merge_changes(ps, changes)
                 if not ps:
                     port_cfg(cfg, name).pop('psec')
         self.modify(fn)
@@ -2812,6 +2856,8 @@ class Cli:
                 lst = [m for m in ps.get('macs', []) if parse_mac(m['mac']) != mac]
                 if len(lst) >= psec_view(ps)['max']:
                     print(f'Total secure mac-addresses on interface {name} has reached maximum limit.')
+                    if not ps:
+                        port_cfg(cfg, name).pop('psec')
                     continue
                 ps['macs'] = lst + [{'mac': mac, 'sticky': True} if sticky else {'mac': mac}]
         self.modify(fn)
@@ -2825,6 +2871,8 @@ class Cli:
                 ps['macs'] = [m for m in ps.get('macs', []) if parse_mac(m['mac']) != mac]
                 if not ps['macs']:
                     ps.pop('macs')
+                if not ps:
+                    port_cfg(cfg, name).pop('psec', None)
         self.modify(fn)
 
     def do_no_psec_sticky(self, a):
@@ -2836,6 +2884,8 @@ class Cli:
                 ps['macs'] = [m for m in ps.get('macs', []) if not m.get('sticky')]
                 if not ps['macs']:
                     ps.pop('macs')
+                if not ps:
+                    port_cfg(cfg, name).pop('psec', None)
         self.modify(fn)
 
     def do_clear_psec(self, kinds, iface=None):
@@ -2890,11 +2940,7 @@ class Cli:
     def set_discovery(self, **changes):
         def fn(cfg):
             d = cfg.setdefault('discovery', {})
-            for k, v in changes.items():
-                if v is None:
-                    d.pop(k, None)
-                else:
-                    d[k] = v
+            merge_changes(d, changes)
             if not d:
                 cfg.pop('discovery')
         self.modify(fn)
@@ -2902,11 +2948,7 @@ class Cli:
     def set_logging(self, **changes):
         def fn(cfg):
             lg = cfg.setdefault('logging', {})
-            for k, v in changes.items():
-                if v is None:
-                    lg.pop(k, None)
-                else:
-                    lg[k] = v
+            merge_changes(lg, changes)
             if not lg:
                 cfg.pop('logging')
         self.modify(fn)
@@ -3101,6 +3143,9 @@ class Cli:
     def execute(self, line):
         # Ciscoと同じく「show ... | include 正規表現」等で出力を絞る（include / exclude / begin / section）
         m = re.match(r'(.*?)\s+\|\s*(\S+)\s*(.*)$', line)
+        # 出力を絞れるのはshow/ping等だけ。`description uplink | core`のような設定の文字は分けない
+        if m and not any(len(w) >= 2 and k.startswith(w) for w in m.group(1).split()[:1] for k in ('show', 'ping', 'traceroute', 'do', 'more')):
+            m = None
         if m:
             kind = next((k for k in ('include', 'exclude', 'begin', 'section') if k.startswith(m.group(2).lower())), None)
             if kind is None or not m.group(3):
@@ -3198,6 +3243,8 @@ class Cli:
                     self.execute(line)
                 except EOFError:
                     return
+                except KeyboardInterrupt:  # 実行中のCtrl+Cでswcliを落とさない
+                    print()
                 except Exception as e:
                     print(f'% Error: {e}')
                 if ctrl_z and self.mode != 'user':  # ユーザーモードでCtrl+Zを押しても特権モードには上がらない
@@ -3223,6 +3270,8 @@ class Cli:
         except (OSError, AttributeError):
             redraw = None
 
+        out = sys.stdout  # 本物の標準出力。`| include`中のredirect_stdoutのバッファには書かない
+
         def run():
             ino, pos = None, 0
             try:
@@ -3232,6 +3281,8 @@ class Cli:
                 pass
             while True:
                 time.sleep(0.5)
+                if not self.waiting_input:
+                    continue  # コマンド実行中やパスワード入力中は流さない（出力や入力行を壊すため）。プロンプトに戻ったら流す
                 try:
                     st = os.stat(LOG_FILE)
                 except OSError:
@@ -3252,8 +3303,8 @@ class Cli:
                     continue
                 if not data.strip() or not self.cfg().get('logging', {}).get('console', True):
                     continue
-                sys.stdout.write('\r\x1b[K' + data)
-                sys.stdout.flush()
+                out.write('\r\x1b[K' + data)
+                out.flush()
                 if redraw and self.waiting_input:
                     redraw()
         threading.Thread(target=run, daemon=True).start()
