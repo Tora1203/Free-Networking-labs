@@ -892,7 +892,7 @@
   レビュー（PR #29）の追加指摘も反映：bondへの入れ直しが失敗したら警告を1回出して5分は触らない、`bridge -batch`にタイムアウト、空の`psec: {}`を残さない、管理者編の旧タグを`:5`に戻した。ルーターのlldpdはSIGSTOPで固めて約75秒後に起動し直すことを実機（コンテナ2台）で確認（TERMで消えない場合に備えSIGKILLも追加）。
   未対応：1秒ごとの処理の軽量化（#12。実測約60ms/tick、4vCPUで問題ない範囲）。テストは`test_swcli`が18件に。
 
-- **L3スイッチとラボのスナップショットの設計メモ（2026-10-15、docs/l3-snapshot-design）**：実装前の案。`docs/l3-switch-design.md`（swcliが窓口・FRRを同居・`startup.json`に1本化・プラグインの拡張点・段階1〜4）、`docs/snapshot-design.md`（annotationsに埋め込む案A・取る/戻す・共有）。決定ではない。最初の一歩は、L3は手作業で1台作って実測、スナップショットはannotationsに未知のキーが残るかの実機確認。
+- **L3スイッチとラボのスナップショットの設計メモ（2026-10-15、docs/l3-snapshot-design）**：実装前の案。`docs/l3-switch-design.md`（swcliが窓口・FRRを同居・`startup.json`に1本化・プラグインの拡張点・段階1〜4）、`docs/snapshot-design.md`（annotationsに埋め込む案A・取る/戻す・共有）。決定ではない。`docs/collab-design.md`（ラボへの同時参加：段階1〜4、collab-proxyが所有者のトークンで代行）も追加。最初の一歩は、L3は手作業で1台作って実測、スナップショットはannotationsに未知のキーが残るかの実機確認。
 
 
 ## Bさん（フロントエンド）
