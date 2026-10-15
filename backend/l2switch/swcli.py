@@ -919,7 +919,11 @@ class PsecAgent:
                     secure = {(parse_mac(m['mac']), vlan) for m in ps['macs']}
                     break
             if dels:  # lockedエントリはまとめて1回で消す（1件ごとにプロセスを起動しない）
-                subprocess.run(['bridge', '-force', '-batch', '-'], input='\n'.join(dels) + '\n', capture_output=True, text=True)
+                try:
+                    subprocess.run(['bridge', '-force', '-batch', '-'], input='\n'.join(dels) + '\n',
+                                   capture_output=True, text=True, timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
             self.reconcile(name, secure)
         for key in [k for k, t in self.last_seen.items() if time.time() - t > 60]:
             del self.last_seen[key]  # 違反の記録が増え続けないよう古いものを捨てる
@@ -1022,6 +1026,7 @@ class Agent:
         self.status = {}  # ポート → 前回の状態（ログを出すため）
         self.applied_aging = None
         self.applied_static = set()  # (mac, vlan, port)
+        self.bond_warned = set()
         self.bond_tried = {}  # (メンバー, po) → 最後にbondへ入れ直そうとした時刻（失敗し続けてもリンクを揺らし続けない）
         self.last_rate = 0.0
         self.prev_stats = {}
@@ -1155,7 +1160,14 @@ class Agent:
                     sh('ip', 'link', 'set', m, 'nomaster')
                     # BPDUはbondに届けてから捨てる（mstpdはpoNで受け取る）。メンバーの入口では捨てない
                     sh('tc', 'filter', 'del', 'dev', m, 'ingress', 'pref', '1')
-                    sh('ip', 'link', 'set', m, 'master', po)
+                    r = sh('ip', 'link', 'set', m, 'master', po)
+                    if r.returncode != 0 and (m, po) not in self.bond_warned:
+                        self.bond_warned.add((m, po))  # 失敗が続いても警告は1回だけ（ログを溢れさせない）
+                        log_event(f'%EC-5-ERRPROT: Failed to add {m} to {po}: {r.stderr.strip()}')
+                    if r.returncode != 0:
+                        self.bond_tried[(m, po)] = time.time() + 290  # 失敗し続けるなら5分は触らない（リンクを揺らさない）
+                    else:
+                        self.bond_warned.discard((m, po))
                     if up:
                         sh('ip', 'link', 'set', m, 'up')
         members = {m for g in groups.values() for m in g['members']}
@@ -2844,6 +2856,8 @@ class Cli:
                 lst = [m for m in ps.get('macs', []) if parse_mac(m['mac']) != mac]
                 if len(lst) >= psec_view(ps)['max']:
                     print(f'Total secure mac-addresses on interface {name} has reached maximum limit.')
+                    if not ps:
+                        port_cfg(cfg, name).pop('psec')
                     continue
                 ps['macs'] = lst + [{'mac': mac, 'sticky': True} if sticky else {'mac': mac}]
         self.modify(fn)
@@ -2857,6 +2871,8 @@ class Cli:
                 ps['macs'] = [m for m in ps.get('macs', []) if parse_mac(m['mac']) != mac]
                 if not ps['macs']:
                     ps.pop('macs')
+                if not ps:
+                    port_cfg(cfg, name).pop('psec', None)
         self.modify(fn)
 
     def do_no_psec_sticky(self, a):
@@ -2868,6 +2884,8 @@ class Cli:
                 ps['macs'] = [m for m in ps.get('macs', []) if not m.get('sticky')]
                 if not ps['macs']:
                     ps.pop('macs')
+                if not ps:
+                    port_cfg(cfg, name).pop('psec', None)
         self.modify(fn)
 
     def do_clear_psec(self, kinds, iface=None):

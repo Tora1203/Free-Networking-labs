@@ -27,6 +27,8 @@ while :; do
         last_tx=$tx; tx_since=$now
       elif [ $((now - tx_since)) -gt 75 ]; then
         pkill lldpd
+        sleep 2
+        pkill -9 lldpd  # 固まっていてTERMで消えない時のため（止まったままだと新しいlldpdが起動できない）
         sleep 1
         /usr/local/bin/fnl-lldpd-start &
         lldp_name=; last_tx=; tx_since=$now
