@@ -819,6 +819,9 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **GitHub Actionsでテストを自動実行（2026-10-15、be/ci）**：`.github/workflows/ci.yml`。push（main）とPRのたびに、frontend（tsc・lint・
+  `npm test`・本番ビルド）、swcli（pyflakes・unittest）、Nodeのプロキシ3つの構文チェックを実行。Dockerやサーバーが要る確認は対象外。
+  ローカルでは各コマンドが通ることを確認済みだが、**GitHub上で初めて動かすのはこのPR**（失敗したらログを見て直す）。
 - **セキュリティの点検（2026-10-15、be/security）**：結果と管理者の作業は`docs/security.md`。済：8082/8083/8084を127.0.0.1だけで
   待ち受け（本番も再起動済み、nginx経由のconsole/ovs/captureの動作を確認）、ovs-helperの古い窓口（/bridge・/port/reset・/vlan）と
   link-delete.shを削除、CORSを絞る、トークンの確認を200の時だけに、capture-proxyのログのトークンを伏せる・中継をnoVNCのパスだけに、
