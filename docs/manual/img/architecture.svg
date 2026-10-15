@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 470" font-family="Noto Sans CJK JP, DejaVu Sans, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+    <style>
+      .box{fill:#f1f5ff;stroke:#1e3a8a;stroke-width:1.5;rx:8}
+      .api{fill:#eef9f1;stroke:#15803d;stroke-width:1.5;rx:8}
+      .node{fill:#fffbeb;stroke:#b45309;stroke-width:1.5;rx:8}
+      .ext{fill:#f8fafc;stroke:#64748b;stroke-width:1.5;rx:8}
+      .t{font-size:14px;fill:#0f172a;font-weight:700}.s{font-size:11px;fill:#334155}.l{font-size:10.5px;fill:#475569}
+      .ln{stroke:#475569;stroke-width:1.5;fill:none;marker-end:url(#a)}
+    </style>
+  </defs>
+  <rect class="ext" x="10" y="10" width="740" height="64"/>
+  <text class="t" x="24" y="34">ブラウザ（利用者）</text>
+  <text class="s" x="24" y="54">React ＋ React Flow（ネットワーク図の編集）／ xterm.js（コンソール）／ 画面下部のサーバー使用状況</text>
+  <path class="ln" d="M380 74V104"/><text class="l" x="392" y="94">HTTPS 443（すべての通信がここ 1 か所）</text>
+  <rect class="box" x="10" y="106" width="740" height="48"/>
+  <text class="t" x="24" y="128">nginx</text>
+  <text class="s" x="24" y="145">HTTPS・画面の配信・ログインの回数制限・パスで振り分け（/api /console /ovs /capture）</text>
+  <path class="ln" d="M120 154V196"/><path class="ln" d="M300 154V196"/><path class="ln" d="M480 154V196"/><path class="ln" d="M650 154V196"/>
+  <rect class="api" x="10" y="198" width="215" height="84"/>
+  <text class="t" x="22" y="220">clab-api-server :8090</text>
+  <text class="s" x="22" y="238">PAM 認証（Linux アカウント）</text>
+  <text class="s" x="22" y="254">ラボを利用者ごとに分離・所有権管理</text>
+  <text class="s" x="22" y="270">REST API（起動・停止・netem など）</text>
+  <rect class="box" x="238" y="198" width="150" height="84"/>
+  <text class="t" x="250" y="220">console-proxy</text><text class="s" x="250" y="238">:8082（WebSocket）</text>
+  <text class="s" x="250" y="254">認証ヘッダーを付けて</text><text class="s" x="250" y="270">API へ中継</text>
+  <rect class="box" x="402" y="198" width="150" height="84"/>
+  <text class="t" x="414" y="220">ovs-helper</text><text class="s" x="414" y="238">:8083</text>
+  <text class="s" x="414" y="254">設定の保存先を作る</text><text class="s" x="414" y="270">（sudo の限定ラッパー）</text>
+  <rect class="box" x="566" y="198" width="184" height="84"/>
+  <text class="t" x="578" y="220">capture-proxy</text><text class="s" x="578" y="238">:8084（noVNC の中継）</text>
+  <text class="s" x="578" y="254">API へ中継。使われなく</text><text class="s" x="578" y="270">なったキャプチャを片付け</text>
+  <path class="ln" d="M118 282V324"/>
+  <rect class="ext" x="10" y="326" width="330" height="58"/>
+  <text class="t" x="22" y="348">containerlab ／ Docker</text><text class="s" x="22" y="366">ラボのコンテナとリンク（veth）を作る・止める・調整する</text>
+    <path class="ln" d="M340 355H410"/>
+  <rect class="ext" x="412" y="326" width="338" height="58"/>
+  <text class="t" x="424" y="348">EdgeShark :5001</text><text class="s" x="424" y="366">ghostwire ＋ packetflix（パケットの取得）</text>
+  <path class="ln" d="M175 384V404"/>
+  <rect class="node" x="10" y="406" width="140" height="52"/><text class="t" x="22" y="428">ルーター</text><text class="s" x="22" y="446">fnl/frr（FRR）</text>
+  <rect class="node" x="160" y="406" width="180" height="52"/><text class="t" x="172" y="428">L2スイッチ</text><text class="s" x="172" y="446">fnl/l2switch（Cisco 風 CLI）</text>
+  <rect class="node" x="350" y="406" width="190" height="52"/><text class="t" x="362" y="428">PC</text><text class="s" x="362" y="446">alpine（軽量 Linux）</text>
+</svg>

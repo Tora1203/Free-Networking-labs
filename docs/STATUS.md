@@ -819,6 +819,10 @@
   **不具合修正（2026-10-15）**：ラボ2026101412のl2-switch-1で`show cdp neighbors`が空。lldpdが起動直後に2回送っただけで
   送信も受信もしなくなっていた（ソケットのifindexは正しく、起動し直すと直る。lldpd側の原因は未特定、試験用ラボでは再現せず）。
   エージェントが30秒ごとに送信数を見て、つながったポートがあるのに75秒増えなければlldpdを起動し直すように（SIGSTOPで止めて確認）。
+- **操作マニュアル3冊（利用者編・管理者編・評価者編）をPDFで作成（2026-10-15、docs/manual）**：原稿はMarkdown、PDFはDocker（`tools/manual/`、WeasyPrint＋
+  Noto CJK）で変換。利用者編の演習例（VLAN・Router on a stick・OSPF）は使い捨てのラボで実際に通ることを確認（EtherChannel・STPは10/14に確認済み）。
+  **未確認として本文に明記**：サーバー再起動後のラボの復旧、`nologin`のアカウントでAPIにログインできるか。スクリーンショットは入れていない
+  （図はSVG）。wipe（PR #26）をマージしてから最終版にする。
 - **GitHub Actionsでテストを自動実行（2026-10-15、be/ci）**：`.github/workflows/ci.yml`。push（main）とPRのたびに、frontend（tsc・lint・
   `npm test`・本番ビルド）、swcli（pyflakes・unittest）、Nodeのプロキシ3つの構文チェックを実行。Dockerやサーバーが要る確認は対象外。
   ローカルでは各コマンドが通ることを確認済みだが、**GitHub上で初めて動かすのはこのPR**（失敗したらログを見て直す）。

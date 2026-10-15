@@ -80,7 +80,7 @@ echo 'DenyGroups clab_api' | sudo tee /etc/ssh/sshd_config.d/90-fnl-deny-student
 sudo sshd -t && sudo systemctl reload ssh
 ```
 
-シェルを`/usr/sbin/nologin`にしてもclab-api-serverのログイン（PAM）はできる（PAMの`pam_unix`はシェルを見ない）。
+シェルを`/usr/sbin/nologin`にしてもclab-api-serverのログイン（PAM）はできる設計（PAMの`pam_unix`はシェルを見ない）。**未確認**なので、アカウントを作ったら一度ログインを試すこと。
 既存のアカウントを直す時は、例えば`sudo gpasswd -d labuser2 docker`・`sudo gpasswd -d labuser2 clab_admins`・
 `sudo usermod -aG clab_api -s /usr/sbin/nologin labuser2`。
 
