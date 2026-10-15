@@ -49,6 +49,7 @@ import {
   runNodeSyncs,
   startLabNode,
   stopLabNode,
+  wipeLabNode,
 } from '../utils/labRuntime'
 import {
   ApiError,
@@ -746,6 +747,46 @@ function TopologyEditorInner() {
           )
         } catch (e) {
           setSyncStatus({ kind: 'error', message: errorMessage(e, action === 'start' ? '起動に失敗しました' : '停止に失敗しました') })
+        } finally {
+          setBusyNodes((prev) => (prev === 'all' ? prev : prev.filter((id) => id !== nodeId)))
+        }
+      })
+    },
+    [enqueue, refreshRunState],
+  )
+
+  // ノードを初期状態に戻す（wipe）：保存した設定（write memory）を消し、コンテナを作り直す。他のノードは触らない
+  const onNodeWipe = useCallback(
+    (nodeId: string) => {
+      setContextMenu(null)
+      const label = (latestRef.current.nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.shortLabel ?? nodeId
+      if (!window.confirm(`「${label}」を初期状態に戻します。write memoryした設定も含め、このノードの設定はすべて消え、元に戻せません。よろしいですか？`)) return
+      void enqueue(async () => {
+        const name = savedNameRef.current
+        if (!name) return
+        setSyncStatus({ kind: 'busy', message: `${label}を初期状態に戻しています...` })
+        setBusyNodes((prev) => (prev === 'all' ? prev : [...prev, nodeId]))
+        try {
+          const { nodes, edges } = latestRef.current
+          const built = buildTopologyContent(nodes, edges, name)
+          const kind = (nodes.find((n) => n.id === nodeId)?.data as Partial<TopoNodeData> | undefined)?.kind
+          await wipeLabNode(name, built, nodeId, kind, runStateRef.current.nodeStates[nodeId] === 'running')
+          lastSynced.current.delete(nodeId)
+          await refreshRunState(name)
+          // 作り直したノードは中の設定が空なので、アドレス・ケーブル・リンクの品質を流し直す
+          const commands = buildNodeSyncCommands(built)
+          const result = await runNodeSyncs(name, commands, [nodeId])
+          for (const [id, command] of result.succeeded) lastSynced.current.set(id, command)
+          const running = runningNodesOf(runStateRef.current.nodeStates)
+          const failures = [...result.failures, ...(await applyLinkConditions(name, built, running, [nodeId], linkStateRef.current))]
+          setSyncStatus(
+            failures.length > 0
+              ? { kind: 'error', message: `初期状態に戻しました（設定の反映に失敗: ${failures.join(' / ')}）` }
+              : { kind: 'ok', message: `${label}を初期状態に戻しました` },
+          )
+        } catch (e) {
+          await refreshRunState(name).catch(() => undefined)
+          setSyncStatus({ kind: 'error', message: errorMessage(e, '初期状態に戻せませんでした') })
         } finally {
           setBusyNodes((prev) => (prev === 'all' ? prev : prev.filter((id) => id !== nodeId)))
         }
@@ -1496,6 +1537,11 @@ function TopologyEditorInner() {
                 ) : (
                   <button onClick={() => onNodePower(contextMenu.nodeId, 'start')}>ノードを起動</button>
                 ))}
+              {contextMenuCanPower && (
+                <button onClick={() => onNodeWipe(contextMenu.nodeId)} title="write memoryした設定も消して、コンテナを作り直します">
+                  初期状態に戻す（wipe）
+                </button>
+              )}
               <button onClick={() => deleteNode(contextMenu.nodeId)}>削除</button>
             </div>
           )}

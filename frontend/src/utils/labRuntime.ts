@@ -21,11 +21,13 @@ import {
   showNetem,
   startNode,
   stopNode,
+  wipeNode,
   type ApplyResponse,
 } from '../api/client'
 import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
-import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, parseImportedTopology, topologyToYaml } from './labTopology'
+import type { PaletteNodeKind } from '../types/lab'
+import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, buildWipeCommand, parseImportedTopology, topologyToYaml } from './labTopology'
 import { netemKey, netemKeyFromShow } from './linkCondition'
 import { getLabDisplayName, labTitleKey } from './labName'
 
@@ -269,4 +271,26 @@ export async function listLabNames(): Promise<{ ids: Set<string>; titles: Map<st
   )
   for (const [id, title] of read) titles.set(labTitleKey(title), id)
   return { ids, titles }
+}
+
+// ノードを初期状態に戻す（CMLのwipe）：保存した設定（write memory）を消し、コンテナを作り直す。
+// 他のノードとリンクはそのまま。作り直したノードの設定（アドレス・ケーブル・リンクの品質）は呼び出し側で流し直す。
+// 1. 止まっているノードは先に起動する（設定を消すコマンドを流すため）
+// 2. 保存した設定を消す（labTopology.buildWipeCommand）
+// 3. POST /labs?reconfigure=true&nodeFilter=<ノード>で、そのノードだけ作り直す（api-contract.md 2.4）
+export async function wipeLabNode(
+  labName: string,
+  built: BuiltTopology,
+  nodeId: string,
+  kind: PaletteNodeKind | undefined,
+  running: boolean,
+) {
+  const command = buildWipeCommand(kind, nodeId)
+  if (command) {
+    if (!running) await startNode(labName, nodeId)
+    assertExecOk(await execInLab(labName, nodeId, command), '保存した設定を消せませんでした')
+  }
+  // 設定の保存先が消えていないことを確かめてから作り直す（無いとbind mountでdeployが失敗する）
+  await prepareNodeConfigs(labName, built)
+  await wipeNode(built.topologyContent, nodeId)
 }
