@@ -25,6 +25,7 @@ import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
+import { fetchRemoteState, remoteChanged, type RemoteState } from '../utils/remoteSync'
 import {
   buildNodeSyncCommands,
   hasSwitchWithoutConfigBind,
@@ -304,9 +305,15 @@ function TopologyEditorInner() {
   const savedNameRef = useRef<string | null>(null)
   // 保存済みの表示名（表示名を変えた時に、自分の他のラボと重ならないかを見るため）
   const savedTitleRef = useRef<string | null>(null)
+  // 10秒ごとの確認（別の画面の変更を取り込む。実体は下のcheckRemoteChange）
+  const checkRemoteChangeRef = useRef<(labName: string) => Promise<void>>(async () => undefined)
   const runStateRef = useRef<LabRunState>(runState)
   const lastSavedYaml = useRef<string | null>(null)
   const lastSavedAnnotations = useRef<string | null>(null)
+  // 別の画面（同じラボを開いている別のタブ等）による変更の検知用：サーバーで最後に見た内容と、食い違いの有無
+  const remoteBaselineRef = useRef<RemoteState | null>(null)
+  const [remoteConflict, setRemoteConflict] = useState(false)
+  const overwriteRemoteRef = useRef(false)
   const lastAppliedYaml = useRef<string | null>(null)
   // ノードごとに最後に投入できた設定コマンド（これと違うノードにだけ流し直す）
   const lastSynced = useRef(new Map<string, string>())
@@ -375,6 +382,22 @@ function TopologyEditorInner() {
     return safeName
   }, [updateRunState])
 
+  // サーバーの内容が、最後に保存・読み込みした内容と意味が同じか。deploy/applyでサーバー側が書式を
+  // 整え直しても、「別の画面の変更」と取り違えないための確認（読み込み時と同じ整形をして比べる）
+  const remoteSameAsSaved = useCallback((name: string, remote: RemoteState) => {
+    try {
+      const parsed = parseImportedTopology(remote.yaml, remote.annotations)
+      const title = readLabTitle(remote.annotations) ?? getLabDisplayName(name)
+      const built = buildTopologyContent(parsed.nodes, parsed.edges, name)
+      return (
+        topologyToYaml(built.topologyContent) === lastSavedYaml.current &&
+        serializeAnnotations(parsed.nodes, built.portAnnotations, built.switchOriginalIds, title) === lastSavedAnnotations.current
+      )
+    } catch {
+      return false
+    }
+  }, [])
+
   const syncOnce = useCallback(async () => {
     dirtyRef.current = false
     const { nodes, edges } = latestRef.current
@@ -407,6 +430,18 @@ function TopologyEditorInner() {
     const annotationsText = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
     const conflictMessage = titleConflict ? `「${titleConflict}」という名前のラボが既にあるため、表示名は「${title}」のままです` : null
     try {
+      const willWrite = yamlText !== lastSavedYaml.current || annotationsText !== lastSavedAnnotations.current
+      if (willWrite && remoteBaselineRef.current && !overwriteRemoteRef.current) {
+        // 保存の前に、別の画面が先に変更していないか確かめる（黙って上書きしない）
+        const remote = await fetchRemoteState(name).catch(() => null)
+        if (remote && remoteChanged(remoteBaselineRef.current, remote) && !remoteSameAsSaved(name, remote)) {
+          dirtyRef.current = true
+          setRemoteConflict(true)
+          setSyncStatus({ kind: 'error', message: '別の画面でこのラボが変更されたため、保存を止めました' })
+          return
+        }
+      }
+      overwriteRemoteRef.current = false
       if (yamlText !== lastSavedYaml.current) {
         setSyncStatus({ kind: 'busy', message: '保存中...' })
         await putLabTopologyYaml(name, yamlText)
@@ -418,6 +453,11 @@ function TopologyEditorInner() {
         savedTitleRef.current = title
         rememberLabDisplayName(name, title)
       }
+      if (willWrite) {
+        // 自分の保存のあとのサーバーの内容を基準にし直す
+        remoteBaselineRef.current = await fetchRemoteState(name).catch(() => remoteBaselineRef.current)
+      }
+      setRemoteConflict(false)
       if (conflictMessage) {
         setSyncStatus({ kind: 'error', message: conflictMessage })
         if (runStateRef.current.kind !== 'running') return
@@ -462,7 +502,7 @@ function TopologyEditorInner() {
         canRebuild: runStateRef.current.kind === 'running',
       })
     }
-  }, [claimLabName, refreshRunState])
+  }, [claimLabName, refreshRunState, remoteSameAsSaved])
 
   // 編集のたびに1秒待って保存する（ドラッグ中など連続した変更は1回にまとめる）
   useEffect(() => {
@@ -813,6 +853,107 @@ function TopologyEditorInner() {
     [savedLabName, runState, busyNodes],
   )
 
+  // ---------------------------------------------------------------------------
+  // 同じラボを別の画面で開いている時（2026-10-16、CMLのように同じユーザーで複数の画面から操作できる）
+  //
+  // ・保存の前に、サーバーの内容が最後に見た内容から変わっていないか確かめ、変わっていれば保存を止める
+  //   （黙って上書きしない。「最新を読み込む」か「自分の内容で上書き」を選ぶ）
+  // ・10秒ごとにサーバーの内容を見て、別の画面が変更していて、こちらに未保存の編集が無ければ自動で読み込む
+  // ---------------------------------------------------------------------------
+  const hasLocalChanges = useCallback((name: string) => {
+    const { nodes, edges, labName } = latestRef.current
+    try {
+      const built = buildTopologyContent(nodes, edges, name)
+      const title = labName.trim() || name
+      return (
+        topologyToYaml(built.topologyContent) !== lastSavedYaml.current ||
+        serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title) !== lastSavedAnnotations.current
+      )
+    } catch {
+      return true
+    }
+  }, [])
+
+  const reloadFromRemote = useCallback(
+    async (name: string, remote: RemoteState) => {
+      const parsed = parseImportedTopology(remote.yaml, remote.annotations)
+      const nodes = parsed.nodes.map((n) => {
+        const kind = (n.data as Partial<TopoNodeData>).kind
+        if (!needsUpgrade(n) || !kind) return n
+        const config = PALETTE_NODE_CONFIGS[kind]
+        return { ...n, data: { ...n.data, clabKind: config.clabKind, image: config.image } }
+      })
+      const title = readLabTitle(remote.annotations) ?? getLabDisplayName(name)
+      const built = buildTopologyContent(nodes, parsed.edges, name)
+      const normalizedYaml = topologyToYaml(built.topologyContent)
+      // 読み込んだ内容は保存・反映済みとみなす（別の画面が反映済み。全ノードに設定を流し直さない）
+      lastSavedYaml.current = normalizedYaml
+      lastAppliedYaml.current = normalizedYaml
+      lastSavedAnnotations.current = serializeAnnotations(nodes, built.portAnnotations, built.switchOriginalIds, title)
+      remoteBaselineRef.current = remote
+      savedTitleRef.current = title
+      latestRef.current = { nodes, edges: parsed.edges, labName: title }
+      counters.current = parsed.counters
+      setNodes(nodes)
+      setEdges(parsed.edges)
+      setLabName(title)
+      historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, parsed.edges) }
+      syncHistoryCounts()
+      const state = await refreshRunState(name).catch(() => runStateRef.current)
+      lastSynced.current.clear()
+      for (const [id, command] of buildNodeSyncCommands(built)) {
+        if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
+      }
+      dirtyRef.current = false
+      setRemoteConflict(false)
+      setSyncStatus({ kind: 'ok', message: '別の画面の変更を読み込みました' })
+    },
+    [refreshRunState, syncHistoryCounts],
+  )
+
+  const checkRemoteChange = useCallback(
+    async (name: string) => {
+      if (!loadedRef.current) return
+      const remote = await fetchRemoteState(name).catch(() => null)
+      if (!remote || !remoteChanged(remoteBaselineRef.current, remote)) return
+      if (remoteSameAsSaved(name, remote)) {
+        remoteBaselineRef.current = remote // 書式が変わっただけ
+        return
+      }
+      if (hasLocalChanges(name)) {
+        setRemoteConflict(true)
+        setSyncStatus({ kind: 'error', message: '別の画面でこのラボが変更されています' })
+        return
+      }
+      try {
+        await reloadFromRemote(name, remote)
+      } catch (e) {
+        setSyncStatus({ kind: 'error', message: errorMessage(e, '別の画面の変更を読み込めませんでした') })
+      }
+    },
+    [hasLocalChanges, reloadFromRemote, remoteSameAsSaved],
+  )
+  useEffect(() => {
+    checkRemoteChangeRef.current = checkRemoteChange
+  }, [checkRemoteChange])
+
+  const onReloadRemote = useCallback(() => {
+    const name = savedNameRef.current
+    if (!name) return
+    void enqueue(async () => {
+      try {
+        await reloadFromRemote(name, await fetchRemoteState(name))
+      } catch (e) {
+        setSyncStatus({ kind: 'error', message: errorMessage(e, '最新の内容を読み込めませんでした') })
+      }
+    })
+  }, [enqueue, reloadFromRemote])
+
+  const onOverwriteRemote = useCallback(() => {
+    overwriteRemoteRef.current = true
+    void enqueue(syncOnce)
+  }, [enqueue, syncOnce])
+
   // 他の画面（ホームの起動/停止、別のタブ）での変化や、落ちたノードも映すよう、10秒ごとに状態を取り直す。
   // 保存・反映と同じ列に並べ、処理の途中の状態で上書きしないようにする
   useEffect(() => {
@@ -824,6 +965,7 @@ function TopologyEditorInner() {
       void enqueue(async () => {
         queued = false
         await refreshRunState(savedLabName).catch(() => undefined)
+        await checkRemoteChangeRef.current(savedLabName)
       })
     }, 10000)
     return () => clearInterval(timer)
@@ -891,6 +1033,7 @@ function TopologyEditorInner() {
         } catch {
           // 保存データが無い場合（404等）はそのまま
         }
+        remoteBaselineRef.current = { yaml: yamlText, annotations: annotationsText }
         const parsed = parseImportedTopology(yamlText, annotationsText)
         const { edges, counters: parsedCounters } = parsed
         // 古い形式のノード（2026-10-13以前のovs-bridgeのスイッチ、2026-10-14以前のエージェント無しの
@@ -1434,6 +1577,16 @@ function TopologyEditorInner() {
             >
               {syncStatus.message}
             </span>
+          )}
+          {remoteConflict && (
+            <>
+              <button onClick={onReloadRemote} title="別の画面で保存された最新の内容を読み込みます（こちらの未保存の編集は捨てます）">
+                最新を読み込む
+              </button>
+              <button onClick={onOverwriteRemote} title="別の画面の変更を捨てて、こちらの内容で保存します">
+                自分の内容で上書き
+              </button>
+            </>
           )}
           {syncStatus.kind === 'error' && syncStatus.canRebuild && (
             <button onClick={onRebuildLab} disabled={labBusy} title="ラボを破棄して今の内容で起動し直します">

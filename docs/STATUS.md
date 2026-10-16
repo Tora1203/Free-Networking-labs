@@ -894,6 +894,8 @@
 
 - **L3スイッチとラボのスナップショットの設計メモ（2026-10-15、docs/l3-snapshot-design）**：実装前の案。`docs/l3-switch-design.md`（swcliが窓口・FRRを同居・`startup.json`に1本化・プラグインの拡張点・段階1〜4）、`docs/snapshot-design.md`（annotationsに埋め込む案A・取る/戻す・共有）。決定ではない。`docs/collab-design.md`（ラボへの同時参加：段階1〜4、collab-proxyが所有者のトークンで代行）も追加。最初の一歩は、L3は手作業で1台作って実測、スナップショットはannotationsに未知のキーが残るかの実機確認。
 
+- **同じラボを複数の画面で開く（段階1、2026-10-16、fe/multi-session）**：`docs/collab-design.md`の段階1。保存の前にサーバーの内容を確かめ、別の画面が先に変えていれば保存を止めて「最新を読み込む／自分の内容で上書き」を出す。10秒ごとにサーバーの内容を見て、別の画面の変更を（未保存の編集が無ければ）自動で読み込む。deploy/applyでサーバーが書式を整え直しても誤検知しないよう、読み込み時と同じ整形をして比べる（`utils/remoteSync.ts`、`TopologyEditor.tsx`）。テストマニュアル8bを追加。**実機のブラウザは未確認**。
+
 
 ## Bさん（フロントエンド）
 
