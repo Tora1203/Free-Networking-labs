@@ -17,6 +17,7 @@
 //   POST   /shares          {labName}  → {id, labName, role, expiresAt}
 //   GET    /shares                     → 自分の共有の一覧
 //   DELETE /shares/<id>                → 取り消し
+//   GET    /version/<labName>[?fresh=1] → {version}。今の版（保存の前後の確認用）
 //   GET    /watch/<labName>            → SSE。自分のラボのトポロジ（YAML・注釈）が変わったら通知（下の「変更の通知」）
 // ゲスト向け（自分のトークンが要る。idが合言葉）:
 //   GET    /s/<id>                     → {labName, owner, viewer, role, expiresAt, yaml, annotations, nodes}
@@ -171,24 +172,35 @@ export function createCollabServer(options = {}) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
 
+  // 上流のトポロジ（YAML＋注釈）の版（短いハッシュ）。トークンが使えない・上流が答えない時はnull
+  async function computeVersion(labName, token, strict = false) {
+    const lab = encodeURIComponent(labName)
+    const [y, a] = await Promise.all([
+      upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, token),
+      upstreamGet(`/api/v1/labs/${lab}/topology/annotations`, token),
+    ]).catch(() => [null, null])
+    if (!y || y.status === 401) return null
+    if (strict && y.status !== 200) return null // ラボが無い・読めない
+    return createHash('sha1').update(`${y.status}\0${y.body}\0${a ? a.status : ''}\0${a ? a.body : ''}`).digest('hex').slice(0, 12)
+  }
+
+  // 版が変わっていたら、見ている全員に流す
+  function publishVersion(w, version) {
+    if (version === w.version) return
+    w.version = version
+    // 共有の閲覧の控え（数秒）は古くなったので捨てる
+    for (const sh of shares.values()) if (`${sh.owner}:${sh.labName}` === w.key) sh.cache = null
+    for (const res of w.subs.keys()) sseWrite(res, 'version', { version })
+  }
+
   async function pollWatcher(w) {
     if (w.polling) return
     w.polling = true
     try {
-      const lab = encodeURIComponent(w.labName)
       for (const token of new Set([...w.subs.values()].map((x) => x.token))) {
-        const [y, a] = await Promise.all([
-          upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, token),
-          upstreamGet(`/api/v1/labs/${lab}/topology/annotations`, token),
-        ]).catch(() => [null, null])
-        if (!y || y.status === 401) continue // このトークンは使えない。次の人のトークンで
-        const version = createHash('sha1').update(`${y.status}\0${y.body}\0${a ? a.status : ''}\0${a ? a.body : ''}`).digest('hex').slice(0, 12)
-        if (version !== w.version) {
-          w.version = version
-          // 共有の閲覧の控え（数秒）は古くなったので捨てる
-          for (const sh of shares.values()) if (`${sh.owner}:${sh.labName}` === w.key) sh.cache = null
-          for (const res of w.subs.keys()) sseWrite(res, 'version', { version })
-        }
+        const version = await computeVersion(w.labName, token) // このトークンが使えなければ次の人のトークンで
+        if (version === null) continue
+        publishVersion(w, version)
         break
       }
     } finally {
@@ -290,6 +302,22 @@ export function createCollabServer(options = {}) {
       const own = await upstreamGet(`/api/v1/labs/${encodeURIComponent(m[1])}/topology/yaml`, me.token).catch(() => null)
       if (!own || own.status !== 200) return send(res, 404, { error: 'ラボが見つかりません' })
       return subscribe(req, res, `${me.username}:${m[1]}`, m[1], me.token, null)
+    }
+
+    // 自分のラボの今の版（保存の前後の確認用。軽い）。?fresh=1は見張りの次の周期を待たず今の上流を見る
+    m = /^\/version\/([^/]+)$/.exec(path)
+    if (m && req.method === 'GET') {
+      const me = await authOwner(req)
+      if (!me) return send(res, 401, { error: 'ログインが必要です' })
+      if (!SAFE_LAB.test(m[1])) return send(res, 400, { error: 'ラボ名が不正です' })
+      const w = watchers.get(`${me.username}:${m[1]}`)
+      let version = w && w.version
+      if (!version || url.searchParams.get('fresh') === '1') {
+        version = await computeVersion(m[1], me.token, true)
+        if (version === null) return send(res, 404, { error: 'ラボが見つかりません' })
+        if (w) publishVersion(w, version) // 見ている人がいれば、すぐ通知する
+      }
+      return send(res, 200, { version })
     }
 
     // ---- 持ち主 ----

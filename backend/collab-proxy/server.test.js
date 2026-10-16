@@ -246,3 +246,26 @@ test('変更の通知：共有のゲストにも届く。取り消すと切れ�
   g.close()
   t.close()
 })
+
+test('版の確認：軽く答え、?fresh=1は見張りの周期を待たずに通知する', async () => {
+  const t = await setup({ watchMs: 60000 }) // 見張りの周期は十分長い（通知が周期に頼っていないことを見る）
+  const base = `http://127.0.0.1:${t.collab.address().port}`
+  const alice = jwt('alice')
+  const s = await openStream(`${base}/watch/alice-lab1`, alice)
+  try {
+  assert.ok(await until(() => s.events.length >= 1))
+  const v0 = (await t.call('GET', '/version/alice-lab1', { token: alice })).json.version
+  assert.equal(v0, s.events[0].data.version)
+  t.api.state.rev = 3 // 保存した
+  assert.equal((await t.call('GET', '/version/alice-lab1', { token: alice })).json.version, v0) // 見張りの控えのまま
+  const fresh = await t.call('GET', '/version/alice-lab1?fresh=1', { token: alice })
+  assert.notEqual(fresh.json.version, v0)
+  assert.ok(await until(() => s.events.length >= 2)) // 見ている人に即通知
+  assert.equal(s.events[1].data.version, fresh.json.version)
+  assert.equal((await t.call('GET', '/version/bob-lab', { token: alice })).status, 404)
+  assert.equal((await t.call('GET', '/version/alice-lab1')).status, 401)
+  } finally {
+    s.close()
+    t.close()
+  }
+})

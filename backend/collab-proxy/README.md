@@ -25,6 +25,7 @@ clab-api-serverはラボを持ち主のLinuxユーザーでしか見せない。
 | POST | `/shares` `{"labName": "..."}` | 共有を作る → `{id, labName, role, expiresAt}` |
 | GET | `/shares` | 自分の共有の一覧 |
 | DELETE | `/shares/<id>` | 取り消す（他人の共有は404） |
+| GET | `/version/<ラボ名>[?fresh=1]` | `{version}`。今の版（保存の前後の確認用の軽い問い合わせ）。`fresh=1`は見張りの周期を待たず上流を見て、見ている人にもすぐ通知する |
 | GET | `/watch/<ラボ名>` | SSE。自分のラボのトポロジが変わったら通知（下の「変更の通知」） |
 
 ゲスト（`Authorization: Bearer <JWT>`が要る。idが合言葉）:
@@ -64,7 +65,7 @@ clab-api-serverはラボを持ち主のLinuxユーザーでしか見せない。
 ```sh
 cd backend/collab-proxy
 node server.js          # 依存パッケージなし
-node --test             # 上流を模したサーバーでのテスト（12件）
+node --test             # 上流を模したサーバーでのテスト（13件）
 ```
 
 常駐は`collab-proxy.service.example`（systemdのuserサービス、sudo不要）。nginxは`backend/nginx/fnl.conf`の

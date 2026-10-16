@@ -22,10 +22,10 @@ export interface SharedLab {
   nodes: RawLabNode[]
 }
 
-async function call<T>(path: string, init: RequestInit = {}, auth = false): Promise<T> {
+async function call<T>(path: string, init: RequestInit = {}, auth = false, quiet = false): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body) headers.set('Content-Type', 'application/json')
-  if (auth) {
+  if (auth || quiet) {
     const token = getAuthToken()
     if (!token) throw new Error('ログインしていません')
     headers.set('Authorization', `Bearer ${token}`)
@@ -40,7 +40,7 @@ async function call<T>(path: string, init: RequestInit = {}, auth = false): Prom
   }
   if (!res.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : undefined) ?? `HTTP ${res.status}`
-    if (res.status === 401 && auth) notifyUnauthorized()
+    if (res.status === 401 && auth && !quiet) notifyUnauthorized()
     throw new ApiError(res.status, message)
   }
   return body as T
@@ -62,9 +62,20 @@ export function getSharedLab(id: string) {
   return call<SharedLab>(`/s/${encodeURIComponent(id)}`, {}, true)
 }
 
+// 自分のラボのトポロジ（YAML＋注釈）の今の版（短いハッシュ）。保存の前後の確認に使う軽い問い合わせ。
+// fresh=trueは見張りの次の周期を待たず今の上流を見て、見ている画面にも通知する。取れない時はnull
+export async function getLabVersion(labName: string, fresh = false): Promise<string | null> {
+  try {
+    const r = await call<{ version: string }>(`/version/${encodeURIComponent(labName)}${fresh ? '?fresh=1' : ''}`, {}, false, true)
+    return r.version
+  } catch {
+    return null
+  }
+}
+
 // ラボの変更の通知（SSE、collab-proxyの`/watch/<ラボ>`と`/s/<id>/watch`）を受ける。
 // 変わったら onVersion が呼ばれる（接続直後にも1回）。切れたら間隔を空けて繋ぎ直す。止める関数を返す
-export function watchPath(path: string, onVersion: () => void): () => void {
+export function watchPath(path: string, onVersion: (version: string) => void): () => void {
   let stopped = false
   let ctrl: AbortController | null = null
   const run = async () => {
@@ -91,7 +102,13 @@ export function watchPath(path: string, onVersion: () => void): () => void {
             const block = buf.slice(0, i)
             buf = buf.slice(i + 2)
             const event = /^event: (.+)$/m.exec(block)?.[1]
-            if (event === 'version') onVersion()
+            if (event === 'version') {
+              try {
+                onVersion(String(JSON.parse(/^data: (.+)$/m.exec(block)?.[1] ?? '{}').version ?? ''))
+              } catch {
+                onVersion('')
+              }
+            }
             if (event === 'closed') return
           }
         }
@@ -109,8 +126,8 @@ export function watchPath(path: string, onVersion: () => void): () => void {
   }
 }
 
-export const watchLab = (labName: string, onVersion: () => void) => watchPath(`/watch/${encodeURIComponent(labName)}`, onVersion)
-export const watchShare = (id: string, onVersion: () => void) => watchPath(`/s/${encodeURIComponent(id)}/watch`, onVersion)
+export const watchLab = (labName: string, onVersion: (version: string) => void) => watchPath(`/watch/${encodeURIComponent(labName)}`, onVersion)
+export const watchShare = (id: string, onVersion: (version: string) => void) => watchPath(`/s/${encodeURIComponent(id)}/watch`, onVersion)
 
 // 共有リンクのURL（ハッシュに合言葉を入れる。サーバーのアクセスログに残らない）
 export function shareUrl(id: string) {
