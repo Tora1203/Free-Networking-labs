@@ -28,6 +28,11 @@ export function setUnauthorizedHandler(handler: () => void) {
 
 // 統合コンソール(WebSocket)のプロキシ接続で使う。api/client.ts自身はfetchしか使わないため
 // authTokenを外に出す必要は無かったが、Console.tsx側でWS接続時にトークンを送る必要がある。
+// 別のクライアント（collabClient）が401を受けた時に、再ログインへ誘導する
+export function notifyUnauthorized() {
+  onUnauthorized?.()
+}
+
 export function getAuthToken() {
   return authToken
 }
