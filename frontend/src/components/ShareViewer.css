@@ -1,0 +1,38 @@
+.share-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+}
+.share-viewer__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.share-viewer__title {
+  font-weight: 600;
+}
+.share-viewer__badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: var(--edge-impaired);
+  color: #fff;
+}
+.share-viewer__meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.share-viewer__error {
+  padding: 12px 16px;
+  color: var(--edge-down);
+}
+.share-viewer__canvas {
+  flex: 1;
+  min-height: 0;
+}

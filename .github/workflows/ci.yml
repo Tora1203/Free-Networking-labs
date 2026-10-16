@@ -64,6 +64,9 @@ jobs:
           node-version: 24
       - name: 構文チェック
         run: |
-          for f in backend/console-proxy/server.js backend/ovs-helper/server.js backend/capture-proxy/server.js; do
+          for f in backend/console-proxy/server.js backend/ovs-helper/server.js backend/capture-proxy/server.js backend/collab-proxy/server.js; do
             node --check "$f" && echo "ok: $f"
           done
+      - name: collab-proxyのテスト
+        run: node --test
+        working-directory: backend/collab-proxy

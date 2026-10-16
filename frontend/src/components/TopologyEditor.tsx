@@ -25,6 +25,7 @@ import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
+import ShareButton from './ShareButton'
 import {
   buildNodeSyncCommands,
   hasSwitchWithoutConfigBind,
@@ -1470,6 +1471,7 @@ function TopologyEditorInner() {
             {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
           </button>
           {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
+          {savedLabName && <ShareButton labName={savedLabName} />}
           <div className="topology-editor__toolbar-spacer" />
           <button
             className="topology-editor__panel-toggle"

@@ -894,6 +894,8 @@
 
 - **L3スイッチとラボのスナップショットの設計メモ（2026-10-15、docs/l3-snapshot-design）**：実装前の案。`docs/l3-switch-design.md`（swcliが窓口・FRRを同居・`startup.json`に1本化・プラグインの拡張点・段階1〜4）、`docs/snapshot-design.md`（annotationsに埋め込む案A・取る/戻す・共有）。決定ではない。`docs/collab-design.md`（ラボへの同時参加：段階1〜4、collab-proxyが所有者のトークンで代行）も追加。最初の一歩は、L3は手作業で1台作って実測、スナップショットはannotationsに未知のキーが残るかの実機確認。
 
+- **閲覧のみの共有リンクの試作（2026-10-16、be/collab-proxy）**：`docs/collab-design.md`の段階2。`backend/collab-proxy/`（Node、依存なし、8085、nginxの`/collab/`）が、持ち主のトークンをメモリにだけ預かってゲストの閲覧を代行する。ゲスト向けは`GET /s/<id>`の1つだけ（ラボ名・パスを指定させない、上流はGET3種のみ）。合言葉は192bit、期限は最長8時間、持ち主ごとに10件。画面：エディタの「共有」ボタン（リンクの作成・コピー・取り消し）と、ログイン不要の閲覧画面（`#/share/<id>`、`ShareViewer.tsx`、5秒ごとに更新）。テスト8件（上流を模したサーバー）をCIに追加。**本番の反映には nginx の更新（`bash backend/nginx/install.sh`、要sudo）とサービスの起動が要る。実機のブラウザは未確認**。
+
 
 ## Bさん（フロントエンド）
 
