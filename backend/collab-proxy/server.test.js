@@ -160,3 +160,15 @@ test('ログにトークンを出さない', async () => {
   assert.ok(!all.includes(c.json.id)) // 合言葉も先頭6文字だけ
   t.close()
 })
+
+test('閲覧者が何人いても、上流への問い合わせは数秒に1回分（控え）', async () => {
+  const t = await setup()
+  const c = await t.call('POST', '/shares', { token: jwt('alice'), body: { labName: 'alice-lab1' } })
+  t.api.calls.length = 0
+  const viewers = ['bob', 'bob', 'carol', 'carol', 'bob']
+  const results = await Promise.all(viewers.map((v) => t.call('GET', `/s/${c.json.id}`, { token: jwt(v) })))
+  assert.ok(results.every((r) => r.status === 200))
+  const yamlCalls = t.api.calls.filter((l) => l.includes('/topology/yaml'))
+  assert.equal(yamlCalls.length, 1)
+  t.close()
+})

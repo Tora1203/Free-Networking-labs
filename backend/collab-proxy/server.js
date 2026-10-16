@@ -39,6 +39,12 @@ export function createCollabServer(options = {}) {
 
   /** id → {labName, owner, token, role, createdAt, expiresAt} （メモリのみ） */
   const shares = new Map()
+  // ログイン確認の結果の控え（トークン → {username, expMs, until}）。閲覧のたびに上流へ問い合わせないため。
+  // 失効（ログアウト等）の反映が最大でこの時間遅れるが、見られるのは閲覧のみで、共有の期限も別にある
+  const AUTH_CACHE_MS = 30000
+  const authCache = new Map()
+  // 共有ごとの上流の結果の控え。閲覧者が何人いても、上流への問い合わせは共有あたり数秒に1回にする
+  const DATA_CACHE_MS = options.dataCacheMs ?? 3000
 
   function upstreamGet(path, token) {
     return new Promise((resolve, reject) => {
@@ -104,6 +110,23 @@ export function createCollabServer(options = {}) {
 
   function sweep() {
     for (const [id, s] of shares) if (s.expiresAt <= now()) shares.delete(id)
+    for (const [t, c] of authCache) if (c.until <= now()) authCache.delete(t)
+  }
+
+  // 共有のラボの中身を上流から取る（数秒の控え＋同時の問い合わせは1本にまとめる）
+  function loadShareData(s) {
+    if (s.cache && s.cache.until > now()) return s.cache.promise
+    const lab = encodeURIComponent(s.labName)
+    const promise = Promise.all([
+      upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, s.token),
+      upstreamGet(`/api/v1/labs/${lab}/topology/annotations`, s.token),
+      upstreamGet('/api/v1/labs', s.token),
+    ])
+    s.cache = { until: now() + DATA_CACHE_MS, promise }
+    promise.catch(() => {
+      if (s.cache && s.cache.promise === promise) s.cache = null // 失敗は控えない
+    })
+    return promise
   }
 
   function publicShare(id, s) {
@@ -117,9 +140,15 @@ export function createCollabServer(options = {}) {
     const payload = jwtPayload(token)
     const username = payload && typeof payload.username === 'string' ? payload.username : null
     if (!username || !SAFE_USER.test(username)) return null
-    const r = await upstreamGet('/api/v1/labs', token).catch(() => null)
-    if (!r || r.status !== 200) return null
     const expMs = payload && typeof payload.exp === 'number' ? payload.exp * 1000 : now() + ttlMs
+    const cached = authCache.get(token)
+    if (cached && cached.until > now() && expMs > now()) return { token, username, expMs }
+    const r = await upstreamGet('/api/v1/labs', token).catch(() => null)
+    if (!r || r.status !== 200) {
+      authCache.delete(token)
+      return null
+    }
+    authCache.set(token, { until: now() + AUTH_CACHE_MS })
     return { token, username, expMs }
   }
 
@@ -140,13 +169,9 @@ export function createCollabServer(options = {}) {
       const id = m[1]
       const s = SHARE_ID.test(id) ? shares.get(id) : undefined
       if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
-      const lab = encodeURIComponent(s.labName)
+      const t0 = Date.now()
       // 上流に出すのはこの3つのGETだけ（ラボ名は共有に固定。ゲストの入力は使わない）
-      const [yaml, annotations, labs] = await Promise.all([
-        upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, s.token),
-        upstreamGet(`/api/v1/labs/${lab}/topology/annotations`, s.token),
-        upstreamGet('/api/v1/labs', s.token),
-      ]).catch(() => [null, null, null])
+      const [yaml, annotations, labs] = await loadShareData(s).catch(() => [null, null, null])
       if (!yaml || !labs) return send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
       if (yaml.status === 401 || labs.status === 401) {
         shares.delete(id) // 持ち主のトークンが切れた
@@ -161,7 +186,7 @@ export function createCollabServer(options = {}) {
       } catch {
         nodes = []
       }
-      log(`view share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} viewer=${guest.username} ip=${ip}`)
+      log(`view share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} viewer=${guest.username} ip=${ip} ms=${Date.now() - t0}`)
       return send(res, 200, {
         labName: s.labName,
         owner: s.owner,
