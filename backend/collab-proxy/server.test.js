@@ -53,18 +53,19 @@ async function setup(opts = {}) {
   return { api, collab, logs, call, close }
 }
 
-test('持ち主が共有を作り、ゲストはトークン無しで閲覧できる。ラボ以外は出ない', async () => {
+test('持ち主が共有を作り、ログインしたゲストが閲覧できる。ラボ以外は出ない', async () => {
   const t = await setup()
   const alice = jwt('alice')
   const created = await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })
   assert.equal(created.status, 201)
   assert.equal(created.json.role, 'view')
   assert.match(created.json.id, /^[A-Za-z0-9_-]{32}$/)
-  const view = await t.call('GET', `/s/${created.json.id}`)
+  const view = await t.call('GET', `/s/${created.json.id}`, { token: jwt('bob') })
   assert.equal(view.status, 200)
+  assert.equal(view.json.viewer, 'bob')
   assert.equal(view.json.labName, 'alice-lab1')
   assert.equal(view.json.yaml, 'name: alice-lab1')
-  assert.deepEqual(Object.keys(view.json).sort(), ['annotations', 'expiresAt', 'labName', 'nodes', 'owner', 'role', 'yaml'])
+  assert.deepEqual(Object.keys(view.json).sort(), ['annotations', 'expiresAt', 'labName', 'nodes', 'owner', 'role', 'viewer', 'yaml'])
   assert.deepEqual(view.json.nodes, [{ name: 'n1', state: 'running' }]) // alice-lab2は出ない
   assert.ok(!JSON.stringify(view.json).includes('lab2'))
   t.close()
@@ -74,7 +75,7 @@ test('上流に出る問い合わせはGETだけで、ラボは共有のもの�
   const t = await setup()
   const c = await t.call('POST', '/shares', { token: jwt('alice'), body: { labName: 'alice-lab1' } })
   t.api.calls.length = 0
-  await t.call('GET', `/s/${c.json.id}`)
+  await t.call('GET', `/s/${c.json.id}`, { token: jwt('bob') })
   assert.ok(t.api.calls.every((l) => l.startsWith('GET ')))
   assert.ok(t.api.calls.every((l) => l === 'GET /api/v1/labs' || l.includes('/labs/alice-lab1/topology/')))
   t.close()
@@ -91,10 +92,21 @@ test('他人のラボは共有できない／不正なラボ名・トークン�
 
 test('ゲストは合言葉の推測・ほかのパスでは何も得られない', async () => {
   const t = await setup()
-  assert.equal((await t.call('GET', '/s/short')).status, 404)
-  assert.equal((await t.call('GET', `/s/${'a'.repeat(32)}`)).status, 404)
+  const bob = jwt('bob')
+  assert.equal((await t.call('GET', '/s/short', { token: bob })).status, 404)
+  assert.equal((await t.call('GET', `/s/${'a'.repeat(32)}`, { token: bob })).status, 404)
   assert.equal((await t.call('GET', '/shares')).status, 401)
   assert.equal((await t.call('GET', '/api/v1/labs')).status, 404)
+  t.close()
+})
+
+test('ログインしていないゲスト（トークン無し・無効）はリンクがあっても見られない。見た人がログに残る', async () => {
+  const t = await setup()
+  const c = await t.call('POST', '/shares', { token: jwt('alice'), body: { labName: 'alice-lab1' } })
+  assert.equal((await t.call('GET', `/s/${c.json.id}`)).status, 401)
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: 'garbage' })).status, 401)
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: jwt('bob') })).status, 200)
+  assert.ok(t.logs.some((l) => l.includes('viewer=bob')))
   t.close()
 })
 
@@ -103,9 +115,9 @@ test('取り消しは持ち主だけ。取り消すとゲストは見られな�
   const alice = jwt('alice')
   const c = await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })
   assert.equal((await t.call('DELETE', `/shares/${c.json.id}`, { token: jwt('bob') })).status, 404)
-  assert.equal((await t.call('GET', `/s/${c.json.id}`)).status, 200)
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: jwt('bob') })).status, 200)
   assert.equal((await t.call('DELETE', `/shares/${c.json.id}`, { token: alice })).status, 200)
-  assert.equal((await t.call('GET', `/s/${c.json.id}`)).status, 404)
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: jwt('bob') })).status, 404)
   t.close()
 })
 
@@ -127,12 +139,13 @@ test('期限切れ／持ち主のトークンが失効したら見られない',
   const t = await setup({ ttlHours: 1, now: () => clock, revoked })
   const c = await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })
   revoked.add(alice) // 持ち主のトークンが上流で無効になった
-  assert.equal((await t.call('GET', `/s/${c.json.id}`)).status, 410)
-  assert.equal((await t.call('GET', `/s/${c.json.id}`)).status, 404)
+  const bob = jwt('bob')
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: bob })).status, 410)
+  assert.equal((await t.call('GET', `/s/${c.json.id}`, { token: bob })).status, 404)
   const t2 = await setup({ ttlHours: 1, now: () => clock })
   const c2 = await t2.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })
   clock += 2 * 3600 * 1000
-  assert.equal((await t2.call('GET', `/s/${c2.json.id}`)).status, 404)
+  assert.equal((await t2.call('GET', `/s/${c2.json.id}`, { token: bob })).status, 404)
   t.close()
   t2.close()
 })
@@ -141,7 +154,7 @@ test('ログにトークンを出さない', async () => {
   const t = await setup()
   const alice = jwt('alice')
   const c = await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })
-  await t.call('GET', `/s/${c.json.id}`)
+  await t.call('GET', `/s/${c.json.id}`, { token: jwt('bob') })
   const all = t.logs.join('\n')
   assert.ok(!all.includes(alice) && !all.includes(alice.split('.')[1]))
   assert.ok(!all.includes(c.json.id)) // 合言葉も先頭6文字だけ

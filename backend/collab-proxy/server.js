@@ -6,6 +6,8 @@
 // 守りの要（トークンは持ち主の全ラボに効くため）:
 //   ・ゲスト向けの窓口は「そのラボのトポロジ・注釈・状態を返す」1つだけ。ゲストはパスもラボ名も指定できない
 //     （任意のAPIを中継する作りにしない）。上流に出す問い合わせは下のupstreamGetの3種類だけで、GETのみ
+//   ・ゲストも自分のアカウントでログインしていること（clab-api-serverが発行したトークンが有効なこと）。
+//     誰が見たかをログに残す。リンクだけでは見られない
 //   ・共有の合言葉（id）は192bitの乱数。有効期限（既定8時間、持ち主のトークンの期限まで）で消える
 //   ・トークンはメモリにだけ置く。ファイル・ログには出さない（再起動すると共有は消える）
 //   ・共有を作れるのは、そのラボの持ち主だけ（上流にそのトークンで問い合わせ、200なら持ち主）
@@ -15,8 +17,8 @@
 //   POST   /shares          {labName}  → {id, labName, role, expiresAt}
 //   GET    /shares                     → 自分の共有の一覧
 //   DELETE /shares/<id>                → 取り消し
-// ゲスト向け（認証なし。idが合言葉）:
-//   GET    /s/<id>                     → {labName, owner, role, expiresAt, yaml, annotations, nodes}
+// ゲスト向け（自分のトークンが要る。idが合言葉）:
+//   GET    /s/<id>                     → {labName, owner, viewer, role, expiresAt, yaml, annotations, nodes}
 
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
@@ -121,15 +123,20 @@ export function createCollabServer(options = {}) {
     return { token, username, expMs }
   }
 
+  // ゲストとして認証する：ログイン済み（トークンが上流で有効）であること。持ち主の認証と同じ確かめ方
+  const authGuest = (req) => authOwner(req)
+
   async function handle(req, res) {
     sweep()
     const url = new URL(req.url ?? '/', 'http://x')
     const path = url.pathname
     const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim()
 
-    // ---- ゲスト：idが合言葉 ----
+    // ---- ゲスト：ログイン済みで、idが合言葉 ----
     let m = /^\/s\/([^/]+)$/.exec(path)
     if (m && req.method === 'GET') {
+      const guest = await authGuest(req)
+      if (!guest) return send(res, 401, { error: 'ログインが必要です' })
       const id = m[1]
       const s = SHARE_ID.test(id) ? shares.get(id) : undefined
       if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
@@ -154,10 +161,11 @@ export function createCollabServer(options = {}) {
       } catch {
         nodes = []
       }
-      log(`view share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} ip=${ip}`)
+      log(`view share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} viewer=${guest.username} ip=${ip}`)
       return send(res, 200, {
         labName: s.labName,
         owner: s.owner,
+        viewer: guest.username,
         role: s.role,
         expiresAt: new Date(s.expiresAt).toISOString(),
         yaml: yaml.body,

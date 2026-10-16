@@ -66,7 +66,7 @@ export default function ShareButton({ labName }: { labName: string }) {
       {open && (
         <div className="share-button__panel">
           <div className="share-button__note">
-            リンクを知っている人は、ログインなしでこのラボを<strong>見られます</strong>（操作はできません）。
+            リンクを知っている人は、ログインすればこのラボを<strong>見られます</strong>（操作はできません）。誰が見たかはサーバーのログに残ります。
             期限は最長8時間で、あなたのログインが切れると無効になります。
           </div>
           {shares.map((s) => (

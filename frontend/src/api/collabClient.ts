@@ -1,6 +1,6 @@
 // backend/collab-proxy/ のクライアント（ラボの閲覧のみの共有リンク、2026-10-16、docs/collab-design.md）。
-// 持ち主の操作（共有の作成・一覧・取り消し）はログインのトークンで、ゲストの閲覧はトークン無し（idが合言葉）。
-import { ApiError, getAuthToken, type RawLabNode } from './client'
+// 持ち主の操作（共有の作成・一覧・取り消し）も、ゲストの閲覧も、ログインのトークンが要る（ゲストも自分のアカウントでログインする）。
+import { ApiError, getAuthToken, notifyUnauthorized, type RawLabNode } from './client'
 
 const COLLAB_BASE_URL = import.meta.env.VITE_COLLAB_PROXY_URL ?? 'http://localhost:8085'
 
@@ -14,6 +14,7 @@ export interface ShareInfo {
 export interface SharedLab {
   labName: string
   owner: string
+  viewer: string
   role: 'view'
   expiresAt: string
   yaml: string
@@ -39,6 +40,7 @@ async function call<T>(path: string, init: RequestInit = {}, auth = false): Prom
   }
   if (!res.ok) {
     const message = (body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : undefined) ?? `HTTP ${res.status}`
+    if (res.status === 401 && auth) notifyUnauthorized()
     throw new ApiError(res.status, message)
   }
   return body as T
@@ -57,7 +59,7 @@ export function deleteShare(id: string) {
 }
 
 export function getSharedLab(id: string) {
-  return call<SharedLab>(`/s/${encodeURIComponent(id)}`)
+  return call<SharedLab>(`/s/${encodeURIComponent(id)}`, {}, true)
 }
 
 // 共有リンクのURL（ハッシュに合言葉を入れる。サーバーのアクセスログに残らない）

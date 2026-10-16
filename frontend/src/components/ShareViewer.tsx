@@ -16,7 +16,7 @@ import './ShareViewer.css'
 const nodeTypes = { topoNode: TopologyNode, labelNode: LabelNode, areaNode: AreaNode }
 const edgeTypes = { floating: FloatingEdge }
 
-// 共有リンクで開く、ラボの閲覧専用の画面（2026-10-16）。ログイン不要。5秒ごとに取り直して、持ち主の変更を映す
+// 共有リンクで開く、ラボの閲覧専用の画面（2026-10-16）。ログイン後に見られる。5秒ごとに取り直して、持ち主の変更を映す
 function ShareViewerInner({ shareId }: { shareId: string }) {
   const [lab, setLab] = useState<SharedLab | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -102,7 +102,7 @@ function ShareViewerInner({ shareId }: { shareId: string }) {
         <span className="share-viewer__badge">閲覧のみ</span>
         {lab && (
           <span className="share-viewer__meta">
-            持ち主: {lab.owner} ／ 期限: {new Date(lab.expiresAt).toLocaleString()}
+            持ち主: {lab.owner} ／ 閲覧: {lab.viewer} ／ 期限: {new Date(lab.expiresAt).toLocaleString()}
           </span>
         )}
       </div>
