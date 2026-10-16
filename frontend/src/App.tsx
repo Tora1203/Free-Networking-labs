@@ -3,6 +3,8 @@ import TopologyEditor from './components/TopologyEditor'
 import Home from './components/Home'
 import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
+import ShareViewer from './components/ShareViewer'
+import { shareIdFromHash } from './api/collabClient'
 import Brand from './components/Brand'
 import ServerStatusBar, {
   SERVER_STATUS_ITEMS,
@@ -37,6 +39,13 @@ function App() {
   const consolePanelWidth = useUiStore((s) => s.consolePanelWidth)
   const setConsolePanelWidth = useUiStore((s) => s.setConsolePanelWidth)
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
+  // 共有リンク（#/share/<合言葉>）で開いた時は、ログイン後に閲覧専用画面を出す（2026-10-16）
+  const [shareId, setShareId] = useState(() => shareIdFromHash(window.location.hash))
+  useEffect(() => {
+    const onHash = () => setShareId(shareIdFromHash(window.location.hash))
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
   const username = useAuthStore((s) => s.username)
   const logout = useAuthStore((s) => s.logout)
   const resizingRef = useRef(false)
@@ -91,8 +100,13 @@ function App() {
     [setConsolePanelWidth],
   )
 
+  // 共有リンクもログインが要る（ログイン後にそのまま閲覧画面へ。リンクのハッシュは残る）
   if (!username) {
     return <LoginForm />
+  }
+
+  if (shareId) {
+    return <ShareViewer shareId={shareId} />
   }
 
   const consoleDocked = consolePanelDocked && view === 'editor'
