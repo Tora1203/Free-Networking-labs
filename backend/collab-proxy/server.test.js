@@ -221,6 +221,8 @@ test('変更の通知：自分のラボの変更が、見ている全員に届�
   assert.equal(a1.status, 200)
   assert.ok(await until(() => a1.events.length >= 1 && a2.events.length >= 1)) // 接続直後に今の版
   const first = a1.events[0].data.version
+  assert.equal(a1.events[0].data.yaml, 'name: alice-lab1') // 通知に中身も付いてくる
+  assert.equal(a1.events[0].data.annotations, '{"title":"t"}')
   t.api.state.rev = 1 // 別の画面が保存した
   assert.ok(await until(() => a1.events.length >= 2 && a2.events.length >= 2))
   assert.notEqual(a1.events[1].data.version, first)

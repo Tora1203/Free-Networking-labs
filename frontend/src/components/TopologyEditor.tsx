@@ -27,7 +27,7 @@ import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, 
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import { fetchRemoteState, type RemoteState } from '../utils/remoteSync'
 import ShareButton from './ShareButton'
-import { getLabVersion, watchLab } from '../api/collabClient'
+import { getLabVersion, watchLab, type VersionEvent } from '../api/collabClient'
 import {
   buildNodeSyncCommands,
   hasSwitchWithoutConfigBind,
@@ -308,7 +308,9 @@ function TopologyEditorInner() {
   // 保存済みの表示名（表示名を変えた時に、自分の他のラボと重ならないかを見るため）
   const savedTitleRef = useRef<string | null>(null)
   // 10秒ごとの確認（別の画面の変更を取り込む。実体は下のcheckRemoteChange）
-  const checkRemoteChangeRef = useRef<(labName: string, knownVersion?: string | null) => Promise<void>>(async () => undefined)
+  const checkRemoteChangeRef = useRef<(labName: string, knownVersion?: string | null, knownRemote?: RemoteState) => Promise<void>>(async () => undefined)
+  // 通知で届いた最新の版と中身（順番が来たら使う）
+  const latestEventRef = useRef<VersionEvent | null>(null)
   const runStateRef = useRef<LabRunState>(runState)
   const lastSavedYaml = useRef<string | null>(null)
   const lastSavedAnnotations = useRef<string | null>(null)
@@ -403,10 +405,11 @@ function TopologyEditorInner() {
   // サーバーのラボが、最後に見た内容から変わったか。まず軽い版で見て、同じなら終わり。違う時だけ中身を取って
   // 「意味が最後に保存・読み込みした内容と違うか」を確かめる（版だけの違い＝書式の整え直しは変更としない）
   const detectRemoteChange = useCallback(
-    async (name: string, knownVersion?: string | null) => {
+    async (name: string, knownVersion?: string | null, knownRemote?: RemoteState) => {
       const version = knownVersion !== undefined ? knownVersion : await getLabVersion(name)
       if (version && version === baselineVersionRef.current) return { changed: false, version, remote: null }
-      const remote = await fetchRemoteState(name).catch(() => null)
+      // 通知に中身が付いていれば、取り直さずにそれを使う
+      const remote = knownRemote ?? (await fetchRemoteState(name).catch(() => null))
       if (!remote) return { changed: false, version, remote: null }
       if (remoteSameAsSaved(name, remote)) {
         if (version) baselineVersionRef.current = version
@@ -539,7 +542,7 @@ function TopologyEditorInner() {
         syncQueuedRef.current = false
         await syncOnce()
       })
-    }, 1000)
+    }, 300) // 連続した編集（ドラッグ等）は1回にまとめる。短いほど別の画面への反映が早い
     return () => clearTimeout(timer)
   }, [nodes, edges, labName, enqueue, syncOnce])
 
@@ -922,22 +925,26 @@ function TopologyEditorInner() {
       setLabName(title)
       historyRef.current = { past: [], future: [], current: takeSnapshot(nodes, parsed.edges) }
       syncHistoryCounts()
-      const state = await refreshRunState(name).catch(() => runStateRef.current)
-      lastSynced.current.clear()
-      for (const [id, command] of buildNodeSyncCommands(built)) {
-        if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
-      }
       dirtyRef.current = false
       setRemoteConflict(false)
       setSyncStatus({ kind: 'ok', message: '別の画面の変更を読み込みました' })
+      // 起動状態の取得は重いので、画面の更新を待たせない。取れたら、設定済みのノードを控える
+      lastSynced.current.clear()
+      void refreshRunState(name)
+        .catch(() => runStateRef.current)
+        .then((state) => {
+          for (const [id, command] of buildNodeSyncCommands(built)) {
+            if (state.nodeStates[id] === 'running') lastSynced.current.set(id, command)
+          }
+        })
     },
     [refreshRunState, syncHistoryCounts],
   )
 
   const checkRemoteChange = useCallback(
-    async (name: string, knownVersion?: string | null) => {
+    async (name: string, knownVersion?: string | null, knownRemote?: RemoteState) => {
       if (!loadedRef.current) return
-      const { changed, version, remote } = await detectRemoteChange(name, knownVersion)
+      const { changed, version, remote } = await detectRemoteChange(name, knownVersion, knownRemote)
       if (!changed || !remote) return
       if (hasLocalChanges(name)) {
         setRemoteConflict(true)
@@ -984,8 +991,8 @@ function TopologyEditorInner() {
       queued = true
       void enqueue(async () => {
         queued = false
-        await refreshRunState(savedLabName).catch(() => undefined)
         await checkRemoteChangeRef.current(savedLabName)
+        await refreshRunState(savedLabName).catch(() => undefined)
       })
     }, 10000)
     return () => clearInterval(timer)
@@ -996,13 +1003,19 @@ function TopologyEditorInner() {
   useEffect(() => {
     if (!savedLabName) return
     let queued = false
-    return watchLab(savedLabName, (version) => {
+    return watchLab(savedLabName, (event) => {
       // 自分の保存で基準にした版と同じなら、何もしない（自分の保存の通知は、問い合わせなしで終わる）
-      if (queued || (version && version === baselineVersionRef.current)) return
+      if (event.version && event.version === baselineVersionRef.current) return
+      latestEventRef.current = event // 続けて届いたら新しい方だけ使う
+      if (queued) return
       queued = true
       void enqueue(async () => {
         queued = false
-        await checkRemoteChangeRef.current(savedLabName) // 版は順番が来た時に取り直す（待っている間に基準が変わることがある）
+        const ev = latestEventRef.current
+        latestEventRef.current = null
+        // 中身が付いていれば取り直さない。付いていない時は版だけ渡して中身を取る
+        const remote = ev && ev.yaml ? { yaml: ev.yaml, annotations: ev.annotations } : undefined
+        await checkRemoteChangeRef.current(savedLabName, ev?.version || undefined, remote)
       })
     })
   }, [savedLabName, enqueue])

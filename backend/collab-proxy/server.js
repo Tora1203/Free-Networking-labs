@@ -52,6 +52,7 @@ export function createCollabServer(options = {}) {
   // 失効（ログアウト等）の反映が最大でこの時間遅れるが、見られるのは閲覧のみで、共有の期限も別にある
   const WATCH_MS = options.watchMs ?? Number(process.env.WATCH_MS ?? 1000)
   const HEARTBEAT_MS = options.heartbeatMs ?? 20000
+  const MAX_EVENT_BYTES = 512 * 1024
   /** `${ユーザー}:${ラボ}` → {key, labName, subs: Map<res, {token, check?}>, version, timer, polling} */
   const watchers = new Map()
   const AUTH_CACHE_MS = 30000
@@ -172,8 +173,8 @@ export function createCollabServer(options = {}) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
 
-  // 上流のトポロジ（YAML＋注釈）の版（短いハッシュ）。トークンが使えない・上流が答えない時はnull
-  async function computeVersion(labName, token, strict = false) {
+  // 上流のトポロジ（YAML＋注釈）の版（短いハッシュ）と中身。トークンが使えない・上流が答えない時はnull
+  async function computeSnapshot(labName, token, strict = false) {
     const lab = encodeURIComponent(labName)
     const [y, a] = await Promise.all([
       upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, token),
@@ -181,16 +182,23 @@ export function createCollabServer(options = {}) {
     ]).catch(() => [null, null])
     if (!y || y.status === 401) return null
     if (strict && y.status !== 200) return null // ラボが無い・読めない
-    return createHash('sha1').update(`${y.status}\0${y.body}\0${a ? a.status : ''}\0${a ? a.body : ''}`).digest('hex').slice(0, 12)
+    const version = createHash('sha1').update(`${y.status}\0${y.body}\0${a ? a.status : ''}\0${a ? a.body : ''}`).digest('hex').slice(0, 12)
+    return {
+      version,
+      // 通知に中身も載せる（受け取った画面が取り直さずに済む）。大きすぎる時は版だけ
+      yaml: y.status === 200 && y.body.length + (a ? a.body.length : 0) <= MAX_EVENT_BYTES ? y.body : null,
+      annotations: a && a.status === 200 && y.body.length + a.body.length <= MAX_EVENT_BYTES ? a.body : null,
+    }
   }
 
   // 版が変わっていたら、見ている全員に流す
-  function publishVersion(w, version) {
-    if (version === w.version) return
-    w.version = version
+  function publishVersion(w, snap) {
+    if (snap.version === w.version) return
+    w.version = snap.version
+    w.snap = snap
     // 共有の閲覧の控え（数秒）は古くなったので捨てる
     for (const sh of shares.values()) if (`${sh.owner}:${sh.labName}` === w.key) sh.cache = null
-    for (const res of w.subs.keys()) sseWrite(res, 'version', { version })
+    for (const res of w.subs.keys()) sseWrite(res, 'version', snap)
   }
 
   async function pollWatcher(w) {
@@ -198,9 +206,9 @@ export function createCollabServer(options = {}) {
     w.polling = true
     try {
       for (const token of new Set([...w.subs.values()].map((x) => x.token))) {
-        const version = await computeVersion(w.labName, token) // このトークンが使えなければ次の人のトークンで
-        if (version === null) continue
-        publishVersion(w, version)
+        const snap = await computeSnapshot(w.labName, token) // このトークンが使えなければ次の人のトークンで
+        if (snap === null) continue
+        publishVersion(w, snap)
         break
       }
     } finally {
@@ -218,7 +226,7 @@ export function createCollabServer(options = {}) {
     })
     let w = watchers.get(key)
     if (!w) {
-      w = { key, labName, subs: new Map(), version: null, timer: null, polling: false }
+      w = { key, labName, subs: new Map(), version: null, snap: null, timer: null, polling: false }
       watchers.set(key, w)
       w.timer = setInterval(() => {
         for (const [r, sub] of w.subs) if (sub.check && !sub.check()) { sseWrite(r, 'closed', { reason: 'expired' }); r.end() }
@@ -226,7 +234,7 @@ export function createCollabServer(options = {}) {
       }, WATCH_MS)
     }
     w.subs.set(res, { token, check })
-    if (w.version) sseWrite(res, 'version', { version: w.version }) // 接続直後に今の版を教える
+    if (w.snap) sseWrite(res, 'version', w.snap) // 接続直後に今の版と中身を教える
     else void pollWatcher(w)
     const beat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS)
     const leave = () => {
@@ -313,9 +321,10 @@ export function createCollabServer(options = {}) {
       const w = watchers.get(`${me.username}:${m[1]}`)
       let version = w && w.version
       if (!version || url.searchParams.get('fresh') === '1') {
-        version = await computeVersion(m[1], me.token, true)
-        if (version === null) return send(res, 404, { error: 'ラボが見つかりません' })
-        if (w) publishVersion(w, version) // 見ている人がいれば、すぐ通知する
+        const snap = await computeSnapshot(m[1], me.token, true)
+        if (snap === null) return send(res, 404, { error: 'ラボが見つかりません' })
+        version = snap.version
+        if (w) publishVersion(w, snap) // 見ている人がいれば、すぐ通知する
       }
       return send(res, 200, { version })
     }

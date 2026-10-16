@@ -75,7 +75,14 @@ export async function getLabVersion(labName: string, fresh = false): Promise<str
 
 // ラボの変更の通知（SSE、collab-proxyの`/watch/<ラボ>`と`/s/<id>/watch`）を受ける。
 // 変わったら onVersion が呼ばれる（接続直後にも1回）。切れたら間隔を空けて繋ぎ直す。止める関数を返す
-export function watchPath(path: string, onVersion: (version: string) => void): () => void {
+export interface VersionEvent {
+  version: string
+  // 通知に付いてくる、その版の中身（付いていない時はnull。画面は取り直す）
+  yaml: string | null
+  annotations: string | null
+}
+
+export function watchPath(path: string, onVersion: (event: VersionEvent) => void): () => void {
   let stopped = false
   let ctrl: AbortController | null = null
   const run = async () => {
@@ -104,9 +111,14 @@ export function watchPath(path: string, onVersion: (version: string) => void): (
             const event = /^event: (.+)$/m.exec(block)?.[1]
             if (event === 'version') {
               try {
-                onVersion(String(JSON.parse(/^data: (.+)$/m.exec(block)?.[1] ?? '{}').version ?? ''))
+                const d = JSON.parse(/^data: (.+)$/m.exec(block)?.[1] ?? '{}')
+                onVersion({
+                  version: String(d.version ?? ''),
+                  yaml: typeof d.yaml === 'string' ? d.yaml : null,
+                  annotations: typeof d.annotations === 'string' ? d.annotations : null,
+                })
               } catch {
-                onVersion('')
+                onVersion({ version: '', yaml: null, annotations: null })
               }
             }
             if (event === 'closed') return
@@ -126,8 +138,8 @@ export function watchPath(path: string, onVersion: (version: string) => void): (
   }
 }
 
-export const watchLab = (labName: string, onVersion: (version: string) => void) => watchPath(`/watch/${encodeURIComponent(labName)}`, onVersion)
-export const watchShare = (id: string, onVersion: (version: string) => void) => watchPath(`/s/${encodeURIComponent(id)}/watch`, onVersion)
+export const watchLab = (labName: string, onVersion: (event: VersionEvent) => void) => watchPath(`/watch/${encodeURIComponent(labName)}`, onVersion)
+export const watchShare = (id: string, onVersion: (event: VersionEvent) => void) => watchPath(`/s/${encodeURIComponent(id)}/watch`, onVersion)
 
 // 共有リンクのURL（ハッシュに合言葉を入れる。サーバーのアクセスログに残らない）
 export function shareUrl(id: string) {
