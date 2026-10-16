@@ -27,6 +27,7 @@ import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, 
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import { fetchRemoteState, remoteChanged, type RemoteState } from '../utils/remoteSync'
 import ShareButton from './ShareButton'
+import { watchLab } from '../api/collabClient'
 import {
   buildNodeSyncCommands,
   hasSwitchWithoutConfigBind,
@@ -971,6 +972,21 @@ function TopologyEditorInner() {
     }, 10000)
     return () => clearInterval(timer)
   }, [savedLabName, enqueue, refreshRunState])
+
+  // 別の画面の保存を、サーバーからの通知で1秒ほどで取り込む（2026-10-16、collab-proxyの`/watch`）。
+  // 通知が来ない・繋がらない時は、上の10秒ごとの確認がそのまま働く
+  useEffect(() => {
+    if (!savedLabName) return
+    let queued = false
+    return watchLab(savedLabName, () => {
+      if (queued) return
+      queued = true
+      void enqueue(async () => {
+        queued = false
+        await checkRemoteChangeRef.current(savedLabName)
+      })
+    })
+  }, [savedLabName, enqueue])
 
   // 保存済みのYAML（＋annotations）をダウンロードする（2026-10-08追加、
   // 「授業で使うテンプレートを配布しやすく」指摘対応）。サーバーから改めて取得する

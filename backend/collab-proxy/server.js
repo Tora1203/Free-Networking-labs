@@ -17,11 +17,19 @@
 //   POST   /shares          {labName}  → {id, labName, role, expiresAt}
 //   GET    /shares                     → 自分の共有の一覧
 //   DELETE /shares/<id>                → 取り消し
+//   GET    /watch/<labName>            → SSE。自分のラボのトポロジ（YAML・注釈）が変わったら通知（下の「変更の通知」）
 // ゲスト向け（自分のトークンが要る。idが合言葉）:
 //   GET    /s/<id>                     → {labName, owner, viewer, role, expiresAt, yaml, annotations, nodes}
+//   GET    /s/<id>/watch               → SSE。共有されたラボの変更の通知
+//
+// 変更の通知（2026-10-16）: 同じラボを別の画面で開いている時、変更を1秒ほどで反映するための仕組み。
+// ラボごとに1つの見張りが、WATCH_MS（既定1秒）ごとに上流のトポロジ（YAML＋注釈）を見て、変わったら
+// 開いている全員に`event: version`（中身の短いハッシュ）を流す。画面は通知を受けたら取り直す。
+// 上流への問い合わせは、見ている人数によらずラボあたり毎秒2本。見張りは誰も見なくなったら止まる。
+// 見張りは、見ている人の誰かのトークン（接続時にそのラボを読めると確認済み）で問い合わせる。
 
 import { createServer } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
 import { pathToFileURL } from 'node:url'
@@ -41,6 +49,10 @@ export function createCollabServer(options = {}) {
   const shares = new Map()
   // ログイン確認の結果の控え（トークン → {username, expMs, until}）。閲覧のたびに上流へ問い合わせないため。
   // 失効（ログアウト等）の反映が最大でこの時間遅れるが、見られるのは閲覧のみで、共有の期限も別にある
+  const WATCH_MS = options.watchMs ?? Number(process.env.WATCH_MS ?? 1000)
+  const HEARTBEAT_MS = options.heartbeatMs ?? 20000
+  /** `${ユーザー}:${ラボ}` → {key, labName, subs: Map<res, {token, check?}>, version, timer, polling} */
+  const watchers = new Map()
   const AUTH_CACHE_MS = 30000
   const authCache = new Map()
   // 共有ごとの上流の結果の控え。閲覧者が何人いても、上流への問い合わせは共有あたり数秒に1回にする
@@ -155,6 +167,67 @@ export function createCollabServer(options = {}) {
   // ゲストとして認証する：ログイン済み（トークンが上流で有効）であること。持ち主の認証と同じ確かめ方
   const authGuest = (req) => authOwner(req)
 
+  function sseWrite(res, event, data) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+
+  async function pollWatcher(w) {
+    if (w.polling) return
+    w.polling = true
+    try {
+      const lab = encodeURIComponent(w.labName)
+      for (const token of new Set([...w.subs.values()].map((x) => x.token))) {
+        const [y, a] = await Promise.all([
+          upstreamGet(`/api/v1/labs/${lab}/topology/yaml`, token),
+          upstreamGet(`/api/v1/labs/${lab}/topology/annotations`, token),
+        ]).catch(() => [null, null])
+        if (!y || y.status === 401) continue // このトークンは使えない。次の人のトークンで
+        const version = createHash('sha1').update(`${y.status}\0${y.body}\0${a ? a.status : ''}\0${a ? a.body : ''}`).digest('hex').slice(0, 12)
+        if (version !== w.version) {
+          w.version = version
+          // 共有の閲覧の控え（数秒）は古くなったので捨てる
+          for (const sh of shares.values()) if (`${sh.owner}:${sh.labName}` === w.key) sh.cache = null
+          for (const res of w.subs.keys()) sseWrite(res, 'version', { version })
+        }
+        break
+      }
+    } finally {
+      w.polling = false
+    }
+  }
+
+  // SSEで見張りに加わる。checkは共有の期限など「まだ見ていてよいか」の確認（falseなら切る）
+  function subscribe(req, res, key, labName, token, check) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    })
+    let w = watchers.get(key)
+    if (!w) {
+      w = { key, labName, subs: new Map(), version: null, timer: null, polling: false }
+      watchers.set(key, w)
+      w.timer = setInterval(() => {
+        for (const [r, sub] of w.subs) if (sub.check && !sub.check()) { sseWrite(r, 'closed', { reason: 'expired' }); r.end() }
+        void pollWatcher(w)
+      }, WATCH_MS)
+    }
+    w.subs.set(res, { token, check })
+    if (w.version) sseWrite(res, 'version', { version: w.version }) // 接続直後に今の版を教える
+    else void pollWatcher(w)
+    const beat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS)
+    const leave = () => {
+      clearInterval(beat)
+      w.subs.delete(res)
+      if (w.subs.size === 0) {
+        clearInterval(w.timer)
+        watchers.delete(key)
+      }
+    }
+    req.on('close', leave)
+  }
+
   async function handle(req, res) {
     sweep()
     const url = new URL(req.url ?? '/', 'http://x')
@@ -162,7 +235,16 @@ export function createCollabServer(options = {}) {
     const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim()
 
     // ---- ゲスト：ログイン済みで、idが合言葉 ----
-    let m = /^\/s\/([^/]+)$/.exec(path)
+    let m = /^\/s\/([^/]+)\/watch$/.exec(path)
+    if (m && req.method === 'GET') {
+      const guest = await authGuest(req)
+      if (!guest) return send(res, 401, { error: 'ログインが必要です' })
+      const id = m[1]
+      const s = SHARE_ID.test(id) ? shares.get(id) : undefined
+      if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
+      return subscribe(req, res, `${s.owner}:${s.labName}`, s.labName, s.token, () => shares.has(id) && s.expiresAt > now())
+    }
+    m = /^\/s\/([^/]+)$/.exec(path)
     if (m && req.method === 'GET') {
       const guest = await authGuest(req)
       if (!guest) return send(res, 401, { error: 'ログインが必要です' })
@@ -197,6 +279,17 @@ export function createCollabServer(options = {}) {
         annotations: annotations && annotations.status === 200 ? annotations.body : null,
         nodes,
       })
+    }
+
+    // ---- 自分のラボの変更の通知 ----
+    m = /^\/watch\/([^/]+)$/.exec(path)
+    if (m && req.method === 'GET') {
+      const me = await authOwner(req)
+      if (!me) return send(res, 401, { error: 'ログインが必要です' })
+      if (!SAFE_LAB.test(m[1])) return send(res, 400, { error: 'ラボ名が不正です' })
+      const own = await upstreamGet(`/api/v1/labs/${encodeURIComponent(m[1])}/topology/yaml`, me.token).catch(() => null)
+      if (!own || own.status !== 200) return send(res, 404, { error: 'ラボが見つかりません' })
+      return subscribe(req, res, `${me.username}:${m[1]}`, m[1], me.token, null)
     }
 
     // ---- 持ち主 ----

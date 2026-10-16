@@ -25,11 +25,13 @@ clab-api-serverはラボを持ち主のLinuxユーザーでしか見せない。
 | POST | `/shares` `{"labName": "..."}` | 共有を作る → `{id, labName, role, expiresAt}` |
 | GET | `/shares` | 自分の共有の一覧 |
 | DELETE | `/shares/<id>` | 取り消す（他人の共有は404） |
+| GET | `/watch/<ラボ名>` | SSE。自分のラボのトポロジが変わったら通知（下の「変更の通知」） |
 
 ゲスト（`Authorization: Bearer <JWT>`が要る。idが合言葉）:
 
 | メソッド | パス | 内容 |
 | --- | --- | --- |
+| GET | `/s/<id>/watch` | SSE。共有されたラボの変更の通知（ログインが要る） |
 | GET | `/s/<id>` | `{labName, owner, viewer, role, expiresAt, yaml, annotations, nodes}`。ログインしていなければ401、持ち主のトークンが失効していたら410 |
 
 画面のリンクは`https://<サーバー>/#/share/<id>`（ハッシュにidを入れる。nginxのアクセスログに残らない）。
@@ -43,13 +45,26 @@ clab-api-serverはラボを持ち主のLinuxユーザーでしか見せない。
 | `CLAB_API_BASE_URL` | https://localhost:8090 | clab-api-server |
 | `SHARE_TTL_HOURS` | 8 | 共有の有効時間 |
 | `MAX_SHARES_PER_USER` | 10 | 持ち主ごとの上限 |
+| `WATCH_MS` | 1000 | 変更の通知のために上流を見る間隔（ミリ秒） |
+
+## 変更の通知（SSE、2026-10-16）
+
+同じラボを別の画面（同じユーザーの2窓、共有した相手）で開いている時に、変更を**1秒ほど**で反映するための仕組み
+（CMLを同じユーザーの2窓で試すと1秒未満で反映された、という確認を受けた目標）。
+
+- ラボごとに1つの見張りが、`WATCH_MS`ごとに上流のトポロジ（YAML＋注釈）を見て、変わったら開いている全員に
+  `event: version`（短いハッシュ）を流す。画面は受けたら取り直す（接続直後にも1回流れる）
+- 上流への問い合わせは、見ている人数によらずラボあたり毎秒2本。誰も見なくなったら止まる
+- 接続時に、そのトークンでラボを読めることを確かめる（自分のラボか、共有されたラボ）。共有の取り消し・期限切れで切る
+- 20秒ごとにハートビート（`: ping`）を流す。nginxは`proxy_http_version 1.1`と`proxy_buffering off`
+- 通知が来ない・繋がらない時は、画面の10秒ごとの確認がそのまま働く
 
 ## 起動・テスト
 
 ```sh
 cd backend/collab-proxy
 node server.js          # 依存パッケージなし
-node --test             # 上流を模したサーバーでのテスト（9件）
+node --test             # 上流を模したサーバーでのテスト（12件）
 ```
 
 常駐は`collab-proxy.service.example`（systemdのuserサービス、sudo不要）。nginxは`backend/nginx/fnl.conf`の
