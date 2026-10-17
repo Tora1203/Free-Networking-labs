@@ -11,6 +11,7 @@ function jwt(username, expSec = Math.floor(Date.now() / 1000) + 3600) {
 // clab-api-serverの代役：トークンのユーザーが持つラボだけ見える
 function startMockApi(labsByUser, revoked = new Set()) {
   const calls = []
+  const state = { rev: 0 }
   const server = http.createServer((req, res) => {
     calls.push(`${req.method} ${req.url}`)
     const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1]
@@ -26,12 +27,12 @@ function startMockApi(labsByUser, revoked = new Set()) {
     }
     const m = /^\/api\/v1\/labs\/([^/]+)\/topology\/(yaml|annotations)$/.exec(req.url)
     if (m && mine[m[1]]) {
-      res.writeHead(200).end(m[2] === 'yaml' ? `name: ${m[1]}` : '{"title":"t"}')
+      res.writeHead(200).end(m[2] === 'yaml' ? `name: ${m[1]}${state.rev ? '#' + state.rev : ''}` : '{"title":"t"}')
       return
     }
     res.writeHead(404).end('{}')
   })
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, base: `http://127.0.0.1:${server.address().port}` })))
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, state, base: `http://127.0.0.1:${server.address().port}` })))
 }
 
 async function setup(opts = {}) {
@@ -171,4 +172,102 @@ test('閲覧者が何人いても、上流への問い合わせは数秒に1回�
   const yamlCalls = t.api.calls.filter((l) => l.includes('/topology/yaml'))
   assert.equal(yamlCalls.length, 1)
   t.close()
+})
+
+// SSEを読む：届いたイベントを集める
+async function openStream(url, token) {
+  const ctrl = new AbortController()
+  const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: ctrl.signal })
+  const events = []
+  if (res.status !== 200) return { status: res.status, events, close: () => ctrl.abort() }
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  void (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        let i
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i)
+          buf = buf.slice(i + 2)
+          const ev = /^event: (.+)$/m.exec(block)?.[1]
+          const data = /^data: (.+)$/m.exec(block)?.[1]
+          if (ev && data) events.push({ event: ev, data: JSON.parse(data) })
+        }
+      }
+    } catch {
+      // 切断
+    }
+  })()
+  return { status: 200, events, close: () => ctrl.abort() }
+}
+const until = async (fn, ms = 2000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (fn()) return true
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return false
+}
+
+test('変更の通知：自分のラボの変更が、見ている全員に届く。他人のラボは見られない', async () => {
+  const t = await setup({ watchMs: 40 })
+  const base = `http://127.0.0.1:${t.collab.address().port}`
+  const a1 = await openStream(`${base}/watch/alice-lab1`, jwt('alice'))
+  const a2 = await openStream(`${base}/watch/alice-lab1`, jwt('alice'))
+  assert.equal(a1.status, 200)
+  assert.ok(await until(() => a1.events.length >= 1 && a2.events.length >= 1)) // 接続直後に今の版
+  const first = a1.events[0].data.version
+  assert.equal(a1.events[0].data.yaml, 'name: alice-lab1') // 通知に中身も付いてくる
+  assert.equal(a1.events[0].data.annotations, '{"title":"t"}')
+  t.api.state.rev = 1 // 別の画面が保存した
+  assert.ok(await until(() => a1.events.length >= 2 && a2.events.length >= 2))
+  assert.notEqual(a1.events[1].data.version, first)
+  assert.equal((await openStream(`${base}/watch/bob-lab`, jwt('alice'))).status, 404) // 自分のラボではない
+  assert.equal((await openStream(`${base}/watch/alice-lab1`)).status, 401)
+  assert.equal((await openStream(`${base}/watch/..%2Fx`, jwt('alice'))).status, 400)
+  a1.close()
+  a2.close()
+  t.close()
+})
+
+test('変更の通知：共有のゲストにも届く。取り消すと切れる。ログインが要る', async () => {
+  const t = await setup({ watchMs: 40 })
+  const base = `http://127.0.0.1:${t.collab.address().port}`
+  const c = await t.call('POST', '/shares', { token: jwt('alice'), body: { labName: 'alice-lab1' } })
+  assert.equal((await openStream(`${base}/s/${c.json.id}/watch`)).status, 401)
+  const g = await openStream(`${base}/s/${c.json.id}/watch`, jwt('bob'))
+  assert.ok(await until(() => g.events.length >= 1))
+  t.api.state.rev = 2
+  assert.ok(await until(() => g.events.length >= 2))
+  await t.call('DELETE', `/shares/${c.json.id}`, { token: jwt('alice') })
+  assert.ok(await until(() => g.events.some((e) => e.event === 'closed')))
+  g.close()
+  t.close()
+})
+
+test('版の確認：軽く答え、?fresh=1は見張りの周期を待たずに通知する', async () => {
+  const t = await setup({ watchMs: 60000 }) // 見張りの周期は十分長い（通知が周期に頼っていないことを見る）
+  const base = `http://127.0.0.1:${t.collab.address().port}`
+  const alice = jwt('alice')
+  const s = await openStream(`${base}/watch/alice-lab1`, alice)
+  try {
+  assert.ok(await until(() => s.events.length >= 1))
+  const v0 = (await t.call('GET', '/version/alice-lab1', { token: alice })).json.version
+  assert.equal(v0, s.events[0].data.version)
+  t.api.state.rev = 3 // 保存した
+  assert.equal((await t.call('GET', '/version/alice-lab1', { token: alice })).json.version, v0) // 見張りの控えのまま
+  const fresh = await t.call('GET', '/version/alice-lab1?fresh=1', { token: alice })
+  assert.notEqual(fresh.json.version, v0)
+  assert.ok(await until(() => s.events.length >= 2)) // 見ている人に即通知
+  assert.equal(s.events[1].data.version, fresh.json.version)
+  assert.equal((await t.call('GET', '/version/bob-lab', { token: alice })).status, 404)
+  assert.equal((await t.call('GET', '/version/alice-lab1')).status, 401)
+  } finally {
+    s.close()
+    t.close()
+  }
 })

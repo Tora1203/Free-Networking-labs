@@ -7,7 +7,7 @@ import AreaNode from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
 import Brand from './Brand'
 import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
-import { getSharedLab, type SharedLab } from '../api/collabClient'
+import { getSharedLab, watchShare, type SharedLab } from '../api/collabClient'
 import { ApiError } from '../api/client'
 import { parseImportedTopology } from '../utils/labTopology'
 import { readLabTitle } from '../utils/annotations'
@@ -45,9 +45,14 @@ function ShareViewerInner({ shareId }: { shareId: string }) {
     const timer = setInterval(() => {
       if (!stopped && !document.hidden) void load()
     }, 5000)
+    // 持ち主（や編集した人）の保存を、サーバーからの通知で1秒ほどで映す。通知が無くても5秒ごとに取り直す
+    const stopWatch = watchShare(shareId, () => {
+      if (!stopped) void load()
+    })
     return () => {
       stopped = true
       clearInterval(timer)
+      stopWatch()
     }
   }, [shareId])
 
