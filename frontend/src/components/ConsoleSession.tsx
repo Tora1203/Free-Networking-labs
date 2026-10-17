@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { ApiError, createTerminalSession, getAuthToken } from '../api/client'
+import { ApiError, createTerminalSession, getAuthToken, shareConsoleUrl } from '../api/client'
 
 // clab-api-server の統合コンソール用WebSocket（/api/v1/terminal-sessions/{id}/stream）は
 // Authorizationヘッダーでしか認証できないが、ブラウザのWebSocket APIはヘッダーを設定できない
@@ -72,12 +72,14 @@ export default function ConsoleSession({ labName, nodeName, visible, autoCommand
         if (!token) throw new Error('ログインしていません')
         if (connectionTokenRef.current !== myToken) return // 途中で再接続/アンマウントされた
 
-        const socket = new WebSocket(`${PROXY_URL}/console?sessionId=${encodeURIComponent(session.sessionId)}`)
+        // 共有（他人のラボ）の間は、collab-proxyの素通しのトンネルに繋ぐ（トークンは送らない。backend/collab-proxy/参照）
+        const sharedUrl = shareConsoleUrl(session.sessionId)
+        const socket = new WebSocket(sharedUrl ?? `${PROXY_URL}/console?sessionId=${encodeURIComponent(session.sessionId)}`)
         socketRef.current = socket
 
         socket.addEventListener('open', () => {
           // プロキシへの最初のメッセージとしてトークンを送る（backend/console-proxy/server.js参照）
-          socket.send(JSON.stringify({ token }))
+          if (!sharedUrl) socket.send(JSON.stringify({ token }))
         })
         socket.addEventListener('message', (event) => {
           if (connectionTokenRef.current !== myToken) return

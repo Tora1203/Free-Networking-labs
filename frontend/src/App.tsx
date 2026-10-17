@@ -4,7 +4,8 @@ import Home from './components/Home'
 import ConsolePane from './components/ConsolePane'
 import LoginForm from './components/LoginForm'
 import ShareViewer from './components/ShareViewer'
-import { shareIdFromHash } from './api/collabClient'
+import { getSharedLab, shareIdFromHash, type ShareRole } from './api/collabClient'
+import { setShareRoute } from './api/client'
 import Brand from './components/Brand'
 import ServerStatusBar, {
   SERVER_STATUS_ITEMS,
@@ -47,6 +48,40 @@ function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   const username = useAuthStore((s) => s.username)
+  const openEditor = useUiStore((s) => s.openEditor)
+  // 共有リンクの権限を調べた結果。editなら、そのラボを通常のエディタで開く（APIはcollab-proxy経由、2026-10-17）
+  const [shareState, setShareState] = useState<
+    { shareId: string; role: ShareRole; labName: string; owner: string } | { shareId: string; error: string } | null
+  >(null)
+  useEffect(() => {
+    if (!shareId || !username) {
+      setShareRoute(null)
+      setShareState(null)
+      return
+    }
+    let cancelled = false
+    getSharedLab(shareId).then(
+      (lab) => {
+        if (cancelled) return
+        if (lab.role === 'edit') {
+          setShareRoute(shareId)
+          openEditor({ mode: 'edit', labName: lab.labName })
+        }
+        setShareState({ shareId, role: lab.role, labName: lab.labName, owner: lab.owner })
+      },
+      (e) => {
+        if (!cancelled) setShareState({ shareId, error: e instanceof Error ? e.message : '共有を開けませんでした' })
+      },
+    )
+    return () => {
+      cancelled = true
+      setShareRoute(null)
+    }
+  }, [shareId, username, openEditor])
+  const leaveShare = () => {
+    window.location.hash = ''
+    setView('home')
+  }
   const logout = useAuthStore((s) => s.logout)
   const resizingRef = useRef(false)
   // 画面下部に出すサーバーの使用状況（2026-10-14追加、components/ServerStatusBar.tsx）
@@ -105,16 +140,34 @@ function App() {
     return <LoginForm />
   }
 
-  if (shareId) {
-    return <ShareViewer shareId={shareId} />
+  const sharing = shareId && shareState && shareState.shareId === shareId ? shareState : null
+  if (shareId && !sharing) return <div className="share-loading">共有を開いています…</div>
+  if (sharing && 'error' in sharing) {
+    return (
+      <div className="share-loading">
+        {sharing.error}
+        <div>
+          <button onClick={leaveShare}>ホームへ戻る</button>
+        </div>
+      </div>
+    )
   }
+  if (sharing && sharing.role === 'view') {
+    return <ShareViewer shareId={sharing.shareId} />
+  }
+  const editing = sharing && !('error' in sharing) ? sharing : null
 
   const consoleDocked = consolePanelDocked && view === 'editor'
 
   return (
     <div className="app-shell">
       <nav className="app-nav">
-        <Brand size="nav" onClick={() => setView('home')} />
+        <Brand size="nav" onClick={() => (editing ? leaveShare() : setView('home'))} />
+        {editing && (
+          <span className="app-nav__share" title="共有されたラボを、持ち主のアカウントの権限で編集しています">
+            共有を編集中：{editing.labName}（持ち主 @{editing.owner}）
+          </span>
+        )}
         <div className="app-nav__spacer" />
         <div className="server-status-menu" ref={statusMenuRef}>
           <button
@@ -154,7 +207,7 @@ function App() {
         </button>
       </nav>
       <div className="app-content">
-        {view === 'home' && <Home />}
+        {view === 'home' && !editing && <Home />}
         {view === 'editor' && <TopologyEditor />}
         {/* ConsolePane（xterm.js＋WebSocket接続を持つ）はApp直下にこの1箇所だけマウントする。
             トポロジエディタ側にもう1つ同じConsolePaneをマウントすると同じセッションへの接続が
@@ -172,7 +225,7 @@ function App() {
           <ConsolePane />
         </div>
       </div>
-      <ServerStatusBar items={statusItems} />
+      {!editing && <ServerStatusBar items={statusItems} />}
     </div>
   )
 }

@@ -5,7 +5,7 @@
 // もともとはL2スイッチ（ovs-bridge kind）のブリッジ作成・VLAN設定用だったが、スイッチを
 // コンテナ化した（2026-10-13、backend/l2switch/）ため、そちらのAPIは使わなくなった
 // （サーバー側のエンドポイントは古いラボのために残している）。
-import { ApiError, getAuthToken } from './client'
+import { ApiError, getAuthToken, routedOvsUrl } from './client'
 
 const OVS_HELPER_BASE_URL = import.meta.env.VITE_OVS_HELPER_URL ?? 'http://localhost:8083'
 
@@ -13,7 +13,7 @@ async function postToHelper(path: string, body: Record<string, unknown>): Promis
   const token = getAuthToken()
   if (!token) throw new Error('ログインしていません')
 
-  const res = await fetch(`${OVS_HELPER_BASE_URL}${path}`, {
+  const res = await fetch(routedOvsUrl(OVS_HELPER_BASE_URL, path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),

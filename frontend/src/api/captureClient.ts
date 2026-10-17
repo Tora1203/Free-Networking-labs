@@ -8,7 +8,7 @@
 // （noVNCは複数ファイルを素のGETで読みに行く通常のWebアプリのため、
 // 「最初の1メッセージでトークンを送る」ようなハンドシェイクが使えない。
 // backend/capture-proxy/README.md参照）。
-import { createCaptureSessions, deleteCaptureSession, getCaptureSessionReady, getAuthToken, type CaptureTarget } from './client'
+import { createCaptureSessions, deleteCaptureSession, getCaptureSessionReady, getAuthToken, shareCaptureUrl, type CaptureTarget } from './client'
 
 const CAPTURE_PROXY_BASE_URL = import.meta.env.VITE_CAPTURE_PROXY_URL ?? 'https://localhost:8084'
 
@@ -71,7 +71,8 @@ export async function startPacketCapture(
       )
       const label = labelKey ? labelsByContainer[labelKey] : undefined
       const labelQuery = label ? `?label=${encodeURIComponent(label)}` : ''
-      const url = `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}${labelQuery}`
+      // 共有（他人のラボ）の間は、collab-proxy経由で持ち主のセッションを開く
+      const url = shareCaptureUrl(normalizedPath, label) ?? `${CAPTURE_PROXY_BASE_URL}/capture/${encodeURIComponent(token)}${normalizedPath}${labelQuery}`
       const win = window.open(url, '_blank')
       watchTabAndCleanup(win, session.sessionId)
     }),
