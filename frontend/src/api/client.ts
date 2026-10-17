@@ -56,6 +56,26 @@ function routedUrl(path: string): string {
   return `${BASE_URL}${path}`
 }
 
+// 共有の間のコンソール（WebSocket）の接続先。proxyがこの共有で作ったセッションだけを持ち主のトークンで通す
+// （ブラウザのWebSocketはヘッダーを付けられないので、トークンは送らない）。共有でなければnull
+export function shareConsoleUrl(sessionId: string): string | null {
+  if (!shareRoute) return null
+  const u = new URL(`${COLLAB_URL}/s/${shareRoute}/console`, window.location.href)
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+  u.searchParams.set('sessionId', sessionId)
+  return u.toString()
+}
+
+// 共有の間のキャプチャ（noVNC）のURL。upstreamPathは`ready`が返すclab-api-serverのフルパス
+// （/api/v1/capture/wireshark-vnc-sessions/<id>/vnc/…）。共有でなければnull
+export function shareCaptureUrl(upstreamPath: string, label?: string): string | null {
+  if (!shareRoute) return null
+  const rest = upstreamPath.replace(/^\/api\/v1\/capture\/wireshark-vnc-sessions/, '')
+  const u = new URL(`${COLLAB_URL}/s/${shareRoute}/vnc${rest}`, window.location.href)
+  if (label) u.searchParams.set('label', label)
+  return u.toString()
+}
+
 // ovs-helperの窓口（/frr-config・/switch-config）。共有の間はproxy経由
 export function routedOvsUrl(base: string, path: string): string {
   return shareRoute ? `${COLLAB_URL}/s/${shareRoute}/ovs${path}` : `${base}${path}`

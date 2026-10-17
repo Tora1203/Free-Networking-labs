@@ -25,6 +25,8 @@
 //   GET    /s/<id>/watch               → SSE。共有されたラボの変更の通知
 //   GET    /s/<id>/version[?fresh=1]   → {version}（持ち主の /version/<lab> と同じ）
 //   *      /s/<id>/clab/<API>          → editの共有だけ。許可表（allowClab）に合うclab-api-serverのAPIを持ち主のトークンで中継
+//   WS     /s/<id>/console?sessionId=<sid>  → editの共有のコンソール（この共有で作ったセッションだけ。素通しのトンネル）
+//   GET/WS /s/<id>/vnc/<sid>/vnc/…     → editの共有のキャプチャ（noVNC。この共有で作ったセッションだけ）
 //   POST   /s/<id>/ovs/<frr-config|switch-config> → editの共有だけ。ovs-helperの2つの窓口（labNameは共有のラボに限る）
 //
 // 編集の共有（2026-10-17、段階3）: editの共有は、ゲストの操作を持ち主のトークンで代行する。
@@ -34,6 +36,10 @@
 //     コンソール・キャプチャは通さない。execのnodeFilterは「そのラボの1ノード」に限る
 //   ・既定はview。editは持ち主が共有を作る時に明示して選ぶ。取り消し・期限（8時間）は閲覧と同じ
 //   ・編集の操作は、誰が・どのラボの・どの操作かをログに残す（execのコマンドの中身は残さない）
+//   ・コンソール／キャプチャ（2026-10-17追加）: セッションを作る操作（許可表）の結果のsessionIdをこの共有に記録し、
+//     その後のWebSocket／noVNCの接続は「合言葉(id)＋この共有で作ったsessionId」がある時だけ、持ち主のトークンで通す。
+//     ブラウザの新しいタブ・WebSocketはAuthorizationヘッダーを付けられないので、この2つは接続時にゲストのトークンを
+//     確かめない（sessionIdはセッションを作ったログイン済みのゲストだけが知る）。共有を取り消す・期限が切れると切る
 //
 // 変更の通知（2026-10-16）: 同じラボを別の画面で開いている時、変更を1秒ほどで反映するための仕組み。
 // ラボごとに1つの見張りが、WATCH_MS（既定1秒）ごとに上流のトポロジ（YAML＋注釈）を見て、変わったら
@@ -45,6 +51,8 @@ import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
+import net from 'node:net'
+import tls from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
 const SAFE_LAB = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -58,7 +66,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
 
 // 編集の共有で中継してよいclab-api-serverのAPI。restは`/api/v1/`より後ろ。
 // 通れば {op, node?} を返す。ラボ名は共有のラボに固定する（違えばnull）
-export function allowClab(method, rest, searchParams, labName) {
+export function allowClab(method, rest, searchParams, labName, sessions = new Map()) {
   const keys = [...searchParams.keys()]
   const hasQuery = keys.length > 0
   const nodeOf = (c) => {
@@ -74,6 +82,14 @@ export function allowClab(method, rest, searchParams, labName) {
   if ((rest === 'tools/netem/set' || rest === 'tools/netem/reset') && method === 'POST' && !hasQuery) {
     return { op: rest.endsWith('set') ? 'netem-set' : 'netem-reset', checkNetemBody: true }
   }
+  // キャプチャのセッション：この共有で作ったものだけ
+  const cap = /^capture\/wireshark-vnc-sessions\/([A-Za-z0-9_-]+)(\/ready)?$/.exec(rest)
+  if (cap) {
+    if (hasQuery || sessions.get(cap[1]) !== 'capture') return null
+    if (cap[2] && method === 'GET') return { op: 'capture-ready' }
+    if (!cap[2] && method === 'DELETE') return { op: 'capture-delete', sid: cap[1] }
+    return null
+  }
   const m = /^labs\/([^/]+)\/(.+)$/.exec(rest)
   if (!m || m[1] !== labName) return null
   const sub = m[2]
@@ -87,6 +103,12 @@ export function allowClab(method, rest, searchParams, labName) {
   if (/^(start|stop|restart)$/.test(sub) && !hasQuery) return { op: `lab-${sub}` }
   const n = /^nodes\/([^/]+)\/(start|stop|restart)$/.exec(sub)
   if (n && SAFE_NODE.test(n[1]) && !hasQuery) return { op: `node-${n[2]}`, node: n[1] }
+  const term = /^nodes\/([^/]+)\/terminal-sessions$/.exec(sub)
+  if (term && !hasQuery) {
+    const node = nodeOf(term[1])
+    if (node) return { op: 'console-create', node }
+  }
+  if (sub === 'capture/wireshark-vnc-sessions' && !hasQuery) return { op: 'capture-create', checkCaptureBody: true }
   if (sub === 'exec' && keys.length === 1) {
     const node = nodeOf(searchParams.get('nodeFilter'))
     if (node) return { op: 'exec', node }
@@ -219,8 +241,15 @@ export function createCollabServer(options = {}) {
     })
   }
 
+  // 共有を終わらせる（取り消し・期限・持ち主のトークン失効）。開いているコンソール／キャプチャの接続も切る
+  function endShare(id) {
+    const s = shares.get(id)
+    shares.delete(id)
+    if (s && s.tunnels) for (const t of [...s.tunnels]) t.destroy()
+  }
+
   function sweep() {
-    for (const [id, s] of shares) if (s.expiresAt <= now()) shares.delete(id)
+    for (const [id, s] of shares) if (s.expiresAt <= now()) endShare(id)
     for (const [t, c] of authCache) if (c.until <= now()) authCache.delete(t)
   }
 
@@ -362,7 +391,7 @@ export function createCollabServer(options = {}) {
   // restは元のパス（%エンコードのまま）。%を含むパスは受け付けない（ラボ名・ノード名は英数字だけ）
   async function relayClab(req, res, url, id, s, guest, rest, ip) {
     if (s.role !== 'edit') return send(res, 403, { error: 'この共有は閲覧のみです' })
-    const rule = rest.includes('%') ? null : allowClab(req.method ?? '', rest, url.searchParams, s.labName)
+    const rule = rest.includes('%') ? null : allowClab(req.method ?? '', rest, url.searchParams, s.labName, s.sessions)
     if (!rule) return send(res, 403, { error: 'このAPIは共有では使えません' })
     let body = Buffer.alloc(0)
     if (req.method === 'POST' || req.method === 'PUT') {
@@ -371,6 +400,25 @@ export function createCollabServer(options = {}) {
       } catch {
         return send(res, 413, { error: 'リクエストが大きすぎます' })
       }
+    }
+    if (rule.checkCaptureBody) {
+      // 対象はそのラボのノード（フルネームか短い名前）とインターフェース名だけ
+      let ok = false
+      try {
+        const targets = JSON.parse(body.toString('utf8')).targets
+        const prefix = `clab-${s.labName}-`
+        ok =
+          Array.isArray(targets) &&
+          targets.length >= 1 &&
+          targets.length <= 8 &&
+          targets.every((t) => {
+            const c = t && typeof t.containerName === 'string' ? t.containerName : ''
+            return (c.startsWith(prefix) ? SAFE_NODE.test(c.slice(prefix.length)) : !c.startsWith('clab-') && SAFE_NODE.test(c)) && /^[A-Za-z0-9_.-]{1,32}$/.test(t.interfaceName ?? '')
+          })
+      } catch {
+        ok = false
+      }
+      if (!ok) return send(res, 403, { error: 'このAPIは共有では使えません' })
     }
     if (rule.checkNetemBody) {
       let c = ''
@@ -387,10 +435,23 @@ export function createCollabServer(options = {}) {
     const r = await upstreamForward(apiBase, req.method ?? 'GET', `/api/v1/${rest}${url.search}`, s.token, body).catch(() => null)
     if (!r) return send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
     if (r.status === 401) {
-      shares.delete(id) // 持ち主のトークンが切れた
+      endShare(id) // 持ち主のトークンが切れた
       return send(res, 410, { error: '共有の期限が切れました（持ち主のログインが切れたため）' })
     }
-    if (rule.op !== 'read' && rule.op !== 'labs' && rule.op !== 'netem-show') {
+    if ((rule.op === 'console-create' || rule.op === 'capture-create') && r.status >= 200 && r.status < 300) {
+      // この共有で作ったセッションを覚える（あとのWebSocket／noVNCの接続はこのsessionIdがある時だけ通す）
+      try {
+        const j = JSON.parse(r.body.toString('utf8'))
+        const ids = rule.op === 'console-create' ? [j.sessionId] : (Array.isArray(j.sessions) ? j.sessions : []).map((x) => x && x.sessionId)
+        for (const sid of ids) {
+          if (typeof sid === 'string' && /^[A-Za-z0-9_-]+$/.test(sid) && s.sessions.size < 50) s.sessions.set(sid, rule.op === 'console-create' ? 'console' : 'capture')
+        }
+      } catch {
+        /* 覚えられなかったセッションには接続できないだけ */
+      }
+    }
+    if (rule.op === 'capture-delete' && ((r.status >= 200 && r.status < 300) || r.status === 404)) s.sessions.delete(rule.sid)
+    if (rule.op !== 'read' && rule.op !== 'labs' && rule.op !== 'netem-show' && rule.op !== 'capture-ready') {
       s.cache = null
       log(`edit share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} editor=${guest.username} op=${rule.op}${rule.node ? ` node=${rule.node}` : ''} status=${r.status} ip=${ip}`)
     }
@@ -425,11 +486,101 @@ export function createCollabServer(options = {}) {
     return res.end(r.body)
   }
 
+  // 編集の共有のコンソール／キャプチャの接続先を決める。通るのは「この共有で作ったセッション」だけ。
+  // 返すのは {s, id, path}（上流のパス）。通せなければnull
+  function resolveStream(rawUrl) {
+    const [pathPart, query = ''] = rawUrl.split('?')
+    sweep()
+    let m = /^\/s\/([^/]+)\/console$/.exec(pathPart)
+    if (m) {
+      const sid = new URLSearchParams(query).get('sessionId') ?? ''
+      const s = SHARE_ID.test(m[1]) ? shares.get(m[1]) : undefined
+      if (!s || s.role !== 'edit' || s.sessions.get(sid) !== 'console') return null
+      return { s, id: m[1], kind: 'console', path: `/api/v1/terminal-sessions/${encodeURIComponent(sid)}/stream` }
+    }
+    m = /^\/s\/([^/]+)\/vnc\/([A-Za-z0-9_-]+)\/vnc(\/[^?]*)?$/.exec(pathPart)
+    if (m) {
+      const s = SHARE_ID.test(m[1]) ? shares.get(m[1]) : undefined
+      if (!s || s.role !== 'edit' || s.sessions.get(m[2]) !== 'capture') return null
+      if ((m[3] ?? '').includes('..') || (m[3] ?? '').includes('%')) return null
+      const params = new URLSearchParams(query)
+      params.delete('label') // 画面側のタブ名用。上流には渡さない
+      const q = params.toString()
+      return { s, id: m[1], kind: 'capture', path: `/api/v1/capture/wireshark-vnc-sessions/${m[2]}/vnc${m[3] ?? ''}${q ? `?${q}` : ''}` }
+    }
+    return null
+  }
+
+  // noVNCのページ・資産（GET）を持ち主のトークンで取って返す
+  function relayVnc(req, res, target) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })
+    const { s, id } = target
+    const url = new URL(apiBase + target.path)
+    const lib = url.protocol === 'http:' ? http : https
+    const headers = { Authorization: `Bearer ${s.token}` }
+    for (const h of ['accept', 'accept-language', 'range', 'if-none-match', 'if-modified-since', 'user-agent']) if (req.headers[h]) headers[h] = req.headers[h]
+    const up = lib.request(url, { headers, rejectUnauthorized: false, method: req.method, timeout: 30000 }, (r) => {
+      if (r.statusCode === 401) {
+        r.resume()
+        endShare(id)
+        return send(res, 410, { error: '共有の期限が切れました（持ち主のログインが切れたため）' })
+      }
+      res.writeHead(r.statusCode ?? 502, r.headers)
+      r.pipe(res)
+    })
+    up.on('timeout', () => up.destroy(new Error('upstream timeout')))
+    up.on('error', () => {
+      if (!res.headersSent) send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
+      else res.destroy()
+    })
+    up.end()
+  }
+
+  // WebSocketの素通しのトンネル：クライアントのハンドシェイクを、持ち主のトークンを付けて上流へ流し、
+  // あとは双方向にバイト列をそのまま流す（フレームの中身は読まない）
+  function tunnel(req, socket, head, target, ip) {
+    const { s, id, kind } = target
+    const base = new URL(apiBase)
+    const secure = base.protocol === 'https:'
+    const port = Number(base.port || (secure ? 443 : 80))
+    const up = secure ? tls.connect({ host: base.hostname, port, rejectUnauthorized: false, servername: base.hostname }) : net.connect({ host: base.hostname, port })
+    const done = () => {
+      s.tunnels.delete(socket)
+      socket.destroy()
+      up.destroy()
+    }
+    s.tunnels.add(socket)
+    socket.on('error', done)
+    socket.on('close', done)
+    up.on('error', done)
+    up.on('close', done)
+    up.once(secure ? 'secureConnect' : 'connect', () => {
+      const lines = [`GET ${target.path} HTTP/1.1`, `Host: ${base.host}`, 'Connection: Upgrade', 'Upgrade: websocket']
+      for (const h of ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol']) {
+        const v = req.headers[h]
+        if (typeof v === 'string') lines.push(`${h}: ${v}`)
+      }
+      lines.push(`Authorization: Bearer ${s.token}`)
+      up.write(`${lines.join('\r\n')}\r\n\r\n`)
+      if (head && head.length) up.write(head)
+      socket.pipe(up)
+      up.pipe(socket)
+    })
+    log(`stream share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} kind=${kind} ip=${ip}`)
+  }
+
   async function handle(req, res) {
     sweep()
     const url = new URL(req.url ?? '/', 'http://x')
     const path = url.pathname
     const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim()
+
+    // ---- 編集の共有のキャプチャ（noVNCのページ）：新しいタブはヘッダーを付けられないので、合言葉＋sessionIdで通す ----
+    if (/^\/s\/[^/]+\/vnc\//.test(path)) {
+      const target = resolveStream(req.url ?? '')
+      if (!target || target.kind !== 'capture') return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
+      return relayVnc(req, res, target)
+    }
 
     // ---- ゲスト：ログイン済みで、idが合言葉 ----
     let m = /^\/s\/([^/]+)\/watch$/.exec(path)
@@ -470,7 +621,7 @@ export function createCollabServer(options = {}) {
       const [yaml, annotations, labs] = await loadShareData(s).catch(() => [null, null, null])
       if (!yaml || !labs) return send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
       if (yaml.status === 401 || labs.status === 401) {
-        shares.delete(id) // 持ち主のトークンが切れた
+        endShare(id) // 持ち主のトークンが切れた
         return send(res, 410, { error: '共有の期限が切れました（持ち主のログインが切れたため）' })
       }
       if (yaml.status !== 200) return send(res, 404, { error: 'ラボが見つかりません' })
@@ -542,6 +693,8 @@ export function createCollabServer(options = {}) {
           owner: owner.username,
           token: owner.token,
           role,
+          sessions: new Map(), // sessionId → 'console'|'capture'（この共有で作ったもの）
+          tunnels: new Set(), // 開いているWebSocketのトンネル（共有の終了で切る）
           createdAt: now(),
           expiresAt: Math.min(now() + ttlMs, owner.expMs),
         }
@@ -558,7 +711,7 @@ export function createCollabServer(options = {}) {
         const s = shares.get(m[1])
         // 他人の共有は存在も教えない
         if (!s || s.owner !== owner.username) return send(res, 404, { error: '共有が見つかりません' })
-        shares.delete(m[1])
+        endShare(m[1])
         log(`delete share=${m[1].slice(0, 6)} lab=${s.labName} owner=${owner.username}`)
         return send(res, 200, { ok: true })
       }
@@ -571,6 +724,15 @@ export function createCollabServer(options = {}) {
       log(`error ${e instanceof Error ? e.message : String(e)}`)
       if (!res.headersSent) send(res, 500, { error: 'internal error' })
     })
+  })
+  server.on('upgrade', (req, socket, head) => {
+    const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim()
+    const target = resolveStream(req.url ?? '')
+    if (!target) {
+      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+      return
+    }
+    tunnel(req, socket, head, target, ip)
   })
   server.sharesForTest = shares
   return server

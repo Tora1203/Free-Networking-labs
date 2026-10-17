@@ -80,7 +80,7 @@ export default function ShareButton({ labName }: { labName: string }) {
           {role === 'edit' && (
             <div className="share-button__warn">
               「編集も可」のリンクを開いた人は、あなたのノードで<strong>コマンドを実行でき</strong>、トポロジの変更・起動停止もできます。
-              信頼できる人にだけ渡してください（コンソールとキャプチャは使えません）。
+              コンソールとキャプチャも使えます。信頼できる人にだけ渡してください。
             </div>
           )}
           {shares.map((s) => (

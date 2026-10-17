@@ -45,7 +45,34 @@ function startMockApi(labsByUser, revoked = new Set()) {
       res.writeHead(200).end('{"ok":true}')
       return
     }
+    if (req.method === 'POST' && /^\/api\/v1\/labs\/[^/]+\/nodes\/[^/]+\/terminal-sessions$/.test(req.url)) {
+      calls.push(`auth ${user}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"sessionId":"sess1"}')
+      return
+    }
+    if (req.method === 'POST' && /^\/api\/v1\/labs\/[^/]+\/capture\/wireshark-vnc-sessions$/.test(req.url)) {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"sessions":[{"sessionId":"cap1"}]}')
+      return
+    }
+    if (/^\/api\/v1\/capture\/wireshark-vnc-sessions\/cap1(\/ready)?$/.test(req.url)) {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ready":true}')
+      return
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/v1/capture/wireshark-vnc-sessions/cap1/vnc/')) {
+      calls.push(`auth ${user}`)
+      res.writeHead(200, { 'Content-Type': 'text/html' }).end('VNCPAGE')
+      return
+    }
     res.writeHead(404).end('{}')
+  })
+  // WebSocketの代役：ハンドシェイクに101で答え、あとは受け取ったバイト列をそのまま返す
+  server.on('upgrade', (req, socket) => {
+    const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1]
+    const user = token ? JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).username : null
+    calls.push(`upgrade ${req.url} auth ${user}`)
+    if (!user) return socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n')
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+    socket.on('data', (d) => socket.write(d))
   })
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, state, base: `http://127.0.0.1:${server.address().port}` })))
 }
@@ -320,7 +347,7 @@ test('編集の共有：許可表のAPIだけを共有のラボに限って中�
     ['POST', 'labs/alice-lab1/exec?nodeFilter=clab-alice-lab1-.*', { command: 'x' }],
     ['POST', 'labs', { topologyContent: 'x' }],
     ['DELETE', 'labs/alice-lab1'],
-    ['POST', 'labs/alice-lab1/nodes/clab-alice-lab1-R1/terminal-sessions', {}],
+    ['POST', 'labs/alice-lab1/nodes/clab-alice-lab2-R1/terminal-sessions', {}],
     ['POST', 'labs/alice%2Dlab1/apply'],
     ['POST', 'tools/netem/set', { containerName: 'clab-alice-lab2-R1', interface: 'eth1' }],
     ['GET', 'health/metrics'],
@@ -372,5 +399,72 @@ test('編集の共有：/labsは共有のラボの分だけ返す。ovsはlabNam
     collab.close()
     ovs.close()
     t.api.server.close()
+  }
+})
+
+function wsEcho(base, path, payload) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(base + path, { headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'x3JJHMbDL1EzLkh9GBhXDw==', 'Sec-WebSocket-Version': '13' } })
+    req.on('upgrade', (res, socket) => {
+      socket.write(payload)
+      socket.once('data', (d) => {
+        socket.destroy()
+        resolve({ status: res.statusCode, echo: d.toString() })
+      })
+    })
+    req.on('response', (res) => {
+      res.resume()
+      resolve({ status: res.statusCode })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+test('編集の共有：コンソールとキャプチャは、この共有で作ったセッションだけ持ち主のトークンで通る', async () => {
+  const t = await setup()
+  const alice = jwt('alice')
+  const bob = jwt('bob')
+  const edit = (await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1', role: 'edit' } })).json
+  const view = (await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })).json
+  const base = `http://127.0.0.1:${t.collab.address().port}`
+  const c = (p) => `/s/${edit.id}/clab/${p}`
+  try {
+    // セッションを作る前は、接続できない
+    assert.equal((await wsEcho(base, `/s/${edit.id}/console?sessionId=sess1`, 'hi')).status, 404)
+    assert.equal((await fetch(`${base}/s/${edit.id}/vnc/cap1/vnc/`)).status, 404)
+
+    // コンソール：自分のラボの別のノード指定は拒否、正しい指定は通る
+    assert.equal((await t.call('POST', c('labs/alice-lab1/nodes/clab-alice-lab2-R1/terminal-sessions'), { token: bob, body: {} })).status, 403)
+    assert.equal((await t.call('POST', c('labs/alice-lab1/nodes/clab-alice-lab1-R1/terminal-sessions'), { token: bob, body: { protocol: 'shell' } })).status, 200)
+    const echo = await wsEcho(base, `/s/${edit.id}/console?sessionId=sess1`, 'hello')
+    assert.equal(echo.status, 101)
+    assert.equal(echo.echo, 'hello')
+    assert.ok(t.api.calls.includes('upgrade /api/v1/terminal-sessions/sess1/stream auth alice')) // 持ち主のトークン
+    // 知らないsessionIdや閲覧の共有では通らない
+    assert.equal((await wsEcho(base, `/s/${edit.id}/console?sessionId=other`, 'x')).status, 404)
+    assert.equal((await wsEcho(base, `/s/${view.id}/console?sessionId=sess1`, 'x')).status, 404)
+
+    // キャプチャ：対象の検証、作成、ready、noVNCのページ、削除
+    assert.equal((await t.call('POST', c('labs/alice-lab1/capture/wireshark-vnc-sessions'), { token: bob, body: { targets: [{ containerName: 'clab-alice-lab2-R1', interfaceName: 'eth1' }] } })).status, 403)
+    assert.equal((await t.call('GET', c('capture/wireshark-vnc-sessions/cap1/ready'), { token: bob })).status, 403) // 作る前
+    const made = await t.call('POST', c('labs/alice-lab1/capture/wireshark-vnc-sessions'), { token: bob, body: { targets: [{ containerName: 'R1', interfaceName: 'eth1' }] } })
+    assert.equal(made.status, 200)
+    assert.equal((await t.call('GET', c('capture/wireshark-vnc-sessions/cap1/ready'), { token: bob })).status, 200)
+    const page = await fetch(`${base}/s/${edit.id}/vnc/cap1/vnc/?label=R1-eth1`)
+    assert.equal(page.status, 200)
+    assert.equal(await page.text(), 'VNCPAGE')
+    assert.equal((await fetch(`${base}/s/${edit.id}/vnc/cap1/vnc/../../x`)).status, 404)
+    assert.equal((await fetch(`${base}/s/${edit.id}/vnc/cap2/vnc/`)).status, 404)
+    assert.equal((await t.call('DELETE', c('capture/wireshark-vnc-sessions/cap1'), { token: bob })).status, 200)
+    assert.equal((await fetch(`${base}/s/${edit.id}/vnc/cap1/vnc/`)).status, 404) // 削除後は通らない
+    assert.ok(!t.api.calls.some((x) => x.includes('label=')))
+
+    // 取り消すとコンソールの接続も切れる
+    assert.equal((await t.call('POST', c('labs/alice-lab1/nodes/clab-alice-lab1-R1/terminal-sessions'), { token: bob, body: {} })).status, 200)
+    await t.call('DELETE', `/shares/${edit.id}`, { token: alice })
+    assert.equal((await wsEcho(base, `/s/${edit.id}/console?sessionId=sess1`, 'x')).status, 404)
+  } finally {
+    t.close()
   }
 })
