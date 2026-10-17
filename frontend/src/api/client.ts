@@ -37,12 +37,36 @@ export function getAuthToken() {
   return authToken
 }
 
+// 「編集できる共有」で他人のラボを開いている間は、APIの呼び出しをcollab-proxy経由にする（2026-10-17）。
+// proxyが許可表のAPIだけを、持ち主のトークンで中継する（自分のトークンはproxyへのログイン確認に使う）。
+// 画面側のコードは変えずに、パスの行き先だけを差し替える
+const COLLAB_URL = import.meta.env.VITE_COLLAB_PROXY_URL ?? 'http://localhost:8085'
+let shareRoute: string | null = null
+
+export function setShareRoute(id: string | null) {
+  shareRoute = id
+}
+
+export function getShareRoute() {
+  return shareRoute
+}
+
+function routedUrl(path: string): string {
+  if (shareRoute && path.startsWith('/api/v1/')) return `${COLLAB_URL}/s/${shareRoute}/clab/${path.slice('/api/v1/'.length)}`
+  return `${BASE_URL}${path}`
+}
+
+// ovs-helperの窓口（/frr-config・/switch-config）。共有の間はproxy経由
+export function routedOvsUrl(base: string, path: string): string {
+  return shareRoute ? `${COLLAB_URL}/s/${shareRoute}/ovs${path}` : `${base}${path}`
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
   if (authToken) headers.set('Authorization', `Bearer ${authToken}`)
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+  const res = await fetch(routedUrl(path), { ...options, headers })
   const text = await res.text()
   const body = text.length > 0 ? JSON.parse(text) : undefined
 
@@ -64,7 +88,7 @@ async function requestText(path: string, options: RequestInit = {}): Promise<str
   const headers = new Headers(options.headers)
   if (authToken) headers.set('Authorization', `Bearer ${authToken}`)
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+  const res = await fetch(routedUrl(path), { ...options, headers })
   const text = await res.text()
 
   if (!res.ok) {

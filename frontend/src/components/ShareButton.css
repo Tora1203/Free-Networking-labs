@@ -34,3 +34,24 @@
   flex: 1 1 100%;
   font-size: 12px;
 }
+
+.share-button__role {
+  display: block;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.share-button__warn {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid #d9a441;
+  border-radius: 4px;
+  background: rgba(217, 164, 65, 0.15);
+  font-size: 12px;
+}
+.share-button__role-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  margin-right: 4px;
+}

@@ -1,21 +1,24 @@
 // backend/collab-proxy/ のクライアント（ラボの閲覧のみの共有リンク、2026-10-16、docs/collab-design.md）。
 // 持ち主の操作（共有の作成・一覧・取り消し）も、ゲストの閲覧も、ログインのトークンが要る（ゲストも自分のアカウントでログインする）。
-import { ApiError, getAuthToken, notifyUnauthorized, type RawLabNode } from './client'
+import { ApiError, getAuthToken, getShareRoute, notifyUnauthorized, type RawLabNode } from './client'
 
 const COLLAB_BASE_URL = import.meta.env.VITE_COLLAB_PROXY_URL ?? 'http://localhost:8085'
 
 export interface ShareInfo {
   id: string
   labName: string
-  role: 'view'
+  role: ShareRole
   expiresAt: string
 }
+
+// view=見るだけ。edit=トポロジの編集・起動停止・ノードでのコマンド実行まで（持ち主のノードを触らせる）
+export type ShareRole = 'view' | 'edit'
 
 export interface SharedLab {
   labName: string
   owner: string
   viewer: string
-  role: 'view'
+  role: ShareRole
   expiresAt: string
   yaml: string
   annotations: string | null
@@ -46,8 +49,8 @@ async function call<T>(path: string, init: RequestInit = {}, auth = false, quiet
   return body as T
 }
 
-export function createShare(labName: string) {
-  return call<ShareInfo>('/shares', { method: 'POST', body: JSON.stringify({ labName }) }, true)
+export function createShare(labName: string, role: ShareRole = 'view') {
+  return call<ShareInfo>('/shares', { method: 'POST', body: JSON.stringify({ labName, role }) }, true)
 }
 
 export async function listShares() {
@@ -66,7 +69,10 @@ export function getSharedLab(id: string) {
 // fresh=trueは見張りの次の周期を待たず今の上流を見て、見ている画面にも通知する。取れない時はnull
 export async function getLabVersion(labName: string, fresh = false): Promise<string | null> {
   try {
-    const r = await call<{ version: string }>(`/version/${encodeURIComponent(labName)}${fresh ? '?fresh=1' : ''}`, {}, false, true)
+    // 編集できる共有でラボを開いている間は、共有の窓口で聞く
+    const shareId = getShareRoute()
+    const base = shareId ? `/s/${encodeURIComponent(shareId)}/version` : `/version/${encodeURIComponent(labName)}`
+    const r = await call<{ version: string }>(`${base}${fresh ? '?fresh=1' : ''}`, {}, false, true)
     return r.version
   } catch {
     return null
@@ -138,7 +144,10 @@ export function watchPath(path: string, onVersion: (event: VersionEvent) => void
   }
 }
 
-export const watchLab = (labName: string, onVersion: (event: VersionEvent) => void) => watchPath(`/watch/${encodeURIComponent(labName)}`, onVersion)
+export const watchLab = (labName: string, onVersion: (event: VersionEvent) => void) => {
+  const shareId = getShareRoute()
+  return watchPath(shareId ? `/s/${encodeURIComponent(shareId)}/watch` : `/watch/${encodeURIComponent(labName)}`, onVersion)
+}
 export const watchShare = (id: string, onVersion: (event: VersionEvent) => void) => watchPath(`/s/${encodeURIComponent(id)}/watch`, onVersion)
 
 // 共有リンクのURL（ハッシュに合言葉を入れる。サーバーのアクセスログに残らない）

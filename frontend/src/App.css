@@ -67,3 +67,15 @@
   background: var(--accent);
   opacity: 0.4;
 }
+
+.app-nav__share {
+  margin-left: 12px;
+  padding: 2px 8px;
+  border: 1px solid #d9a441;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.share-loading {
+  padding: 48px;
+  text-align: center;
+}

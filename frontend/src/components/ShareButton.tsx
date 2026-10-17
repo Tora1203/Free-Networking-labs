@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createShare, deleteShare, listShares, shareUrl, type ShareInfo } from '../api/collabClient'
+import { createShare, deleteShare, listShares, shareUrl, type ShareInfo, type ShareRole } from '../api/collabClient'
 import './ShareButton.css'
 
 // ラボの「閲覧のみの共有リンク」を作る・取り消す（2026-10-16、docs/collab-design.md 段階2の試作）
@@ -8,6 +8,7 @@ export default function ShareButton({ labName }: { labName: string }) {
   const [shares, setShares] = useState<ShareInfo[]>([])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [role, setRole] = useState<ShareRole>('view')
   const boxRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
@@ -32,7 +33,7 @@ export default function ShareButton({ labName }: { labName: string }) {
   const create = async () => {
     setBusy(true)
     try {
-      await createShare(labName)
+      await createShare(labName, role)
       await refresh()
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '共有を作れませんでした')
@@ -60,17 +61,31 @@ export default function ShareButton({ labName }: { labName: string }) {
 
   return (
     <div className="share-button" ref={boxRef}>
-      <button onClick={() => setOpen((v) => !v)} title="このラボを、リンクを知っている人に見せます（閲覧のみ）">
+      <button onClick={() => setOpen((v) => !v)} title="このラボを、リンクを知っている人と共有します（閲覧のみ／編集も可）">
         共有
       </button>
       {open && (
         <div className="share-button__panel">
           <div className="share-button__note">
-            リンクを知っている人は、ログインすればこのラボを<strong>見られます</strong>（操作はできません）。誰が見たかはサーバーのログに残ります。
+            リンクを知っている人は、ログインすればこのラボを開けます。誰が見た・操作したかはサーバーのログに残ります。
             期限は最長8時間で、あなたのログインが切れると無効になります。
           </div>
+          <label className="share-button__role">
+            権限：
+            <select value={role} onChange={(e) => setRole(e.target.value as ShareRole)}>
+              <option value="view">閲覧のみ</option>
+              <option value="edit">編集も可</option>
+            </select>
+          </label>
+          {role === 'edit' && (
+            <div className="share-button__warn">
+              「編集も可」のリンクを開いた人は、あなたのノードで<strong>コマンドを実行でき</strong>、トポロジの変更・起動停止もできます。
+              信頼できる人にだけ渡してください（コンソールとキャプチャは使えません）。
+            </div>
+          )}
           {shares.map((s) => (
             <div key={s.id} className="share-button__row">
+              <span className="share-button__role-tag">{s.role === 'edit' ? '編集可' : '閲覧'}</span>
               <input readOnly value={shareUrl(s.id)} onFocus={(e) => e.currentTarget.select()} />
               <button onClick={() => copy(s.id)}>コピー</button>
               <button onClick={() => void revoke(s.id)} disabled={busy}>
