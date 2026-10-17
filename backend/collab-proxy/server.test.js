@@ -30,6 +30,21 @@ function startMockApi(labsByUser, revoked = new Set()) {
       res.writeHead(200).end(m[2] === 'yaml' ? `name: ${m[1]}${state.rev ? '#' + state.rev : ''}` : '{"title":"t"}')
       return
     }
+    // 編集の共有の中継先：持ち主のラボへの書き込み系は200で応じ、呼ばれたことを記録する（本文もcallsに入れる）
+    const w = /^\/api\/v1\/labs\/([^/]+)\/(apply|start|stop|restart|exec|nodes\/[^/]+\/(?:start|stop|restart)|topology\/(?:yaml|annotations))(\?.*)?$/.exec(req.url)
+    if ((req.method === 'POST' || req.method === 'PUT') && w && mine[w[1]]) {
+      let b = ''
+      req.on('data', (c) => (b += c))
+      req.on('end', () => {
+        calls.push(`body ${b}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
+      })
+      return
+    }
+    if (req.method === 'POST' && /^\/api\/v1\/tools\/netem\/(set|reset)$/.test(req.url)) {
+      res.writeHead(200).end('{"ok":true}')
+      return
+    }
     res.writeHead(404).end('{}')
   })
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, state, base: `http://127.0.0.1:${server.address().port}` })))
@@ -269,5 +284,93 @@ test('版の確認：軽く答え、?fresh=1は見張りの周期を待たずに
   } finally {
     s.close()
     t.close()
+  }
+})
+
+test('編集の共有：許可表のAPIだけを共有のラボに限って中継し、操作をログに残す（コマンドの中身は残さない）', async () => {
+  const t = await setup()
+  const alice = jwt('alice')
+  const bob = jwt('bob')
+  const view = (await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1' } })).json
+  assert.equal(view.role, 'view')
+  const bad = await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1', role: 'root' } })
+  assert.equal(bad.status, 400)
+  const edit = (await t.call('POST', '/shares', { token: alice, body: { labName: 'alice-lab1', role: 'edit' } })).json
+  assert.equal(edit.role, 'edit')
+  const c = (p) => `/s/${edit.id}/clab/${p}`
+
+  // 閲覧の共有では通らない
+  const denied = await t.call('PUT', `/s/${view.id}/clab/labs/alice-lab1/topology/yaml`, { token: bob, body: { a: 1 } })
+  assert.equal(denied.status, 403)
+  // ログインしていなければ通らない
+  assert.equal((await t.call('POST', c('labs/alice-lab1/apply'))).status, 401)
+
+  // 許可されるもの
+  assert.equal((await t.call('POST', c('labs/alice-lab1/apply'), { token: bob })).status, 200)
+  assert.equal((await t.call('POST', c('labs/alice-lab1/nodes/R1/restart'), { token: bob })).status, 200)
+  assert.equal((await t.call('POST', c('labs/alice-lab1/exec?nodeFilter=clab-alice-lab1-R1'), { token: bob, body: { command: 'SECRET-CMD' } })).status, 200)
+  assert.equal((await t.call('POST', c('tools/netem/set'), { token: bob, body: { containerName: 'clab-alice-lab1-R1', interface: 'eth1' } })).status, 200)
+  assert.ok(t.api.calls.includes('body {"command":"SECRET-CMD"}'))
+
+  // 許可されないもの：他のラボ、他のノード指定、ラボの作成・削除、コンソール、%エンコード、他のラボのコンテナのnetem
+  for (const [method, p, body] of [
+    ['POST', 'labs/alice-lab2/apply'],
+    ['POST', 'labs/alice-lab1/exec?nodeFilter=clab-alice-lab2-R1', { command: 'x' }],
+    ['POST', 'labs/alice-lab1/exec?nodeFilter=clab-alice-lab1-R1&x=1', { command: 'x' }],
+    ['POST', 'labs/alice-lab1/exec?nodeFilter=clab-alice-lab1-.*', { command: 'x' }],
+    ['POST', 'labs', { topologyContent: 'x' }],
+    ['DELETE', 'labs/alice-lab1'],
+    ['POST', 'labs/alice-lab1/nodes/clab-alice-lab1-R1/terminal-sessions', {}],
+    ['POST', 'labs/alice%2Dlab1/apply'],
+    ['POST', 'tools/netem/set', { containerName: 'clab-alice-lab2-R1', interface: 'eth1' }],
+    ['GET', 'health/metrics'],
+  ]) {
+    const r = await t.call(method, c(p), { token: bob, body })
+    assert.equal(r.status, 403, `${method} ${p}`)
+  }
+
+  // ログ：編集の操作は誰が何をしたかが残り、コマンドの中身・トークンは残らない
+  const logs = t.logs.join('\n')
+  assert.match(logs, /edit share=\S{6} lab=alice-lab1 owner=alice editor=bob op=exec node=R1/)
+  assert.doesNotMatch(logs, /SECRET-CMD/)
+  assert.doesNotMatch(logs, new RegExp(alice.split('.')[1]))
+  t.close()
+})
+
+test('編集の共有：/labsは共有のラボの分だけ返す。ovsはlabNameが共有のラボの時だけ通す', async () => {
+  const t = await setup()
+  const alice = jwt('alice')
+  const bob = jwt('bob')
+  const ovsCalls = []
+  const ovs = http.createServer((req, res) => {
+    let b = ''
+    req.on('data', (d) => (b += d))
+    req.on('end', () => {
+      ovsCalls.push(`${req.method} ${req.url} ${b}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
+    })
+  })
+  await new Promise((r) => ovs.listen(0, '127.0.0.1', r))
+  t.collab.close()
+  const collab = createCollabServer({ apiBase: t.api.base, ovsBase: `http://127.0.0.1:${ovs.address().port}`, log: () => {} })
+  await new Promise((r) => collab.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${collab.address().port}`
+  const call = (method, path, token, body) =>
+    fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, json: await r.json() }))
+  try {
+    const edit = (await call('POST', '/shares', alice, { labName: 'alice-lab1', role: 'edit' })).json
+    const labs = await call('GET', `/s/${edit.id}/clab/labs`, bob)
+    assert.deepEqual(Object.keys(labs.json), ['alice-lab1'])
+    assert.equal((await call('POST', `/s/${edit.id}/ovs/frr-config`, bob, { labName: 'alice-lab1', routerName: 'R1' })).status, 200)
+    assert.equal((await call('POST', `/s/${edit.id}/ovs/frr-config`, bob, { labName: 'alice-lab2', routerName: 'R1' })).status, 403)
+    assert.equal((await call('POST', `/s/${edit.id}/ovs/bridge`, bob, { labName: 'alice-lab1' })).status, 403)
+    assert.equal(ovsCalls.length, 1)
+    const v = await call('GET', `/s/${edit.id}/version`, bob)
+    assert.equal(v.status, 200)
+    assert.ok(v.json.version)
+  } finally {
+    collab.close()
+    ovs.close()
+    t.api.server.close()
   }
 })

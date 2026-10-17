@@ -19,9 +19,21 @@
 //   DELETE /shares/<id>                → 取り消し
 //   GET    /version/<labName>[?fresh=1] → {version}。今の版（保存の前後の確認用）
 //   GET    /watch/<labName>            → SSE。自分のラボのトポロジ（YAML・注釈）が変わったら通知（下の「変更の通知」）
+//   POST /shares の role は "view"（既定）か "edit"。editの共有は下の「編集の共有」の窓口が使える
 // ゲスト向け（自分のトークンが要る。idが合言葉）:
 //   GET    /s/<id>                     → {labName, owner, viewer, role, expiresAt, yaml, annotations, nodes}
 //   GET    /s/<id>/watch               → SSE。共有されたラボの変更の通知
+//   GET    /s/<id>/version[?fresh=1]   → {version}（持ち主の /version/<lab> と同じ）
+//   *      /s/<id>/clab/<API>          → editの共有だけ。許可表（allowClab）に合うclab-api-serverのAPIを持ち主のトークンで中継
+//   POST   /s/<id>/ovs/<frr-config|switch-config> → editの共有だけ。ovs-helperの2つの窓口（labNameは共有のラボに限る）
+//
+// 編集の共有（2026-10-17、段階3）: editの共有は、ゲストの操作を持ち主のトークンで代行する。
+// ゲストはコンテナの中でコマンドを実行できる（exec）ので、権限の重さは「持ち主のノードを触らせる」と同じ。
+// 内部ネットワークで、ログイン必須（ゲストは自分のアカウントでログイン済み）が前提（持ち主が了承した範囲）。歯止め:
+//   ・中継するのは許可表のAPIだけ。ラボ名は共有に固定（パスのラボ名が違えば拒否）。他のラボ・ラボの作成削除・
+//     コンソール・キャプチャは通さない。execのnodeFilterは「そのラボの1ノード」に限る
+//   ・既定はview。editは持ち主が共有を作る時に明示して選ぶ。取り消し・期限（8時間）は閲覧と同じ
+//   ・編集の操作は、誰が・どのラボの・どの操作かをログに残す（execのコマンドの中身は残さない）
 //
 // 変更の通知（2026-10-16）: 同じラボを別の画面で開いている時、変更を1秒ほどで反映するための仕組み。
 // ラボごとに1つの見張りが、WATCH_MS（既定1秒）ごとに上流のトポロジ（YAML＋注釈）を見て、変わったら
@@ -39,8 +51,52 @@ const SAFE_LAB = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 const SAFE_USER = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 const SHARE_ID = /^[A-Za-z0-9_-]{32}$/
 
+const SAFE_NODE = /^[A-Za-z0-9_-]+$/
+const ROLES = new Set(['view', 'edit'])
+const OVS_PATHS = new Set(['frr-config', 'switch-config'])
+const MAX_BODY_BYTES = 2 * 1024 * 1024
+
+// 編集の共有で中継してよいclab-api-serverのAPI。restは`/api/v1/`より後ろ。
+// 通れば {op, node?} を返す。ラボ名は共有のラボに固定する（違えばnull）
+export function allowClab(method, rest, searchParams, labName) {
+  const keys = [...searchParams.keys()]
+  const hasQuery = keys.length > 0
+  const nodeOf = (c) => {
+    const prefix = `clab-${labName}-`
+    const node = typeof c === 'string' && c.startsWith(prefix) ? c.slice(prefix.length) : ''
+    return SAFE_NODE.test(node) ? node : null
+  }
+  if (method === 'GET' && rest === 'labs' && !hasQuery) return { op: 'labs' }
+  if (rest === 'tools/netem/show' && method === 'GET') {
+    const node = nodeOf(searchParams.get('containerName'))
+    return keys.length === 1 && node ? { op: 'netem-show', node } : null
+  }
+  if ((rest === 'tools/netem/set' || rest === 'tools/netem/reset') && method === 'POST' && !hasQuery) {
+    return { op: rest.endsWith('set') ? 'netem-set' : 'netem-reset', checkNetemBody: true }
+  }
+  const m = /^labs\/([^/]+)\/(.+)$/.exec(rest)
+  if (!m || m[1] !== labName) return null
+  const sub = m[2]
+  if (/^topology\/(yaml|annotations)$/.test(sub) && !hasQuery) {
+    if (method === 'GET') return { op: 'read' }
+    if (method === 'PUT') return { op: 'write-topology' }
+    return null
+  }
+  if (method !== 'POST') return null
+  if (sub === 'apply' && !hasQuery) return { op: 'apply' }
+  if (/^(start|stop|restart)$/.test(sub) && !hasQuery) return { op: `lab-${sub}` }
+  const n = /^nodes\/([^/]+)\/(start|stop|restart)$/.exec(sub)
+  if (n && SAFE_NODE.test(n[1]) && !hasQuery) return { op: `node-${n[2]}`, node: n[1] }
+  if (sub === 'exec' && keys.length === 1) {
+    const node = nodeOf(searchParams.get('nodeFilter'))
+    if (node) return { op: 'exec', node }
+  }
+  return null
+}
+
 export function createCollabServer(options = {}) {
   const apiBase = options.apiBase ?? process.env.CLAB_API_BASE_URL ?? 'https://localhost:8090'
+  const ovsBase = options.ovsBase ?? process.env.OVS_HELPER_BASE_URL ?? 'http://127.0.0.1:8083'
   const ttlMs = (options.ttlHours ?? Number(process.env.SHARE_TTL_HOURS ?? 8)) * 3600 * 1000
   const maxPerUser = options.maxPerUser ?? Number(process.env.MAX_SHARES_PER_USER ?? 10)
   const log = options.log ?? ((line) => console.log(line))
@@ -76,6 +132,47 @@ export function createCollabServer(options = {}) {
       req.on('timeout', () => req.destroy(new Error('upstream timeout')))
       req.on('error', reject)
       req.end()
+    })
+  }
+
+  // 編集の共有の中継用：メソッド・ボディつきで上流に出す。結果はそのまま返す（ステータス・種類・本文）
+  function upstreamForward(base, method, path, token, body, timeout = 120000) {
+    return new Promise((resolve, reject) => {
+      const url = new URL(base + path)
+      const lib = url.protocol === 'http:' ? http : https
+      const headers = { Authorization: `Bearer ${token}` }
+      if (body && body.length > 0) {
+        headers['Content-Type'] = 'application/json'
+        headers['Content-Length'] = String(body.length)
+      }
+      const req = lib.request(url, { headers, rejectUnauthorized: false, method, timeout }, (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] ?? 'application/json'), body: Buffer.concat(chunks) }),
+        )
+      })
+      req.on('timeout', () => req.destroy(new Error('upstream timeout')))
+      req.on('error', reject)
+      req.end(body && body.length > 0 ? body : undefined)
+    })
+  }
+
+  function readBody(req, limit = MAX_BODY_BYTES) {
+    return new Promise((resolve, reject) => {
+      let size = 0
+      const chunks = []
+      req.on('data', (c) => {
+        size += c.length
+        if (size > limit) {
+          reject(new Error('too large'))
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
+      req.on('end', () => resolve(Buffer.concat(chunks)))
+      req.on('error', reject)
     })
   }
 
@@ -248,6 +345,86 @@ export function createCollabServer(options = {}) {
     req.on('close', leave)
   }
 
+  // 今の版を返す（見張りが持っていればそれ、?fresh=1や未取得なら上流を見る）。持ち主・ゲスト共通
+  async function respondVersion(res, url, key, labName, token) {
+    const w = watchers.get(key)
+    let version = w && w.version
+    if (!version || url.searchParams.get('fresh') === '1') {
+      const snap = await computeSnapshot(labName, token, true)
+      if (snap === null) return send(res, 404, { error: 'ラボが見つかりません' })
+      version = snap.version
+      if (w) publishVersion(w, snap) // 見ている人がいれば、すぐ通知する
+    }
+    return send(res, 200, { version })
+  }
+
+  // 編集の共有：許可表に合うAPIだけを、共有のラボに固定して持ち主のトークンで中継する。
+  // restは元のパス（%エンコードのまま）。%を含むパスは受け付けない（ラボ名・ノード名は英数字だけ）
+  async function relayClab(req, res, url, id, s, guest, rest, ip) {
+    if (s.role !== 'edit') return send(res, 403, { error: 'この共有は閲覧のみです' })
+    const rule = rest.includes('%') ? null : allowClab(req.method ?? '', rest, url.searchParams, s.labName)
+    if (!rule) return send(res, 403, { error: 'このAPIは共有では使えません' })
+    let body = Buffer.alloc(0)
+    if (req.method === 'POST' || req.method === 'PUT') {
+      try {
+        body = await readBody(req)
+      } catch {
+        return send(res, 413, { error: 'リクエストが大きすぎます' })
+      }
+    }
+    if (rule.checkNetemBody) {
+      let c = ''
+      try {
+        c = JSON.parse(body.toString('utf8')).containerName
+      } catch {
+        /* 下で弾く */
+      }
+      const prefix = `clab-${s.labName}-`
+      const node = typeof c === 'string' && c.startsWith(prefix) ? c.slice(prefix.length) : ''
+      if (!SAFE_NODE.test(node)) return send(res, 403, { error: 'このAPIは共有では使えません' })
+      rule.node = node
+    }
+    const r = await upstreamForward(apiBase, req.method ?? 'GET', `/api/v1/${rest}${url.search}`, s.token, body).catch(() => null)
+    if (!r) return send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
+    if (r.status === 401) {
+      shares.delete(id) // 持ち主のトークンが切れた
+      return send(res, 410, { error: '共有の期限が切れました（持ち主のログインが切れたため）' })
+    }
+    if (rule.op !== 'read' && rule.op !== 'labs' && rule.op !== 'netem-show') {
+      s.cache = null
+      log(`edit share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} editor=${guest.username} op=${rule.op}${rule.node ? ` node=${rule.node}` : ''} status=${r.status} ip=${ip}`)
+    }
+    let out = r.body
+    if (rule.op === 'labs') {
+      // 全ラボの一覧から、この共有のラボの分だけを返す
+      try {
+        const all = JSON.parse(r.body.toString('utf8'))
+        out = Buffer.from(JSON.stringify(Array.isArray(all[s.labName]) ? { [s.labName]: all[s.labName] } : {}))
+      } catch {
+        out = Buffer.from('{}')
+      }
+    }
+    res.writeHead(r.status, { 'Content-Type': r.type, 'Cache-Control': 'no-store' })
+    return res.end(out)
+  }
+
+  async function relayOvs(req, res, id, s, guest, name, ip) {
+    if (s.role !== 'edit') return send(res, 403, { error: 'この共有は閲覧のみです' })
+    if (req.method !== 'POST' || !OVS_PATHS.has(name)) return send(res, 403, { error: 'このAPIは共有では使えません' })
+    let body
+    try {
+      body = await readBody(req, 4096)
+      if (JSON.parse(body.toString('utf8') || '{}').labName !== s.labName) return send(res, 403, { error: '共有のラボ以外は使えません' })
+    } catch {
+      return send(res, 400, { error: 'リクエストが不正です' })
+    }
+    const r = await upstreamForward(ovsBase, 'POST', `/${name}`, s.token, body, 30000).catch(() => null)
+    if (!r) return send(res, 502, { error: 'サーバーに問い合わせられませんでした' })
+    log(`edit share=${id.slice(0, 6)} lab=${s.labName} owner=${s.owner} editor=${guest.username} op=${name} status=${r.status} ip=${ip}`)
+    res.writeHead(r.status, { 'Content-Type': r.type, 'Cache-Control': 'no-store' })
+    return res.end(r.body)
+  }
+
   async function handle(req, res) {
     sweep()
     const url = new URL(req.url ?? '/', 'http://x')
@@ -263,6 +440,23 @@ export function createCollabServer(options = {}) {
       const s = SHARE_ID.test(id) ? shares.get(id) : undefined
       if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
       return subscribe(req, res, `${s.owner}:${s.labName}`, s.labName, s.token, () => shares.has(id) && s.expiresAt > now())
+    }
+    m = /^\/s\/([^/]+)\/version$/.exec(path)
+    if (m && req.method === 'GET') {
+      const guest = await authGuest(req)
+      if (!guest) return send(res, 401, { error: 'ログインが必要です' })
+      const s = SHARE_ID.test(m[1]) ? shares.get(m[1]) : undefined
+      if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
+      return respondVersion(res, url, `${s.owner}:${s.labName}`, s.labName, s.token)
+    }
+    m = /^\/s\/([^/]+)\/(clab|ovs)\/(.+)$/.exec((req.url ?? '').split('?')[0])
+    if (m) {
+      const guest = await authGuest(req)
+      if (!guest) return send(res, 401, { error: 'ログインが必要です' })
+      const id = m[1]
+      const s = SHARE_ID.test(id) ? shares.get(id) : undefined
+      if (!s) return send(res, 404, { error: '共有が見つからないか、期限が切れています' })
+      return m[2] === 'clab' ? relayClab(req, res, url, id, s, guest, m[3], ip) : relayOvs(req, res, id, s, guest, m[3], ip)
     }
     m = /^\/s\/([^/]+)$/.exec(path)
     if (m && req.method === 'GET') {
@@ -318,15 +512,7 @@ export function createCollabServer(options = {}) {
       const me = await authOwner(req)
       if (!me) return send(res, 401, { error: 'ログインが必要です' })
       if (!SAFE_LAB.test(m[1])) return send(res, 400, { error: 'ラボ名が不正です' })
-      const w = watchers.get(`${me.username}:${m[1]}`)
-      let version = w && w.version
-      if (!version || url.searchParams.get('fresh') === '1') {
-        const snap = await computeSnapshot(m[1], me.token, true)
-        if (snap === null) return send(res, 404, { error: 'ラボが見つかりません' })
-        version = snap.version
-        if (w) publishVersion(w, snap) // 見ている人がいれば、すぐ通知する
-      }
-      return send(res, 200, { version })
+      return respondVersion(res, url, `${me.username}:${m[1]}`, m[1], me.token)
     }
 
     // ---- 持ち主 ----
@@ -343,6 +529,8 @@ export function createCollabServer(options = {}) {
         }
         const labName = typeof body.labName === 'string' ? body.labName : ''
         if (!SAFE_LAB.test(labName)) return send(res, 400, { error: 'ラボ名が不正です' })
+        const role = body.role === undefined ? 'view' : body.role
+        if (typeof role !== 'string' || !ROLES.has(role)) return send(res, 400, { error: 'roleはviewかeditです' })
         // そのラボの持ち主か（持ち主のトークンで問い合わせて200ならそう）
         const own = await upstreamGet(`/api/v1/labs/${encodeURIComponent(labName)}/topology/yaml`, owner.token).catch(() => null)
         if (!own || own.status !== 200) return send(res, 403, { error: '自分のラボだけ共有できます' })
@@ -353,12 +541,12 @@ export function createCollabServer(options = {}) {
           labName,
           owner: owner.username,
           token: owner.token,
-          role: 'view',
+          role,
           createdAt: now(),
           expiresAt: Math.min(now() + ttlMs, owner.expMs),
         }
         shares.set(id, s)
-        log(`create share=${id.slice(0, 6)} lab=${labName} owner=${owner.username}`)
+        log(`create share=${id.slice(0, 6)} lab=${labName} owner=${owner.username} role=${role}`)
         return send(res, 201, publicShare(id, s))
       }
       if (path === '/shares' && req.method === 'GET') {
