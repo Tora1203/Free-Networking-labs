@@ -37,6 +37,7 @@ import {
   buildReadConfigCommand,
   buildSnapshotFiles,
   buildWriteConfigCommand,
+  decodeConfigOutput,
   isSnapshotLabName,
   parseSnapshotLabName,
   readSnapshotMeta,
@@ -387,7 +388,7 @@ export async function readNodeConfigs(
     targets.map(async ({ name, kind }) => {
       const result = await execInLab(labName, name, buildReadConfigCommand(kind))
       assertExecOk(result, '設定を読めませんでした')
-      const stdout = Object.values(result).flat()[0]?.stdout ?? ''
+      const stdout = decodeConfigOutput(Object.values(result).flat()[0]?.stdout ?? '')
       // ルーターのfrr.confが空なのは異常（write memoryが走っていない）。スイッチの空は初期状態
       if (kind === 'router' && stdout.trim() === '') throw new Error('設定が空でした')
       return stdout

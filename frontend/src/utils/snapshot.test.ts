@@ -5,6 +5,7 @@ import {
   buildReadConfigCommand,
   buildSnapshotFiles,
   buildWriteConfigCommand,
+  decodeConfigOutput,
   isSnapshotLabName,
   parseSnapshotLabName,
   readSnapshotMeta,
@@ -30,12 +31,19 @@ describe('スナップショットのラボ名', () => {
 
 describe('設定の読み書きのコマンド', () => {
   it('ルーターは write memory が失敗したら cat しない', () => {
-    expect(buildReadConfigCommand('router')).toContain('vtysh -c "write memory" >/dev/null && cat /etc/frr/frr.conf')
+    expect(buildReadConfigCommand('router')).toContain('vtysh -c "write memory" >/dev/null && cat /etc/frr/frr.conf | base64')
   })
   it('スイッチは running-config を startup-config に写してから読む', () => {
     const c = buildReadConfigCommand('l2-switch')
     expect(c).toContain('cp $f /etc/fnl-switch/startup.json')
     expect(c).toContain('cat /etc/fnl-switch/startup.json')
+  })
+  it('読み取りの出力はbase64を戻す（日本語・JSONも壊さない）', () => {
+    const text = '{"hostname":"SW1","note":"説明"}\n'
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(text)))
+    expect(decodeConfigOutput(b64 + '\n')).toBe(text)
+    expect(decodeConfigOutput('')).toBe('')
+    expect(() => decodeConfigOutput({ hostname: 'SW1' })).toThrow()
   })
   it('書き込みはbase64で渡し、日本語も壊さない', () => {
     const text = 'hostname R1\n! 説明\n'

@@ -67,9 +67,17 @@ const NODE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 // 一度も設定していないスイッチは空の設定（＝初期状態）として扱う
 export function buildReadConfigCommand(kind: ConfigNodeKind): string {
   if (kind === 'router') {
-    return `sh -c 'vtysh -c "write memory" >/dev/null && cat /etc/frr/frr.conf'`
+    return `sh -c 'vtysh -c "write memory" >/dev/null && cat /etc/frr/frr.conf | base64 | tr -d "\\n"'`
   }
-  return `sh -c 'f=/run/fnl-switch/running.json; if [ -f $f ]; then cp $f /etc/fnl-switch/startup.json; fi; cat /etc/fnl-switch/startup.json 2>/dev/null; true'`
+  return `sh -c 'f=/run/fnl-switch/running.json; if [ -f $f ]; then cp $f /etc/fnl-switch/startup.json; fi; cat /etc/fnl-switch/startup.json 2>/dev/null | base64 | tr -d "\\n"; true'`
+}
+
+// 読み取りの出力（base64）を元の文字列に戻す。標準出力をそのまま返すと、スイッチの設定（JSON）を
+// containerlabがJSONとして解釈して文字列でなくなる（2026-10-18、スイッチだけ取れなかった）ため、base64で受け取る
+export function decodeConfigOutput(stdout: unknown): string {
+  if (typeof stdout !== 'string') throw new Error('出力を読めませんでした')
+  const binary = atob(stdout.trim())
+  return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))
 }
 
 function toBase64(text: string): string {
