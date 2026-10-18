@@ -1,0 +1,96 @@
+/* スナップショットのダイアログ（2026-10-18）。枠・ボタンはTopologyEditor.cssのモーダルを使う */
+.topology-editor__modal.snapshot-dialog {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.snapshot-dialog__lead {
+  margin: -6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.snapshot-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snapshot-dialog__form input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.snapshot-dialog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snapshot-dialog__empty {
+  margin: 8px 0;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+.snapshot-dialog__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.snapshot-dialog__item-main {
+  min-width: 0;
+}
+
+.snapshot-dialog__item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.snapshot-dialog__tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 400;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+}
+
+.snapshot-dialog__item-meta,
+.snapshot-dialog__item-note {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.snapshot-dialog__item-note {
+  color: var(--ink-soft);
+}
+
+.snapshot-dialog__skipped {
+  margin-left: 4px;
+}
+
+.snapshot-dialog__item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}

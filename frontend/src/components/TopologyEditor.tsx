@@ -40,11 +40,15 @@ import {
 import { describeHistoryChange } from '../utils/historyDiff'
 import { conditionSummary, normalizeCondition, type LinkCondition } from '../utils/linkCondition'
 import LinkConditionDialog from './LinkConditionDialog'
+import SnapshotDialog from './SnapshotDialog'
 import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
 import {
   applyLinkConditions,
+  createLabSnapshot,
   errorMessage,
   listLabNames,
+  loadLabSnapshot,
+  restoreNodeConfigs,
   freshNodesOf,
   newLinkRuntimeState,
   prepareNodeConfigs,
@@ -53,6 +57,7 @@ import {
   startLabNode,
   stopLabNode,
   wipeLabNode,
+  type SnapshotEntry,
 } from '../utils/labRuntime'
 import {
   ApiError,
@@ -273,6 +278,8 @@ function TopologyEditorInner() {
   pendingConnectionRef.current = pendingConnection
   // リンクの品質ダイアログを開いている接続（2026-10-14追加）
   const [conditionEdgeId, setConditionEdgeId] = useState<string | null>(null)
+  // スナップショットのダイアログ（2026-10-18）
+  const [snapshotOpen, setSnapshotOpen] = useState(false)
   const conditionEdgeIdRef = useRef<string | null>(null)
   conditionEdgeIdRef.current = conditionEdgeId
   const [pendingSourceIface, setPendingSourceIface] = useState('')
@@ -861,6 +868,121 @@ function TopologyEditorInner() {
       })
     },
     [enqueue, refreshRunState],
+  )
+
+  // ---------------------------------------------------------------------------
+  // スナップショット（2026-10-18、utils/snapshot.ts・docs/snapshot-design.md）
+  // 取る：編集内容を保存してから、トポロジと、動いているルーター・スイッチの設定（write memory相当）を保存する。
+  // 戻す：戻す前の状態を自動で残し、トポロジを入れ替えて（動いていれば差分反映）、保存した設定を書き戻して
+  // そのノードを再起動する（実機の電源を入れ直すのと同じ。MACテーブルやOSPFの隣接は作り直される）
+  // ---------------------------------------------------------------------------
+  const onSnapshotTake = useCallback(
+    (title: string, note: string) =>
+      new Promise<void>((resolve, reject) => {
+        void enqueue(async () => {
+          try {
+            await syncOnce() // 編集直後でも最新の内容を写す
+            const name = savedNameRef.current
+            if (!name) throw new Error('ノードを置いてラボが保存されてから使えます')
+            const { nodes, edges } = latestRef.current
+            setSyncStatus({ kind: 'busy', message: 'スナップショットを保存中...' })
+            const entry = await createLabSnapshot(name, buildTopologyContent(nodes, edges, name), { title, note })
+            const skipped = entry.meta.skipped.length
+            setSyncStatus({
+              kind: 'ok',
+              message: `スナップショットを保存しました${skipped > 0 ? `（停止中などで設定を取れなかったノード: ${entry.meta.skipped.join(', ')}）` : ''}`,
+            })
+            resolve()
+          } catch (e) {
+            setSyncStatus({ kind: 'error', message: errorMessage(e, 'スナップショットを保存できませんでした') })
+            reject(e)
+          }
+        })
+      }),
+    [enqueue, syncOnce],
+  )
+
+  const onSnapshotRestore = useCallback(
+    (entry: SnapshotEntry) => {
+      const hasConfigs = Object.keys(entry.meta.configs).length > 0
+      const lines = [
+        `スナップショット「${entry.meta.title}」の状態に戻します。`,
+        '・今のトポロジを置き換えます（動いているラボには差分が反映されます）',
+        ...(hasConfigs ? ['・ルーター・スイッチの設定を書き戻し、そのノードを再起動します（ラボが止まっていれば起動します）'] : []),
+        '・戻す前の状態は、自動のスナップショットとして残します',
+        '',
+        'よろしいですか？',
+      ]
+      if (!window.confirm(lines.join('\n'))) return
+      setSnapshotOpen(false)
+      void enqueue(async () => {
+        const name = savedNameRef.current
+        if (!name) return
+        setLabBusy(true)
+        setBusyNodes('all')
+        try {
+          await syncOnce()
+          setSyncStatus({ kind: 'busy', message: '戻す前の状態を保存中...' })
+          const before = latestRef.current
+          await createLabSnapshot(name, buildTopologyContent(before.nodes, before.edges, name), {
+            title: `「${entry.meta.title}」に戻す前`,
+            note: '',
+            auto: true,
+          })
+
+          setSyncStatus({ kind: 'busy', message: 'トポロジを戻しています...' })
+          const snap = await loadLabSnapshot(entry)
+          const parsed = parseImportedTopology(snap.yaml, snap.annotations)
+          latestRef.current = { nodes: parsed.nodes, edges: parsed.edges, labName: before.labName }
+          counters.current = parsed.counters
+          setNodes(parsed.nodes)
+          setEdges(parsed.edges)
+          await syncOnce() // 保存と、動いているラボへの差分反映
+
+          const failures: string[] = []
+          let restoredCount = 0
+          if (hasConfigs) {
+            if (runStateRef.current.kind !== 'running') {
+              setSyncStatus({ kind: 'busy', message: 'ラボを起動しています...' })
+              failures.push(...(await startWholeLab(name, runStateRef.current.kind === 'stopped')))
+            }
+            setSyncStatus({ kind: 'busy', message: '設定を書き戻して再起動しています...' })
+            await refreshRunState(name)
+            const running = runningNodesOf(runStateRef.current.nodeStates)
+            const result = await restoreNodeConfigs(name, entry.meta.configs, running)
+            failures.push(...result.failures)
+            restoredCount = result.restored.length
+            // 再起動したノードと隣のノードは中の設定（アドレス・ケーブル・リンクの品質）が消えているので流し直す
+            const { nodes, edges } = latestRef.current
+            const built = buildTopologyContent(nodes, edges, name)
+            const affected = new Set(result.restored)
+            for (const id of result.restored) for (const neighbor of built.neighbors.get(id) ?? []) affected.add(neighbor)
+            for (const id of affected) lastSynced.current.delete(id)
+            await refreshRunState(name)
+            const nowRunning = runningNodesOf(runStateRef.current.nodeStates)
+            const commands = buildNodeSyncCommands(built)
+            const synced = await runNodeSyncs(name, commands, [...affected].filter((id) => nowRunning.has(id)))
+            for (const [id, command] of synced.succeeded) lastSynced.current.set(id, command)
+            failures.push(...synced.failures)
+            failures.push(...(await applyLinkConditions(name, built, nowRunning, affected, linkStateRef.current)))
+            const notRestored = Object.keys(entry.meta.configs).filter((id) => !running.has(id))
+            if (notRestored.length > 0) failures.push(`停止中のため設定を戻せなかったノード: ${notRestored.join(', ')}`)
+          }
+          setSyncStatus(
+            failures.length > 0
+              ? { kind: 'error', message: `「${entry.meta.title}」に戻しました（一部できなかったこと: ${failures.join(' / ')}）` }
+              : { kind: 'ok', message: `「${entry.meta.title}」に戻しました${restoredCount > 0 ? `（${restoredCount}台の設定を戻して再起動）` : ''}` },
+          )
+        } catch (e) {
+          await refreshRunState(name).catch(() => undefined)
+          setSyncStatus({ kind: 'error', message: errorMessage(e, 'スナップショットに戻せませんでした') })
+        } finally {
+          setLabBusy(false)
+          setBusyNodes([])
+        }
+      })
+    },
+    [enqueue, syncOnce, startWholeLab, refreshRunState],
   )
 
   // キャンバスのノードに出す起動状態（2026-10-14、「on/offが見た目で分からない」指摘対応）
@@ -1675,6 +1797,11 @@ function TopologyEditorInner() {
             {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
           </button>
           {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
+          {savedLabName && !getShareRoute() && (
+            <button onClick={() => setSnapshotOpen(true)} disabled={labBusy} title="今の状態を保存したり、保存した状態に戻したりします">
+              スナップショット
+            </button>
+          )}
           {savedLabName && !getShareRoute() && <ShareButton labName={savedLabName} />}
           <div className="topology-editor__toolbar-spacer" />
           <button
@@ -1786,6 +1913,15 @@ function TopologyEditorInner() {
             </div>
           )}
 
+          {snapshotOpen && savedLabName && (
+            <SnapshotDialog
+              labName={savedLabName}
+              running={runState.kind === 'running'}
+              onTake={onSnapshotTake}
+              onRestore={onSnapshotRestore}
+              onClose={() => setSnapshotOpen(false)}
+            />
+          )}
           {conditionEdge && (
             <LinkConditionDialog
               linkName={`${nodeLabel(conditionEdge.source)} ${edgeData(conditionEdge.id)?.sourceIface ?? ''} ⇔ ${nodeLabel(
