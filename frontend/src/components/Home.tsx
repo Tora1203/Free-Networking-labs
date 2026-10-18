@@ -14,7 +14,8 @@ import {
 } from '../api/client'
 import { getLabDisplayName } from '../utils/labName'
 import { readLabTitle } from '../utils/annotations'
-import { startSavedLab } from '../utils/labRuntime'
+import { deleteSnapshotsOf, startSavedLab } from '../utils/labRuntime'
+import { isSnapshotLabName } from '../utils/snapshot'
 import { useAuthStore } from '../store/authStore'
 import { useUiStore } from '../store/uiStore'
 import './Home.css'
@@ -38,7 +39,8 @@ function toLabs(files: TopologyFileEntry[], raw: RawLabsResponse, username: stri
   for (const [labName, nodes] of Object.entries(raw)) {
     if (nodes[0]?.owner === username) names.add(labName)
   }
-  return [...names].sort().reverse().map((labName) => {
+  // スナップショット（`<ラボ>-snap-<日時>`、utils/snapshot.ts）は起動しない保存用のラボなので一覧に出さない
+  return [...names].filter((n) => !isSnapshotLabName(n)).sort().reverse().map((labName) => {
     const nodes = raw[labName] ?? []
     const file = files.find((f) => f.labName === labName)
     return {
@@ -135,7 +137,7 @@ export default function Home() {
       const labName = lab.name
       if (
         action === 'destroy' &&
-        !window.confirm(`ラボ「${lab.title ?? getLabDisplayName(labName)}」を削除します。保存したトポロジやルーターの設定も消え、元に戻せません。よろしいですか？`)
+        !window.confirm(`ラボ「${lab.title ?? getLabDisplayName(labName)}」を削除します。保存したトポロジやルーターの設定、スナップショットも消え、元に戻せません。よろしいですか？`)
       )
         return
       if (action === 'stop' && !window.confirm('ラボを停止します。write memoryしていないルーターの設定は消えます。よろしいですか？')) return
@@ -154,6 +156,8 @@ export default function Home() {
           if (lab.annotationsFileName) await deleteLabFile(labName, lab.annotationsFileName).catch(() => undefined)
           await deleteLabFile(labName, lab.yamlFileName ?? `${labName}.clab.yml`)
         }
+        // このラボのスナップショットもまとめて消す（残すと、ホームに出ないまま容量だけ使い続ける）
+        if (action === 'destroy') await deleteSnapshotsOf(labName, await getLabTopologyFiles()).catch(() => undefined)
       } catch (e) {
         const message = e instanceof ApiError || e instanceof Error ? e.message : `${action}に失敗しました`
         setActionError((prev) => ({ ...prev, [labName]: message }))

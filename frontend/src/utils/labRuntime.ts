@@ -8,6 +8,7 @@
 import {
   ApiError,
   applyLab,
+  deleteLabFile,
   destroyLab,
   execInLab,
   getLabAnnotations,
@@ -17,6 +18,7 @@ import {
   putLabAnnotations,
   putLabTopologyYaml,
   resetNetem,
+  restartNode,
   setNetem,
   showNetem,
   startNode,
@@ -30,6 +32,19 @@ import type { PaletteNodeKind } from '../types/lab'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, buildWipeCommand, parseImportedTopology, topologyToYaml } from './labTopology'
 import { netemKey, netemKeyFromShow } from './linkCondition'
 import { getLabDisplayName, labTitleKey } from './labName'
+import {
+  SNAPSHOT_LIMIT,
+  buildReadConfigCommand,
+  buildSnapshotFiles,
+  buildWriteConfigCommand,
+  isSnapshotLabName,
+  parseSnapshotLabName,
+  readSnapshotMeta,
+  snapshotLabName,
+  stripSnapshotMeta,
+  type NodeConfig,
+  type SnapshotMeta,
+} from './snapshot'
 
 type BuiltTopology = ReturnType<typeof buildTopologyContent>
 
@@ -269,7 +284,8 @@ export async function listLabNames(): Promise<{ ids: Set<string>; titles: Map<st
       return [f.labName, title ?? getLabDisplayName(f.labName)] as const
     }),
   )
-  for (const [id, title] of read) titles.set(labTitleKey(title), id)
+  // スナップショットのラボは元のラボの表示名を引き継ぐので、表示名の重なりの判定には入れない
+  for (const [id, title] of read) if (!isSnapshotLabName(id)) titles.set(labTitleKey(title), id)
   return { ids, titles }
 }
 
@@ -315,4 +331,132 @@ export async function wipeLabNode(
     await putLabTopologyYaml(labName, topologyToYaml(full))
   }
   return applyLab(labName)
+}
+
+// ---------------------------------------------------------------------------
+// スナップショット（2026-10-18、utils/snapshot.ts・docs/snapshot-design.md）
+// ---------------------------------------------------------------------------
+
+export interface SnapshotEntry {
+  // スナップショットのラボ名（`<ラボ>-snap-<日時>`）
+  labName: string
+  yamlFileName: string
+  annotationsFileName: string
+  meta: SnapshotMeta
+}
+
+// 元のラボのスナップショットを新しい順に返す。読めないもの（途中で失敗して壊れた等）は含めない
+export async function listLabSnapshots(parentLab: string): Promise<SnapshotEntry[]> {
+  const files = await getLabTopologyFiles()
+  const mine = files.filter((f) => f.hasAnnotations && parseSnapshotLabName(f.labName)?.parent === parentLab)
+  const entries = await Promise.all(
+    mine.map(async (f): Promise<SnapshotEntry | null> => {
+      const meta = readSnapshotMeta(await getLabAnnotations(f.labName).catch(() => null))
+      return meta ? { labName: f.labName, yamlFileName: f.yamlFileName, annotationsFileName: f.annotationsFileName, meta } : null
+    }),
+  )
+  return entries.filter((e): e is SnapshotEntry => e !== null).sort((a, b) => b.meta.createdAt.localeCompare(a.meta.createdAt))
+}
+
+export async function deleteLabSnapshot(entry: Pick<SnapshotEntry, 'labName' | 'yamlFileName' | 'annotationsFileName'>): Promise<void> {
+  if (entry.annotationsFileName) await deleteLabFile(entry.labName, entry.annotationsFileName).catch(() => undefined)
+  await deleteLabFile(entry.labName, entry.yamlFileName)
+}
+
+// 元のラボを消す時に、そのスナップショットもまとめて消す（保存済みラボの一覧から探す。中身は読まない）
+export async function deleteSnapshotsOf(parentLab: string, files: { labName: string; yamlFileName: string; annotationsFileName: string; hasAnnotations: boolean }[]) {
+  const mine = files.filter((f) => parseSnapshotLabName(f.labName)?.parent === parentLab)
+  await Promise.all(
+    mine.map((f) => deleteLabSnapshot({ labName: f.labName, yamlFileName: f.yamlFileName, annotationsFileName: f.hasAnnotations ? f.annotationsFileName : '' })),
+  )
+}
+
+// 動いているルーター・スイッチに write memory 相当を代行させ、保存された設定の全文を集める。
+// 取れなかったノード（停止中など）はskippedに入れる。PCには保存する設定が無い
+export async function readNodeConfigs(
+  labName: string,
+  built: Pick<BuiltTopology, 'routerClabNames' | 'switchClabNames'>,
+): Promise<{ configs: Record<string, NodeConfig>; skipped: string[] }> {
+  const targets = [
+    ...built.routerClabNames.map((name) => ({ name, kind: 'router' as const })),
+    ...built.switchClabNames.map((name) => ({ name, kind: 'l2-switch' as const })),
+  ]
+  const configs: Record<string, NodeConfig> = {}
+  const skipped: string[] = []
+  const results = await Promise.allSettled(
+    targets.map(async ({ name, kind }) => {
+      const result = await execInLab(labName, name, buildReadConfigCommand(kind))
+      assertExecOk(result, '設定を読めませんでした')
+      const stdout = Object.values(result).flat()[0]?.stdout ?? ''
+      // ルーターのfrr.confが空なのは異常（write memoryが走っていない）。スイッチの空は初期状態
+      if (kind === 'router' && stdout.trim() === '') throw new Error('設定が空でした')
+      return stdout
+    }),
+  )
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') configs[targets[i].name] = { kind: targets[i].kind, text: r.value }
+    else skipped.push(targets[i].name)
+  })
+  return { configs, skipped }
+}
+
+// 今の状態のスナップショットを取る。呼び出し側は、取る前に編集内容の保存を済ませておく（保存済みのYAMLを写すため）。
+// 上限に達していたら、autoなら自動で取った古いものを1つ消して入れ、そうでなければ断る
+export async function createLabSnapshot(
+  labName: string,
+  built: Pick<BuiltTopology, 'routerClabNames' | 'switchClabNames'>,
+  input: { title: string; note: string; auto?: boolean },
+): Promise<SnapshotEntry> {
+  const existing = await listLabSnapshots(labName)
+  if (existing.length >= SNAPSHOT_LIMIT) {
+    const oldestAuto = input.auto ? [...existing].reverse().find((e) => e.meta.auto) : undefined
+    if (!oldestAuto) {
+      throw new Error(`スナップショットは1つのラボに${SNAPSHOT_LIMIT}個までです。不要なものを削除してください`)
+    }
+    await deleteLabSnapshot(oldestAuto)
+  }
+  const [yamlText, annotationsText] = await Promise.all([getLabTopologyYaml(labName), getLabAnnotations(labName).catch(() => null)])
+  const { configs, skipped } = await readNodeConfigs(labName, built)
+  const name = snapshotLabName(labName)
+  const files = buildSnapshotFiles(name, yamlText, annotationsText, { ...input, configs, skipped })
+  await putLabTopologyYaml(name, files.yaml)
+  try {
+    await putLabAnnotations(name, files.annotations)
+  } catch (e) {
+    // 設定を持たない半端なスナップショットを残さない
+    await deleteLabFile(name, `${name}.clab.yml`).catch(() => undefined)
+    throw e
+  }
+  return { labName: name, yamlFileName: `${name}.clab.yml`, annotationsFileName: `${name}.clab.yml.annotations.json`, meta: files.meta }
+}
+
+// スナップショットのYAMLとannotations（snapshotキーを除く）を読む
+export async function loadLabSnapshot(entry: SnapshotEntry): Promise<{ yaml: string; annotations: string }> {
+  const [yaml, annotations] = await Promise.all([getLabTopologyYaml(entry.labName), getLabAnnotations(entry.labName)])
+  return { yaml, annotations: stripSnapshotMeta(annotations) }
+}
+
+// 動いているノードに、スナップショットの設定を書き戻して再起動する（実機の電源を入れ直すのと同じ。
+// ルーターはfrr.conf、スイッチはstartup.json→running.jsonを起動時に読む）。
+// 設定を取れなかったノード（meta.configsに無いもの）には触らない。戻したノードのclabNameを返す
+export async function restoreNodeConfigs(
+  labName: string,
+  configs: Record<string, NodeConfig>,
+  running: Set<string>,
+): Promise<{ restored: string[]; failures: string[] }> {
+  const targets = Object.entries(configs).filter(([name]) => running.has(name))
+  const restored: string[] = []
+  const failures: string[] = []
+  await Promise.all(
+    targets.map(async ([name, config]) => {
+      try {
+        assertExecOk(await execInLab(labName, name, buildWriteConfigCommand(config.kind, config.text)), '設定を書き戻せませんでした')
+        await restartNode(labName, name)
+        restored.push(name)
+      } catch (e) {
+        failures.push(`${name}: ${errorMessage(e, '設定を戻せませんでした')}`)
+      }
+    }),
+  )
+  return { restored, failures }
 }
