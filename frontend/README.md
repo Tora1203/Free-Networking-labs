@@ -11,6 +11,11 @@ npm run dev
 
 デフォルトでは `http://localhost:5173` で起動する（Vite標準ポート）。
 
+## モックモード（サーバー不要）
+
+`npm run dev:mock` で、APIの代わりにブラウザ内の偽のサーバー（`src/mocks/mockServer.ts`）が答える。どのユーザー名・パスワードでも
+ログインでき、デモのラボ2つで画面を触れる。UI/UXの確認用（詳しくは`docs/ui-ux-handoff.md`）。
+
 ## 現状
 
 - clab-api-server 未接続のため、`src/mocks/labs.ts` のダミーデータで動作確認している
