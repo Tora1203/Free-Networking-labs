@@ -31,13 +31,8 @@
 .lab-list__new-button {
   flex: none;
   padding: 9px 16px;
-  border: none;
   border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-ink);
   font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .lab-grid {
@@ -161,24 +156,9 @@
 
 .lab-card__actions button {
   flex: 1;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--ink);
+  min-height: 28px;
+  padding: 4px 8px;
   font-size: 12px;
-  cursor: pointer;
-}
-
-.lab-card__actions button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.lab-card__actions button.lab-card__actions-destroy {
-  border-color: var(--warn);
-  color: var(--warn);
-  background: transparent;
 }
 
 .lab-card__edit {

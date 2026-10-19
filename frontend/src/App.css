@@ -71,7 +71,7 @@
 .app-nav__share {
   margin-left: 12px;
   padding: 2px 8px;
-  border: 1px solid #d9a441;
+  border: 1px solid var(--warn-border);
   border-radius: 10px;
   font-size: 12px;
 }

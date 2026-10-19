@@ -177,7 +177,7 @@ export default function Home() {
             <h1>ホーム</h1>
             <p className="lab-list__hint">自分のラボ（編集内容は自動保存されます）</p>
           </div>
-          <button className="lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
+          <button className="btn-primary lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
             ＋ 新規ラボを作成
           </button>
         </div>
@@ -207,17 +207,17 @@ export default function Home() {
               </div>
               {actionError[lab.name] && <p className="lab-card__error">{actionError[lab.name]}</p>}
               <div className="lab-card__actions">
-                <button onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
+                <button className="btn-primary" onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
                   {labBusy === 'start' ? '起動中...' : '▶ 起動'}
                 </button>
                 <button onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
                   {labBusy === 'stop' ? '停止中...' : '■ 停止'}
                 </button>
-                <button className="lab-card__actions-destroy" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>
+                <button className="btn-danger" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>
                   {labBusy === 'destroy' ? '削除中...' : '削除'}
                 </button>
               </div>
-              <button className="lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
+              <button className="btn-ghost lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
                 ✎ エディタで開く
               </button>
             </div>

@@ -76,7 +76,7 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
         <div className="snapshot-dialog__form">
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`名前（例：${defaultTitle()}）`} maxLength={60} disabled={working} />
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="メモ（任意）" maxLength={200} disabled={working} />
-          <button onClick={take} disabled={working || full}>
+          <button className="btn-primary" onClick={take} disabled={working || full}>
             {working ? '処理中...' : '今の状態を保存'}
           </button>
         </div>
@@ -107,7 +107,7 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
                   <button onClick={() => onRestore(entry)} disabled={working} title="この状態に戻します（戻す前の状態は自動で残します）">
                     戻す
                   </button>
-                  <button onClick={() => remove(entry)} disabled={working}>
+                  <button className="btn-danger" onClick={() => remove(entry)} disabled={working}>
                     削除
                   </button>
                 </div>

@@ -1,0 +1,99 @@
+/* ボタンの共通スタイル（種類：通常・主要・危険・ゴースト・アイコン。状態：hover・押下中・focus・disabled）。
+   色はすべてtheme.cssのトークン経由なので、ダークモードにもそのまま追従する。
+
+   使い方
+   - 何も付けない：通常（灰色の面）
+   - .btn-primary：主要（その画面でいちばん大事な操作。1画面に1〜2個まで）
+   - .btn-danger：危険（停止・削除・上書きなど、元に戻せない／影響が大きい操作）
+   - .btn-ghost：枠なし（戻る・補助的な操作）
+   - .btn-icon：正方形のアイコンボタン（↶ ↷ など。titleで意味を伝える）
+   個別のCSS（ホームのカード等）が上書きしたい時は大きさ・余白だけにして、色は--btn-*変数で変える。
+
+   基本の規則は:where()で詳細度0にしてあるので、個別のCSSの規則（コンソールのタブ、メニュー等）が
+   そのまま優先される。React Flowのコントロールのボタンには適用しない。 */
+
+:where(button:not([class*='react-flow'])) {
+  --btn-bg: var(--surface-2);
+  --btn-bg-hover: color-mix(in srgb, var(--ink) 9%, var(--surface-2));
+  --btn-bg-active: color-mix(in srgb, var(--ink) 16%, var(--surface-2));
+  --btn-fg: var(--ink);
+  --btn-border: var(--border);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 12px;
+  border: 1px solid var(--btn-border);
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+/* hover・押下中は色の変数だけを差し替える（個別のCSSが背景を直接決めているボタンは影響を受けない） */
+:where(button:not([class*='react-flow'])):hover:not(:disabled) {
+  --btn-bg: var(--btn-bg-hover);
+}
+
+:where(button:not([class*='react-flow'])):active:not(:disabled) {
+  --btn-bg: var(--btn-bg-active);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  --btn-bg: var(--accent);
+  --btn-bg-hover: var(--accent-hover);
+  --btn-bg-active: var(--accent-active);
+  --btn-fg: var(--accent-ink);
+  --btn-border: transparent;
+  font-weight: 600;
+}
+
+/* 危険：ふだんは枠だけで目立たせすぎず、hoverで色を付ける */
+.btn-danger {
+  --btn-bg: transparent;
+  --btn-bg-hover: var(--danger-soft);
+  --btn-bg-active: var(--danger-soft);
+  --btn-fg: var(--danger);
+  --btn-border: var(--danger);
+}
+
+.btn-ghost {
+  --btn-bg: transparent;
+  --btn-bg-hover: var(--surface-2);
+  --btn-bg-active: var(--border);
+  --btn-fg: var(--ink-soft);
+  --btn-border: transparent;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.btn-icon {
+  width: 30px;
+  padding: 0;
+  font-size: 16px;
+}

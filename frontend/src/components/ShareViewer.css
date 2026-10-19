@@ -21,7 +21,7 @@
   border-radius: 10px;
   font-size: 12px;
   background: var(--edge-impaired);
-  color: #fff;
+  color: var(--surface);
 }
 .share-viewer__meta {
   margin-left: auto;

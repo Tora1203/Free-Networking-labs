@@ -45,7 +45,7 @@ export default function LoginForm() {
           />
         </label>
         {error && <p className="login-form__error">{error}</p>}
-        <button type="submit" disabled={isAuthenticating}>
+        <button className="btn-primary" type="submit" disabled={isAuthenticating}>
           {isAuthenticating ? 'ログイン中...' : 'ログイン'}
         </button>
       </form>

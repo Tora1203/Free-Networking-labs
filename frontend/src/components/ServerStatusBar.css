@@ -13,12 +13,8 @@
   background: var(--surface-2);
   border-top: 1px solid var(--border);
   --meter-ok: var(--accent);
-  --meter-warn: #e3a008;
-  --meter-danger: #dc2626;
-}
-
-:root[data-theme='dark'] .server-status {
-  --meter-danger: #f87171;
+  --meter-warn: var(--status-busy);
+  --meter-danger: var(--danger);
 }
 
 .server-status__title {
@@ -107,7 +103,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-lg);
 }
 
 .server-status-menu__panel h4 {

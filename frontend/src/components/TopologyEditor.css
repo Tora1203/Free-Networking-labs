@@ -26,22 +26,6 @@
   flex: 1;
 }
 
-.topology-editor__toolbar button.topology-editor__back {
-  background: transparent;
-  color: var(--ink-soft);
-  padding: 6px 10px;
-}
-
-.topology-editor__toolbar button.topology-editor__back:hover {
-  color: var(--ink);
-}
-
-.topology-editor__toolbar button.topology-editor__panel-toggle {
-  background: var(--surface-2);
-  color: var(--ink);
-  border: 1px solid var(--border);
-}
-
 .topology-editor__lab-name {
   font-size: 13px;
   padding: 5px 8px;
@@ -50,21 +34,6 @@
   width: 160px;
   background: var(--surface);
   color: var(--ink);
-}
-
-.topology-editor__toolbar button {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.topology-editor__toolbar button:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .topology-editor__status {
@@ -94,31 +63,31 @@
 
 /* ノードの状態ランプと同じ色（TopologyNode.css）：緑＝起動中、灰＝停止中、黄＝処理中 */
 .topology-editor__run-state--running {
-  color: #fff;
-  background: #1f9d55;
-  border-color: #1f9d55;
+  color: var(--status-running-ink);
+  background: var(--status-running);
+  border-color: var(--status-running);
 }
 
 .topology-editor__run-state--stopped {
-  color: #fff;
-  background: #8a8f98;
-  border-color: #8a8f98;
+  color: var(--status-stopped-ink);
+  background: var(--status-stopped);
+  border-color: var(--status-stopped);
 }
 
 .topology-editor__run-state--busy {
-  color: #1f1300;
-  background: #e3a008;
-  border-color: #e3a008;
+  color: var(--status-busy-ink);
+  background: var(--status-busy);
+  border-color: var(--status-busy);
 }
 
 .topology-editor__context-menu-status {
   position: fixed;
   bottom: 16px;
   left: 16px;
-  background: var(--panel-bg, #1f2430);
+  background: var(--panel-bg, var(--surface));
   padding: 6px 10px;
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-sm);
   z-index: 50;
 }
 
@@ -138,16 +107,18 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
 }
 
 .topology-editor__context-menu button {
   padding: 8px 12px;
   border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--ink);
   font-size: 13px;
+  justify-content: flex-start;
   text-align: left;
   cursor: pointer;
 }
@@ -163,7 +134,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--overlay);
 }
 
 .topology-editor__modal {
@@ -175,7 +146,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-lg);
 }
 
 .topology-editor__modal h3 {
@@ -249,24 +220,14 @@
   margin-top: 4px;
 }
 
-.topology-editor__modal-actions button {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  cursor: pointer;
-  background: var(--surface-2);
-  color: var(--ink);
-}
-
-.topology-editor__modal-actions button:last-child {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.topology-editor__modal-actions button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.topology-editor__modal-actions button:last-child:not(:only-child) {
+  /* 並びの最後のボタンが確定（主要）。キャンセルは通常のボタン。1つだけ（閉じる）の時は通常 */
+  --btn-bg: var(--accent);
+  --btn-bg-hover: var(--accent-hover);
+  --btn-bg-active: var(--accent-active);
+  --btn-fg: var(--accent-ink);
+  --btn-border: transparent;
+  font-weight: 600;
 }
 
 /* 元に戻す／やり直すで何が変わったかの表示（2026-10-14） */
@@ -283,7 +244,7 @@
   border: 1px solid var(--border);
   border-left: 4px solid var(--accent);
   border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-md);
   font-size: 13px;
   cursor: pointer;
   animation: topology-editor-notice-in 0.15s ease-out;
@@ -304,4 +265,22 @@
     opacity: 0;
     transform: translate(-50%, -6px);
   }
+}
+
+/* React Flowのミニマップ・ズーム操作を、アプリの色（ライト／ダーク）に合わせる（2026-10-19。
+   以前はダークでも白いままだった） */
+.react-flow {
+  --xy-minimap-background-color-default: var(--surface);
+  --xy-minimap-mask-background-color-default: color-mix(in srgb, var(--bg) 70%, transparent);
+  --xy-minimap-node-background-color-default: var(--ink-faint);
+  --xy-controls-button-background-color-default: var(--surface);
+  --xy-controls-button-background-color-hover-default: var(--surface-2);
+  --xy-controls-button-color-default: var(--ink);
+  --xy-controls-button-border-color-default: var(--border);
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
 }

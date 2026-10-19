@@ -18,7 +18,7 @@
   background: var(--surface);
   border: 3px solid var(--ink-faint);
   color: var(--ink);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-sm);
 }
 
 /* ネットワーク図の慣例：ルーターは円、スイッチは角丸四角、PCは四角 */
@@ -97,22 +97,22 @@
 }
 
 .topo-node--status-running .topo-node__status {
-  background: #1f9d55;
-  box-shadow: 0 0 6px rgba(31, 157, 85, 0.7);
+  background: var(--status-running);
+  box-shadow: 0 0 6px var(--status-running);
 }
 
 .topo-node--status-stopped .topo-node__status {
-  background: #8a8f98;
+  background: var(--status-stopped);
 }
 
 .topo-node--status-busy .topo-node__status {
-  background: #e3a008;
+  background: var(--status-busy);
   animation: topo-node-status-blink 0.8s ease-in-out infinite alternate;
 }
 
 .topo-node--status-pending .topo-node__status {
   background: var(--surface);
-  border: 3px solid #e3a008;
+  border: 3px solid var(--status-busy);
 }
 
 /* 停止中のノードは薄くして、一目で止まっていると分かるようにする */

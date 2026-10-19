@@ -1,4 +1,5 @@
 @import './theme.css';
+@import './buttons.css';
 
 :root {
   font: 16px/145% system-ui, 'Segoe UI', Roboto, sans-serif;

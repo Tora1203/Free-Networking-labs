@@ -12,9 +12,35 @@
   --ink-soft: #4d5a52;
   --ink-faint: #7c887f;
   --border: #d9ddd0;
-  --accent: #1f9d55;
+  /* 緑のアクセント。白文字を載せても読めるよう、以前の#1f9d55より少し濃くした（白との比 約5.4:1） */
+  --accent: #178048;
+  --accent-hover: #126a3b;
+  --accent-active: #0e5530;
   --accent-ink: #ffffff;
   --warn: #b45309;
+  --warn-border: #d9a441;
+  --warn-soft: rgba(217, 164, 65, 0.15);
+  /* 危険な操作（停止・削除・上書き）のボタンと警告 */
+  --danger: #c62828;
+  --danger-hover: #a81f1f;
+  --danger-soft: rgba(198, 40, 40, 0.1);
+  --danger-ink: #ffffff;
+  /* キーボード操作のフォーカス枠（ボタン・入力欄） */
+  --focus-ring: #2563eb;
+
+  /* 起動状態（ノードのランプ、ツールバーの状態表示）。色だけに頼らず、形や文字も併用する */
+  --status-running: #178048;
+  --status-running-ink: #ffffff;
+  --status-stopped: #6b7280;
+  --status-stopped-ink: #ffffff;
+  --status-busy: #e3a008;
+  --status-busy-ink: #1f1300;
+
+  /* 影と、ダイアログの背面の幕 */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.18);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.25);
+  --overlay: rgba(0, 0, 0, 0.35);
 
   --node-router: #2f6fed;
   --node-switch: #b45309;
@@ -43,8 +69,29 @@
   --ink-faint: #7e8b83;
   --border: #2c3a36;
   --accent: #46d17a;
+  --accent-hover: #5fe08f;
+  --accent-active: #36b866;
   --accent-ink: #0d1310;
   --warn: #f0a94e;
+  --warn-border: #b98a35;
+  --warn-soft: rgba(240, 169, 78, 0.16);
+  --danger: #f87171;
+  --danger-hover: #fb9494;
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --danger-ink: #1a0808;
+  --focus-ring: #8ab4ff;
+
+  --status-running: #46d17a;
+  --status-running-ink: #0d1310;
+  --status-stopped: #7e8b83;
+  --status-stopped-ink: #0d1310;
+  --status-busy: #f0b429;
+  --status-busy-ink: #1f1300;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --overlay: rgba(0, 0, 0, 0.6);
 
   --node-router: #6fa2ff;
   --node-switch: #f0a94e;
