@@ -158,7 +158,7 @@ export default function LinkConditionDialog({ linkName, initial, running, onAppl
 
         <div className="topology-editor__modal-actions">
           <button onClick={onCancel}>キャンセル</button>
-          <button onClick={() => onApply(toCondition(fields))} disabled={!!error}>
+          <button className="btn-primary" onClick={() => onApply(toCondition(fields))} disabled={!!error}>
             保存
           </button>
         </div>

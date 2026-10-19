@@ -2004,6 +2004,7 @@ function TopologyEditorInner() {
                 <div className="topology-editor__modal-actions">
                   <button onClick={cancelConnection}>キャンセル</button>
                   <button
+                    className="btn-primary"
                     onClick={confirmConnection}
                     disabled={
                       sourceIfaceConflict ||

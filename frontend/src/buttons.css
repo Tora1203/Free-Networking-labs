@@ -75,7 +75,7 @@ button:disabled {
 .btn-danger {
   --btn-bg: transparent;
   --btn-bg-hover: var(--danger-soft);
-  --btn-bg-active: var(--danger-soft);
+  --btn-bg-active: color-mix(in srgb, var(--danger) 24%, transparent);
   --btn-fg: var(--danger);
   --btn-border: var(--danger);
 }

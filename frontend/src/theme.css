@@ -23,9 +23,7 @@
   --warn-soft: rgba(217, 164, 65, 0.15);
   /* 危険な操作（停止・削除・上書き）のボタンと警告 */
   --danger: #c62828;
-  --danger-hover: #a81f1f;
   --danger-soft: rgba(198, 40, 40, 0.1);
-  --danger-ink: #ffffff;
   /* キーボード操作のフォーカス枠（ボタン・入力欄） */
   --focus-ring: #2563eb;
 
@@ -77,9 +75,7 @@
   --warn-border: #b98a35;
   --warn-soft: rgba(240, 169, 78, 0.16);
   --danger: #f87171;
-  --danger-hover: #fb9494;
   --danger-soft: rgba(248, 113, 113, 0.14);
-  --danger-ink: #1a0808;
   --focus-ring: #8ab4ff;
 
   --status-running: #46d17a;

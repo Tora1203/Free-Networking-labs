@@ -221,16 +221,6 @@
   margin-top: 4px;
 }
 
-.topology-editor__modal-actions button:last-child:not(:only-child) {
-  /* 並びの最後のボタンが確定（主要）。キャンセルは通常のボタン。1つだけ（閉じる）の時は通常 */
-  --btn-bg: var(--accent);
-  --btn-bg-hover: var(--accent-hover);
-  --btn-bg-active: var(--accent-active);
-  --btn-fg: var(--accent-ink);
-  --btn-border: transparent;
-  font-weight: 600;
-}
-
 /* 元に戻す／やり直すで何が変わったかの表示（2026-10-14） */
 .topology-editor__history-notice {
   position: absolute;
@@ -268,7 +258,7 @@
   }
 }
 
-/* React Flowのミニマップ・ズーム操作を、アプリの色（ライト／ダーク）に合わせる（2026-10-19。
+/* React Flowのミニマップ・ズーム操作・帰属表示を、アプリの色（ライト／ダーク）に合わせる（2026-10-19。
    以前はダークでも白いままだった） */
 .react-flow {
   --xy-minimap-background-color-default: var(--surface);
@@ -278,6 +268,7 @@
   --xy-controls-button-background-color-hover-default: var(--surface-2);
   --xy-controls-button-color-default: var(--ink);
   --xy-controls-button-border-color-default: var(--border);
+  --xy-attribution-background-color-default: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 
 .react-flow__minimap {
@@ -343,4 +334,9 @@
     padding: 10px 0 16px;
     background: var(--surface);
   }
+}
+
+/* メニューはoverflow: hiddenなので、フォーカス枠を内側に描く（外側だと左右が欠ける） */
+.topology-editor__context-menu button:focus-visible {
+  outline-offset: -2px;
 }

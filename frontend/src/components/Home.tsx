@@ -27,6 +27,14 @@ const stateLabel: Record<NodeState, string> = {
   paused: 'paused',
 }
 
+// ノードの状態の読み上げ用（ホームの点。見た目は形でも区別している）
+const stateAriaLabel: Record<NodeState, string> = {
+  running: '起動中',
+  exited: '停止中',
+  created: '作成済み',
+  paused: '一時停止',
+}
+
 // 自動保存（2026-10-14）になってから、ラボは「保存済みのトポロジ」として存在し、
 // 起動していなくても一覧に出す。保存済みラボの一覧（GET /labs/topology/files、自分のものだけ）に、
 // 動いている/停止中のコンテナの状態（GET /api/v1/labs）を重ねる。
@@ -82,7 +90,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
     <div className="lab-node-list">
       {nodes.map((n) => (
         <div key={n.name} className="lab-node-row" title={`${n.name}: ${stateLabel[n.state]}`}>
-          <span className={`lab-dot lab-dot--${n.state}`} role="img" aria-label={stateLabel[n.state]} />
+          <span className={`lab-dot lab-dot--${n.state}`} role="img" aria-label={stateAriaLabel[n.state]} />
           <span className="lab-node-row__name">{n.name}</span>
           <button
             className="lab-node-row__console"
@@ -207,10 +215,10 @@ export default function Home() {
               </div>
               {actionError[lab.name] && <p className="lab-card__error">{actionError[lab.name]}</p>}
               <div className="lab-card__actions">
-                <button className="btn-primary" onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
+                <button onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
                   {labBusy === 'start' ? '起動中...' : '▶ 起動'}
                 </button>
-                <button onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
+                <button className="btn-danger" onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
                   {labBusy === 'stop' ? '停止中...' : '■ 停止'}
                 </button>
                 <button className="btn-danger" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>

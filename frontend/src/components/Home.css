@@ -161,23 +161,18 @@
 
 .lab-card__actions button {
   flex: 1;
-  min-height: 28px;
   padding: 4px 8px;
   font-size: 12px;
 }
 
+/* 色・背景は.btn-ghost（buttons.css）に任せ、ここは破線の枠と大きさだけ */
 .lab-card__edit {
   padding: 6px 8px;
   border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-soft);
   font-size: 12px;
-  cursor: pointer;
 }
 
-.lab-card__edit:hover {
-  color: var(--ink);
+.lab-card__edit:hover:not(:disabled) {
   border-color: var(--ink-faint);
 }
 
