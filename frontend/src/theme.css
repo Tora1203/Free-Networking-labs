@@ -12,10 +12,11 @@
   --ink-soft: #4d5a52;
   --ink-faint: #7c887f;
   --border: #d9ddd0;
-  /* 緑のアクセント。白文字を載せても読めるよう、以前の#1f9d55より少し濃くした（白との比 約5.4:1） */
-  --accent: #178048;
-  --accent-hover: #126a3b;
-  --accent-active: #0e5530;
+  /* 水色のアクセント（2026-10-19、緑から変更）。白文字を載せても読める濃さ（白との比 約5.5:1）。
+     「起動中・成功」の緑は--status-runningで別に持つ（アクセントとは混ぜない） */
+  --accent: #0a6ea8;
+  --accent-hover: #085a8a;
+  --accent-active: #064a73;
   --accent-ink: #ffffff;
   --warn: #b45309;
   --warn-border: #d9a441;
@@ -68,10 +69,10 @@
   --ink-soft: #a9b5c6;
   --ink-faint: #7b889b;
   --border: #2b384a;
-  --accent: #46d17a;
-  --accent-hover: #5fe08f;
-  --accent-active: #36b866;
-  --accent-ink: #0d1310;
+  --accent: #4cc2f0;
+  --accent-hover: #6fd0f5;
+  --accent-active: #35aede;
+  --accent-ink: #06131c;
   --warn: #f0a94e;
   --warn-border: #b98a35;
   --warn-soft: rgba(240, 169, 78, 0.16);

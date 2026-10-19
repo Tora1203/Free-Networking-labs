@@ -154,8 +154,8 @@
 }
 
 .console-pane__badge--connected {
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--status-running);
+  color: var(--status-running-ink);
 }
 
 .console-pane__badge--closed,

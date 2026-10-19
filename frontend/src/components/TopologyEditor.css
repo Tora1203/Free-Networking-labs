@@ -41,7 +41,7 @@
 }
 
 .topology-editor__status--ok {
-  color: var(--accent);
+  color: var(--status-running);
 }
 
 .topology-editor__status--error {

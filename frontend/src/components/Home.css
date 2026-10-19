@@ -117,7 +117,7 @@
 }
 
 .lab-dot--running {
-  background: var(--accent);
+  background: var(--status-running);
 }
 
 .lab-dot--exited {
