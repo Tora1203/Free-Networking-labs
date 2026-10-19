@@ -139,7 +139,10 @@ export default function ConsoleSession({ labName, nodeName, visible, autoCommand
       convertEol: true,
       fontFamily: 'ui-monospace, monospace',
       fontSize: 13,
-      theme: { background: '#141f19' },
+      // 背景は透明にして、親（.console-manager）の--term-bgに任せる（ライト/ダークで色が変わっても、
+      // 青黒のパネルの中に古い緑黒の四角が出ないように。2026-10-19）
+      allowTransparency: true,
+      theme: { background: '#00000000' },
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)

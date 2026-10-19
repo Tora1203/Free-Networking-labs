@@ -12,13 +12,9 @@
   color: var(--ink-soft);
   background: var(--surface-2);
   border-top: 1px solid var(--border);
-  --meter-ok: var(--accent);
-  --meter-warn: #e3a008;
-  --meter-danger: #dc2626;
-}
-
-:root[data-theme='dark'] .server-status {
-  --meter-danger: #f87171;
+  --meter-ok: var(--status-running);
+  --meter-warn: var(--status-busy);
+  --meter-danger: var(--danger);
 }
 
 .server-status__title {
@@ -107,7 +103,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-lg);
 }
 
 .server-status-menu__panel h4 {
@@ -121,4 +117,17 @@
   align-items: center;
   gap: 6px;
   cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .server-status {
+    gap: 12px;
+    padding: 3px 8px;
+  }
+
+  /* 使用状況の選択パネルが画面の左にはみ出さないように */
+  .server-status-menu__panel {
+    right: -8px;
+    max-width: calc(100vw - 16px);
+  }
 }

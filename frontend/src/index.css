@@ -1,4 +1,5 @@
 @import './theme.css';
+@import './buttons.css';
 
 :root {
   font: 16px/145% system-ui, 'Segoe UI', Roboto, sans-serif;
@@ -27,4 +28,5 @@ body {
 #root {
   width: 100vw;
   height: 100vh;
+  height: 100dvh; /* スマホのアドレスバーの伸び縮みで下が切れないように */
 }

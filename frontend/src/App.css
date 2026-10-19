@@ -71,11 +71,56 @@
 .app-nav__share {
   margin-left: 12px;
   padding: 2px 8px;
-  border: 1px solid #d9a441;
+  border: 1px solid var(--warn-border);
   border-radius: 10px;
   font-size: 12px;
 }
 .share-loading {
   padding: 48px;
   text-align: center;
+}
+
+/* ---- レスポンシブ（2026-10-19）。幅の区切り：〜900px＝タブレット、〜640px＝スマホ ---- */
+
+/* 統合コンソール：狭い幅では右ドッキングをやめて、下から出る全幅のパネルにする
+   （幅はAppが style で入れているので !important で上書き。ドラッグでの幅調整は使わない） */
+@media (max-width: 900px) {
+  .app-content__console--docked {
+    top: auto;
+    left: 0;
+    width: 100% !important;
+    height: 45%;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    /* モーダル(30)・右クリックメニュー(20)・共有パネル(20)より下、React Flow(5)より上。
+       下から出るパネルがダイアログやメニューを覆わないように */
+    z-index: 10;
+  }
+
+  .app-content__console-resizer {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-nav {
+    gap: 2px;
+    padding: 6px 8px;
+  }
+
+  .app-nav__btn {
+    padding: 6px 8px;
+  }
+
+  .app-nav__user {
+    display: none;
+  }
+
+  .app-nav__share {
+    margin-left: 4px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

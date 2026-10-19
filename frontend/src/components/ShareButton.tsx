@@ -88,7 +88,7 @@ export default function ShareButton({ labName }: { labName: string }) {
               <span className="share-button__role-tag">{s.role === 'edit' ? '編集可' : '閲覧'}</span>
               <input readOnly value={shareUrl(s.id)} onFocus={(e) => e.currentTarget.select()} />
               <button onClick={() => copy(s.id)}>コピー</button>
-              <button onClick={() => void revoke(s.id)} disabled={busy}>
+              <button className="btn-danger" onClick={() => void revoke(s.id)} disabled={busy}>
                 取り消す
               </button>
               <div className="share-button__expires">期限: {new Date(s.expiresAt).toLocaleString()}</div>

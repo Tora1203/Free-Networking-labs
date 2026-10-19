@@ -36,3 +36,8 @@
   resize: both;
   outline: none;
 }
+
+/* 編集中の枠は.label-node--editingが描くので、全体のfocus-visibleの枠(buttons.css)は重ねない */
+.label-node__textarea:focus-visible {
+  outline: none;
+}

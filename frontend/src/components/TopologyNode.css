@@ -18,7 +18,7 @@
   background: var(--surface);
   border: 3px solid var(--ink-faint);
   color: var(--ink);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-sm);
 }
 
 /* ネットワーク図の慣例：ルーターは円、スイッチは角丸四角、PCは四角 */
@@ -77,7 +77,9 @@
   opacity: 1;
 }
 
-/* 起動状態のランプ（2026-10-14）。右上の丸：緑＝起動中、灰＝停止中、黄の点滅＝処理中、黄の枠＝反映待ち */
+/* 起動状態のランプ（2026-10-14）。右上の丸に、色だけでなく中の記号と形でも状態を示す（2026-10-19）：
+   ✓＋緑＝起動中、■＋灰（角丸の四角）＝停止中、…＋黄の点滅＝処理中、↻＋黄の枠（白抜き）＝反映待ち。
+   色が見分けにくい人や、白黒の画面・印刷でも分かるようにするため */
 .topo-node {
   position: relative;
 }
@@ -85,34 +87,65 @@
 /* バッジ（幅56px、ノード中央）の右上に重ねる。停止中にバッジを薄くしてもランプは薄くしないよう兄弟要素にする */
 .topo-node__status {
   position: absolute;
-  top: -6px;
-  left: calc(50% + 21px);
+  top: -7px;
+  left: calc(50% + 20px);
   z-index: 1;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   border: 2px solid var(--surface);
   box-sizing: border-box;
   background: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  font-family: system-ui, sans-serif;
 }
 
 .topo-node--status-running .topo-node__status {
-  background: #1f9d55;
-  box-shadow: 0 0 6px rgba(31, 157, 85, 0.7);
+  background: var(--status-running);
+  color: var(--status-running-ink);
+  box-shadow: 0 0 6px var(--status-running);
+}
+
+.topo-node--status-running .topo-node__status::before {
+  content: '✓';
 }
 
 .topo-node--status-stopped .topo-node__status {
-  background: #8a8f98;
+  background: var(--status-stopped);
+  color: var(--status-stopped-ink);
+  border-radius: 4px;
+}
+
+.topo-node--status-stopped .topo-node__status::before {
+  content: '■';
+  font-size: 7px;
 }
 
 .topo-node--status-busy .topo-node__status {
-  background: #e3a008;
+  background: var(--status-busy);
+  color: var(--status-busy-ink);
   animation: topo-node-status-blink 0.8s ease-in-out infinite alternate;
+}
+
+.topo-node--status-busy .topo-node__status::before {
+  content: '…';
+  transform: translateY(-2px);
 }
 
 .topo-node--status-pending .topo-node__status {
   background: var(--surface);
-  border: 3px solid #e3a008;
+  color: var(--ink);
+  border: 3px solid var(--status-busy);
+}
+
+.topo-node--status-pending .topo-node__status::before {
+  content: '↻';
+  font-size: 9px;
 }
 
 /* 停止中のノードは薄くして、一目で止まっていると分かるようにする */
@@ -120,6 +153,13 @@
   opacity: 0.45;
   filter: grayscale(0.8);
   border-style: dashed;
+}
+
+/* 動きを減らす設定の人には、点滅させない（記号で状態は分かる） */
+@media (prefers-reduced-motion: reduce) {
+  .topo-node--status-busy .topo-node__status {
+    animation: none;
+  }
 }
 
 @keyframes topo-node-status-blink {

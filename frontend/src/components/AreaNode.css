@@ -38,6 +38,7 @@
 .area-node__color-swatch {
   width: 12px;
   height: 12px;
+  min-height: 0; /* 共通ボタンの最小の高さ(buttons.css)を使わない */
   border-radius: 50%;
   border: 1px solid var(--surface);
   cursor: pointer;

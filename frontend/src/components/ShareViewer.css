@@ -1,14 +1,15 @@
 .share-viewer {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%; /* #rootが100dvhなので、100vhだとアドレスバーが縮んだ時に下が切れる */
   background: var(--bg);
   color: var(--ink);
 }
 .share-viewer__bar {
   display: flex;
+  flex-wrap: wrap; /* 狭い幅でタイトルやバッジが1文字ずつ折れないように */
   align-items: center;
-  gap: 12px;
+  gap: 6px 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -17,11 +18,12 @@
   font-weight: 600;
 }
 .share-viewer__badge {
+  white-space: nowrap;
   padding: 2px 8px;
   border-radius: 10px;
   font-size: 12px;
   background: var(--edge-impaired);
-  color: #fff;
+  color: var(--surface);
 }
 .share-viewer__meta {
   margin-left: auto;

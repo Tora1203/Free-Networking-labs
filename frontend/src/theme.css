@@ -12,9 +12,34 @@
   --ink-soft: #4d5a52;
   --ink-faint: #7c887f;
   --border: #d9ddd0;
-  --accent: #1f9d55;
+  /* 水色のアクセント（2026-10-19、緑から変更）。白文字を載せても読める濃さ（白との比 約5.5:1）。
+     「起動中・成功」の緑は--status-runningで別に持つ（アクセントとは混ぜない） */
+  --accent: #0a6ea8;
+  --accent-hover: #085a8a;
+  --accent-active: #064a73;
   --accent-ink: #ffffff;
   --warn: #b45309;
+  --warn-border: #d9a441;
+  --warn-soft: rgba(217, 164, 65, 0.15);
+  /* 危険な操作（停止・削除・上書き）のボタンと警告 */
+  --danger: #c62828;
+  --danger-soft: rgba(198, 40, 40, 0.1);
+  /* キーボード操作のフォーカス枠（ボタン・入力欄） */
+  --focus-ring: #2563eb;
+
+  /* 起動状態（ノードのランプ、ツールバーの状態表示）。色だけに頼らず、形や文字も併用する */
+  --status-running: #178048;
+  --status-running-ink: #ffffff;
+  --status-stopped: #6b7280;
+  --status-stopped-ink: #ffffff;
+  --status-busy: #e3a008;
+  --status-busy-ink: #1f1300;
+
+  /* 影と、ダイアログの背面の幕 */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.18);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.25);
+  --overlay: rgba(0, 0, 0, 0.35);
 
   --node-router: #2f6fed;
   --node-switch: #b45309;
@@ -35,23 +60,42 @@
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #12171a;
-  --surface: #1a2126;
-  --surface-2: #202a30;
-  --ink: #e7ede8;
-  --ink-soft: #aab6ae;
-  --ink-faint: #7e8b83;
-  --border: #2c3a36;
-  --accent: #46d17a;
-  --accent-ink: #0d1310;
+  --bg: #0f151e;
+  --surface: #161e2a;
+  --surface-2: #1f2937;
+  --ink: #e6ebf3;
+  --ink-soft: #a9b5c6;
+  --ink-faint: #7b889b;
+  --border: #2b384a;
+  --accent: #4cc2f0;
+  --accent-hover: #6fd0f5;
+  --accent-active: #35aede;
+  --accent-ink: #06131c;
   --warn: #f0a94e;
+  --warn-border: #b98a35;
+  --warn-soft: rgba(240, 169, 78, 0.16);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --focus-ring: #8ab4ff;
+
+  --status-running: #46d17a;
+  --status-running-ink: #0d1310;
+  --status-stopped: #7b889b;
+  --status-stopped-ink: #0d1310;
+  --status-busy: #f0b429;
+  --status-busy-ink: #1f1300;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --overlay: rgba(0, 0, 0, 0.6);
 
   --node-router: #6fa2ff;
   --node-switch: #f0a94e;
-  --node-pc: #aab6ae;
-  --edge: #5c6b60;
+  --node-pc: #a9b5c6;
+  --edge: #5d6d84;
   --edge-impaired: #a78bfa;
   --edge-down: #f87171;
 
-  --term-bg: #0d1310;
+  --term-bg: #0b111a;
 }

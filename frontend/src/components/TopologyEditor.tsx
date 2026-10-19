@@ -1678,10 +1678,12 @@ function TopologyEditorInner() {
       <NodePalette />
       <div className="topology-editor__main">
         <div className="topology-editor__toolbar">
-          <button className="topology-editor__back" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
+          <button className="btn-ghost" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
             ← ホーム
           </button>
           <button
+            className="btn-icon"
+            aria-label="元に戻す"
             onClick={undo}
             disabled={historyCounts.past === 0}
             title={`元に戻す（Ctrl+Z）${historyCounts.undoHint ? `\n${historyCounts.undoHint}` : ''}`}
@@ -1689,6 +1691,8 @@ function TopologyEditorInner() {
             ↶
           </button>
           <button
+            className="btn-icon"
+            aria-label="やり直す"
             onClick={redo}
             disabled={historyCounts.future === 0}
             title={`やり直す（Ctrl+Shift+Z / Ctrl+Y）${historyCounts.redoHint ? `\n${historyCounts.redoHint}` : ''}`}
@@ -1730,6 +1734,7 @@ function TopologyEditorInner() {
           )}
           {runState.kind === 'running' ? (
             <button
+              className="btn-danger"
               onClick={onStopLab}
               disabled={labBusy}
               title="ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
@@ -1738,6 +1743,7 @@ function TopologyEditorInner() {
             </button>
           ) : (
             <button
+              className="btn-primary"
               onClick={onStartLab}
               disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
               title="ラボを起動します。起動中の編集は自動で反映されます"
@@ -1757,13 +1763,13 @@ function TopologyEditorInner() {
               <button onClick={onReloadRemote} title="別の画面で保存された最新の内容を読み込みます（こちらの未保存の編集は捨てます）">
                 最新を読み込む
               </button>
-              <button onClick={onOverwriteRemote} title="別の画面の変更を捨てて、こちらの内容で保存します">
+              <button className="btn-danger" onClick={onOverwriteRemote} title="別の画面の変更を捨てて、こちらの内容で保存します">
                 自分の内容で上書き
               </button>
             </>
           )}
           {syncStatus.kind === 'error' && syncStatus.canRebuild && (
-            <button onClick={onRebuildLab} disabled={labBusy} title="ラボを破棄して今の内容で起動し直します">
+            <button className="btn-danger" onClick={onRebuildLab} disabled={labBusy} title="ラボを破棄して今の内容で起動し直します">
               作り直す
             </button>
           )}
@@ -1805,7 +1811,6 @@ function TopologyEditorInner() {
           {savedLabName && !getShareRoute() && <ShareButton labName={savedLabName} />}
           <div className="topology-editor__toolbar-spacer" />
           <button
-            className="topology-editor__panel-toggle"
             onClick={() => setConsolePanelDocked(!consolePanelDocked)}
             title="トポロジを見ながら統合コンソールを操作できます"
           >
@@ -1999,6 +2004,7 @@ function TopologyEditorInner() {
                 <div className="topology-editor__modal-actions">
                   <button onClick={cancelConnection}>キャンセル</button>
                   <button
+                    className="btn-primary"
                     onClick={confirmConnection}
                     disabled={
                       sourceIfaceConflict ||

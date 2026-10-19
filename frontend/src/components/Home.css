@@ -31,13 +31,8 @@
 .lab-list__new-button {
   flex: none;
   padding: 9px 16px;
-  border: none;
   border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-ink);
   font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .lab-grid {
@@ -98,6 +93,7 @@
 }
 
 .lab-node-row__console {
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface-2);
@@ -122,19 +118,23 @@
 }
 
 .lab-dot--running {
-  background: var(--accent);
+  background: var(--status-running);
 }
 
+/* 形でも状態が分かるように（色だけに頼らない、2026-10-19）：丸＝起動中、四角＝停止、白抜きの丸＝作成済み（未起動）、縦2本＝一時停止 */
 .lab-dot--exited {
   background: var(--ink-faint);
+  border-radius: 2px;
 }
 
 .lab-dot--created {
-  background: var(--warn);
+  background: transparent;
+  border: 2px solid var(--warn);
 }
 
 .lab-dot--paused {
-  background: var(--ink-faint);
+  background: linear-gradient(90deg, var(--ink-faint) 0 35%, transparent 35% 65%, var(--ink-faint) 65%);
+  border-radius: 2px;
 }
 
 .lab-list__error {
@@ -161,37 +161,46 @@
 
 .lab-card__actions button {
   flex: 1;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--ink);
+  padding: 4px 8px;
   font-size: 12px;
-  cursor: pointer;
 }
 
-.lab-card__actions button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.lab-card__actions button.lab-card__actions-destroy {
-  border-color: var(--warn);
-  color: var(--warn);
-  background: transparent;
-}
-
+/* 色・背景は.btn-ghost（buttons.css）に任せ、ここは破線の枠と大きさだけ */
 .lab-card__edit {
   padding: 6px 8px;
   border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-soft);
   font-size: 12px;
-  cursor: pointer;
 }
 
-.lab-card__edit:hover {
-  color: var(--ink);
+.lab-card__edit:hover:not(:disabled) {
   border-color: var(--ink-faint);
+}
+
+@media (max-width: 640px) {
+  .lab-list {
+    padding: 20px 16px;
+  }
+
+  .lab-list__header h1 {
+    font-size: 20px;
+  }
+
+  .lab-list__hint {
+    margin-bottom: 16px;
+  }
+
+  /* 「新規ラボを作成」は幅いっぱいにして押しやすく */
+  .lab-list__header-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lab-list__new-button {
+    width: 100%;
+    margin-bottom: 16px;
+  }
+
+  .lab-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -57,16 +57,18 @@
 
 .login-form__card button {
   margin-top: 4px;
-  padding: 8px 12px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  min-height: 36px;
   font-size: 14px;
-  cursor: pointer;
 }
 
-.login-form__card button:disabled {
-  opacity: 0.6;
-  cursor: default;
+/* 狭い画面では、カードを画面の幅に収める */
+@media (max-width: 640px) {
+  .login-form {
+    padding: 16px;
+  }
+
+  .login-form__card {
+    width: min(320px, 100%);
+    padding: 24px 20px;
+  }
 }

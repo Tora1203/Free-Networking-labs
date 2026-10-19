@@ -27,6 +27,14 @@ const stateLabel: Record<NodeState, string> = {
   paused: 'paused',
 }
 
+// ノードの状態の読み上げ用（ホームの点。見た目は形でも区別している）
+const stateAriaLabel: Record<NodeState, string> = {
+  running: '起動中',
+  exited: '停止中',
+  created: '作成済み',
+  paused: '一時停止',
+}
+
 // 自動保存（2026-10-14）になってから、ラボは「保存済みのトポロジ」として存在し、
 // 起動していなくても一覧に出す。保存済みラボの一覧（GET /labs/topology/files、自分のものだけ）に、
 // 動いている/停止中のコンテナの状態（GET /api/v1/labs）を重ねる。
@@ -82,7 +90,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
     <div className="lab-node-list">
       {nodes.map((n) => (
         <div key={n.name} className="lab-node-row" title={`${n.name}: ${stateLabel[n.state]}`}>
-          <span className={`lab-dot lab-dot--${n.state}`} />
+          <span className={`lab-dot lab-dot--${n.state}`} role="img" aria-label={stateAriaLabel[n.state]} />
           <span className="lab-node-row__name">{n.name}</span>
           <button
             className="lab-node-row__console"
@@ -177,7 +185,7 @@ export default function Home() {
             <h1>ホーム</h1>
             <p className="lab-list__hint">自分のラボ（編集内容は自動保存されます）</p>
           </div>
-          <button className="lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
+          <button className="btn-primary lab-list__new-button" onClick={() => openEditor({ mode: 'new' })}>
             ＋ 新規ラボを作成
           </button>
         </div>
@@ -210,14 +218,14 @@ export default function Home() {
                 <button onClick={() => runAction(lab, 'start')} disabled={!!labBusy || lab.runKind === 'running'}>
                   {labBusy === 'start' ? '起動中...' : '▶ 起動'}
                 </button>
-                <button onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
+                <button className="btn-danger" onClick={() => runAction(lab, 'stop')} disabled={!!labBusy || lab.runKind !== 'running'}>
                   {labBusy === 'stop' ? '停止中...' : '■ 停止'}
                 </button>
-                <button className="lab-card__actions-destroy" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>
+                <button className="btn-danger" onClick={() => runAction(lab, 'destroy')} disabled={!!labBusy}>
                   {labBusy === 'destroy' ? '削除中...' : '削除'}
                 </button>
               </div>
-              <button className="lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
+              <button className="btn-ghost lab-card__edit" onClick={() => openEditor({ mode: 'edit', labName: lab.name })}>
                 ✎ エディタで開く
               </button>
             </div>
