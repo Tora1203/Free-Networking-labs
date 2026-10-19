@@ -320,7 +320,10 @@
   }
 
   /* ダイアログは画面の中に収め、縦にはみ出したらダイアログの中でスクロールする */
-  .topology-editor__modal {
+  .topology-editor__modal,
+  .topology-editor__modal.snapshot-dialog,
+  .topology-editor__modal.link-condition {
+    /* .snapshot-dialog等は幅・高さを画面基準(100vw/100vh)で決めていて詳細度も高いので、ここで同じ詳細度で上書きする */
     max-width: calc(100% - 24px);
     max-height: calc(100% - 24px);
     overflow-y: auto;
@@ -328,5 +331,16 @@
 
   .topology-editor__history-notice {
     max-width: calc(100% - 16px);
+  }
+}
+
+/* スマホでダイアログの中身が長くて中でスクロールする時も、ボタン（閉じる等）が見えるようにする */
+@media (max-width: 640px) {
+  .topology-editor__modal-actions {
+    position: sticky;
+    bottom: -16px;
+    margin: 0 0 -16px;
+    padding: 10px 0 16px;
+    background: var(--surface);
   }
 }

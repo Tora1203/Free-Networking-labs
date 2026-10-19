@@ -93,6 +93,7 @@
 }
 
 .lab-node-row__console {
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface-2);

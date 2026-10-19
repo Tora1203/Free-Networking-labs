@@ -17,6 +17,7 @@
 }
 
 .link-condition__presets button {
+  min-height: 0;
   padding: 3px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;

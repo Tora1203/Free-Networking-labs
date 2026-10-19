@@ -92,7 +92,9 @@
     height: 45%;
     border-left: none;
     border-top: 1px solid var(--border);
-    z-index: 40;
+    /* モーダル(30)・右クリックメニュー(20)・共有パネル(20)より下、React Flow(5)より上。
+       下から出るパネルがダイアログやメニューを覆わないように */
+    z-index: 10;
   }
 
   .app-content__console-resizer {

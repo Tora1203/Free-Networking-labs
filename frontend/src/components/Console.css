@@ -44,6 +44,8 @@
 }
 
 .console-tab__close {
+  min-height: 0; /* 共通ボタンの最小の高さ・余白(buttons.css)を使わない */
+  padding: 0;
   border: none;
   background: transparent;
   color: inherit;
@@ -67,6 +69,7 @@
 }
 
 .console-tabs__close-all {
+  min-height: 0;
   flex: none;
   align-self: center;
   margin-left: auto;
@@ -106,6 +109,7 @@
 }
 
 .console-pane__panel-close {
+  min-height: 0;
   position: absolute;
   top: 10px;
   right: 10px;
@@ -169,6 +173,7 @@
 }
 
 .console-pane__reconnect {
+  min-height: 0;
   margin-left: auto;
   flex: none;
   border: 1px solid var(--border);
@@ -184,4 +189,9 @@
   flex: 1;
   min-height: 0;
   padding: 6px 10px;
+}
+
+/* xterm.cssが.xterm-viewportの背景を黒(#000)で塗るので、透明にして親の--term-bgを見せる */
+.console-pane__term .xterm .xterm-viewport {
+  background-color: transparent;
 }
