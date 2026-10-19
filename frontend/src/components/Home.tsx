@@ -82,7 +82,7 @@ function LabNodeList({ labName, nodes }: { labName: string; nodes: Lab['nodes'] 
     <div className="lab-node-list">
       {nodes.map((n) => (
         <div key={n.name} className="lab-node-row" title={`${n.name}: ${stateLabel[n.state]}`}>
-          <span className={`lab-dot lab-dot--${n.state}`} />
+          <span className={`lab-dot lab-dot--${n.state}`} role="img" aria-label={stateLabel[n.state]} />
           <span className="lab-node-row__name">{n.name}</span>
           <button
             className="lab-node-row__console"

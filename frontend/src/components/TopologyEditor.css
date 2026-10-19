@@ -16,8 +16,9 @@
 .topology-editor__toolbar {
   flex: none;
   display: flex;
+  flex-wrap: wrap; /* 幅が足りない時は折り返す（長い警告文が細い縦書きのようにつぶれていた、2026-10-19） */
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -297,11 +298,6 @@
   }
 
   /* ツールバーは折り返す（ボタンが多いので1行に収めない） */
-  .topology-editor__toolbar {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
   .topology-editor__toolbar-spacer {
     display: none;
   }

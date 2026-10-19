@@ -120,16 +120,20 @@
   background: var(--status-running);
 }
 
+/* 形でも状態が分かるように（色だけに頼らない、2026-10-19）：丸＝起動中、四角＝停止、白抜きの丸＝作成済み（未起動）、縦2本＝一時停止 */
 .lab-dot--exited {
   background: var(--ink-faint);
+  border-radius: 2px;
 }
 
 .lab-dot--created {
-  background: var(--warn);
+  background: transparent;
+  border: 2px solid var(--warn);
 }
 
 .lab-dot--paused {
-  background: var(--ink-faint);
+  background: linear-gradient(90deg, var(--ink-faint) 0 35%, transparent 35% 65%, var(--ink-faint) 65%);
+  border-radius: 2px;
 }
 
 .lab-list__error {
