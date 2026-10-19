@@ -284,3 +284,53 @@
   border-radius: 6px;
   overflow: hidden;
 }
+
+/* ---- レスポンシブ（2026-10-19）---- */
+.topology-editor__toolbar {
+  position: relative;
+}
+
+@media (max-width: 900px) {
+  /* パレットが上に来るので、エディタ全体を縦に並べる */
+  .topology-editor {
+    flex-direction: column;
+  }
+
+  /* ツールバーは折り返す（ボタンが多いので1行に収めない） */
+  .topology-editor__toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .topology-editor__toolbar-spacer {
+    display: none;
+  }
+
+  .topology-editor__lab-name {
+    flex: 1 1 140px;
+    width: auto;
+    min-width: 120px;
+  }
+}
+
+@media (max-width: 640px) {
+  .topology-editor__toolbar {
+    padding: 6px 8px;
+  }
+
+  /* ミニマップは画面を覆うので、スマホでは出さない */
+  .react-flow__minimap {
+    display: none;
+  }
+
+  /* ダイアログは画面の中に収め、縦にはみ出したらダイアログの中でスクロールする */
+  .topology-editor__modal {
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+  }
+
+  .topology-editor__history-notice {
+    max-width: calc(100% - 16px);
+  }
+}

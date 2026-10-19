@@ -55,3 +55,18 @@
   border: 1px solid currentColor;
   margin-right: 4px;
 }
+
+/* 狭い幅（ツールバーが折り返す幅）では、共有のパネルをツールバーの幅いっぱいに出す（ボタンの位置に左右されない） */
+@media (max-width: 900px) {
+  .share-button {
+    position: static;
+  }
+
+  .share-button__panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+}

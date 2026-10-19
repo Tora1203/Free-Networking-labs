@@ -47,3 +47,9 @@
 .brand--login .brand__wordmark {
   width: 100%;
 }
+
+@media (max-width: 640px) {
+  .brand--nav .brand__wordmark {
+    width: 140px;
+  }
+}

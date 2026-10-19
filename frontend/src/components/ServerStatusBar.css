@@ -118,3 +118,16 @@
   gap: 6px;
   cursor: pointer;
 }
+
+@media (max-width: 640px) {
+  .server-status {
+    gap: 12px;
+    padding: 3px 8px;
+  }
+
+  /* 使用状況の選択パネルが画面の左にはみ出さないように */
+  .server-status-menu__panel {
+    right: -8px;
+    max-width: calc(100vw - 16px);
+  }
+}

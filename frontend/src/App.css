@@ -79,3 +79,46 @@
   padding: 48px;
   text-align: center;
 }
+
+/* ---- レスポンシブ（2026-10-19）。幅の区切り：〜900px＝タブレット、〜640px＝スマホ ---- */
+
+/* 統合コンソール：狭い幅では右ドッキングをやめて、下から出る全幅のパネルにする
+   （幅はAppが style で入れているので !important で上書き。ドラッグでの幅調整は使わない） */
+@media (max-width: 900px) {
+  .app-content__console--docked {
+    top: auto;
+    left: 0;
+    width: 100% !important;
+    height: 45%;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    z-index: 40;
+  }
+
+  .app-content__console-resizer {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-nav {
+    gap: 2px;
+    padding: 6px 8px;
+  }
+
+  .app-nav__btn {
+    padding: 6px 8px;
+  }
+
+  .app-nav__user {
+    display: none;
+  }
+
+  .app-nav__share {
+    margin-left: 4px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -63,3 +63,35 @@
   border-left: 4px dashed var(--ink-faint);
   background: transparent;
 }
+
+/* 狭い幅では、パレットを左の縦並びから、上の横並び（横スクロール）に変える。
+   ドラッグで置く操作はタッチ画面では効かないことがあるので、実機（タブレット）で要確認 */
+@media (max-width: 900px) {
+  .node-palette {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .node-palette__title,
+  .node-palette__hint {
+    display: none;
+  }
+
+  .node-palette__item {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .node-palette__divider {
+    flex: none;
+    width: 1px;
+    height: 24px;
+    margin: 0 4px;
+  }
+}

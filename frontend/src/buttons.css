@@ -97,3 +97,14 @@ button:disabled {
   padding: 0;
   font-size: 16px;
 }
+
+/* 指で押す画面（スマホ・タブレット）では、ボタンを押しやすい大きさにする */
+@media (pointer: coarse) {
+  :where(button:not([class*='react-flow'])) {
+    min-height: 36px;
+  }
+
+  .btn-icon {
+    width: 36px;
+  }
+}

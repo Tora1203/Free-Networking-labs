@@ -60,3 +60,15 @@
   min-height: 36px;
   font-size: 14px;
 }
+
+/* 狭い画面では、カードを画面の幅に収める */
+@media (max-width: 640px) {
+  .login-form {
+    padding: 16px;
+  }
+
+  .login-form__card {
+    width: min(320px, 100%);
+    padding: 24px 20px;
+  }
+}
