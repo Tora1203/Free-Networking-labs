@@ -165,3 +165,16 @@ except ImportError:
 - 未確認：`swcli`・mstpd・FRRを同時に動かした時の起動時間（実験ではFRRだけ動かした）、SVI（`vlanN`）とルーテッドポート上でのOSPF。段階1・2で確認する。
 - 要確認：Dockerの既定では`net.ipv4.ip_forward`を書き換えられなかった（読み取り専用）。`ip routing`で確実に1にする方法
   （ルーターの`ip_forward`の扱いに合わせる、またはlabのYAMLの`sysctls`）を段階1で決める。
+
+## 10. 段階1の実装メモ（2026-10-21、be/l3-switch）
+
+`backend/l2switch/l3.py`（プラグイン）＋`Dockerfile.l3`（`fnl/l3switch:1`）。swcliには最小の拡張点（`PLUGINS`、文法の追加、`running-config`の3か所、エージェントのtick、
+`bridge_ports`からルーテッドポートを外す）だけを足した。コマンド・実装の注意は`backend/l2switch/README.md`。設計メモからの変更点：
+
+- **静的経路は`startup.json`の`frr`キーではなく、設定の`routes`に持つ**（段階1にFRRの`show running-config`を保存する仕組みは要らないため）。
+  OSPF（段階2）でFRRの設定を持つ時に、3章の`frr`キーの案に移す。
+- **`no ip routing`はnftablesで転送を止める**（`ip_forward`がコンテナから切り替えられないため）。
+- **ノードの権限は`NET_ADMIN`・`NET_RAW`・`SYS_ADMIN`**（zebraのため）。フロントの`CONTAINER_CAPABILITIES`に`l3-switch`を足す時に、ルーターと同じにする。
+- 確かめたこと（コンテナの中、ネットワーク名前空間で2台のホストをVLAN10・20につないだ）：`no ip routing`では同じVLANは通りVLAN間は止まる／`ip routing`でVLAN間が通る／
+  静的経路が`show ip route`に出る／ルーテッドポートにアドレスが付く。**未確認**：`write memory`で戻した時の起動、ルーテッドポート越しの疎通、containerlabのラボとして起動した場合。
+
