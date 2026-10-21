@@ -10,8 +10,15 @@ fnl/l3switch のイメージにだけ入れる。swcliは起動時に `import l3
 方針：入力の窓口は swcli、経路の計算役は同じコンテナのFRR（zebra・staticd）。静的経路は設定（running-config）に持ち、
 エージェントがFRRに入れる（FRRの設定ファイルは起動のたびに作り直すだけで、保存先は startup.json の1か所のまま）。
 
+段階2（OSPF。BGP・RIPも同じ仕組み）：
+  ・router ospf / router bgp N / router rip のモードに入り、中のコマンドをFRRのvtyshに渡す（Cisco風の書き方は翻訳する）
+  ・interface vlan N / ルーテッドポートの ip ospf … もFRRに渡す
+  ・FRRの設定（router … と interface … の塊）は設定の frr キーに行のリストで持ち、FRRの起動のたびに frr.conf に書き戻す
+  ・show ip ospf … / show ip bgp … / show ip protocols はvtyshの出力のまま
+
 設定のキー（cfg）：
   ip_routing : true の時だけ経路制御を動かす
+  frr        : FRRの設定の行（'router ospf'、' network 10.0.0.0/24 area 0'、'!' …）。FRRの show running-config から写す
   routes     : [{"net": "10.1.0.0/24", "nh": "10.0.0.2"}, …]
   interfaces[<ethN>]: {"routed": true, "address": "10.0.0.1/30"}   （ルーテッドポート）
 """
@@ -42,6 +49,123 @@ def parse_net(ip, mask, mask_to_prefix, is_ipv4):
     if str(net.network_address) != ip:
         return None, '% Inconsistent address and mask'
     return str(net), None
+
+
+# ---- Cisco風の書き方 ⇄ FRRの書き方（コンテナの外でもテストできる純粋な関数） ----
+
+KEEP_PREFIXES = ('router ', 'interface ', 'route-map ', 'ip prefix-list ', 'ipv6 prefix-list ', 'access-list ', 'ip as-path ', 'ip community-list ', 'bfd')
+ROUTER_PROTOCOLS = ('ospf', 'bgp', 'rip')
+
+
+def wildcard_to_prefix(wildcard, is_ipv4, mask_to_prefix):
+    """0.0.0.255 → 24（ワイルドカードマスク）。連続していなければ None"""
+    if not is_ipv4(wildcard):
+        return None
+    inverse = '.'.join(str(255 - int(x)) for x in wildcard.split('.'))
+    return mask_to_prefix(inverse)
+
+
+def prefix_to_wildcard(prefix):
+    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF if prefix else 0
+    inv = mask ^ 0xFFFFFFFF
+    return '.'.join(str((inv >> shift) & 255) for shift in (24, 16, 8, 0))
+
+
+def join_vlan_names(tokens):
+    """['passive-interface', 'vlan', '10'] → [..., 'vlan10']（カーネルのデバイス名。swcliは 'vlan 10' と分けて渡す）"""
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i].lower() == 'vlan' and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+            out.append(f'vlan{tokens[i + 1]}')
+            i += 2
+        else:
+            out.append(tokens[i].lower() if re.fullmatch(r'(?i)vlan\d+', tokens[i]) else tokens[i])
+            i += 1
+    return out
+
+
+def translate_router_command(proto, tokens, is_ipv4, mask_to_prefix):
+    """router ospf/bgp/rip の中のコマンドを、FRRのコマンドにする。(コマンド, エラー文)"""
+    negate = bool(tokens) and tokens[0].lower() == 'no'
+    body = join_vlan_names(tokens[1:] if negate else tokens)
+    if not body:
+        return None, '% Incomplete command.'
+    head = body[0].lower()
+    if proto == 'ospf':
+        if head == 'network' and len(body) >= 5 and body[3].lower() == 'area':
+            if '/' in body[1]:
+                pass  # FRRの書き方のまま
+            else:
+                prefix = wildcard_to_prefix(body[2], is_ipv4, mask_to_prefix)
+                if not is_ipv4(body[1]) or prefix is None:
+                    return None, "% Invalid input detected at '^' marker."
+                body = ['network', f'{body[1]}/{prefix}', 'area', body[4]]
+        elif head == 'router-id':
+            body = ['ospf', 'router-id'] + body[1:]
+        elif head == 'redistribute':
+            body = [t for t in body if t.lower() != 'subnets']
+    return ('no ' if negate else '') + ' '.join(body), None
+
+
+def translate_interface_command(tokens):
+    """interface の中の ip ospf … をFRRのコマンドにする（ip ospf 1 area 0 → ip ospf area 0）"""
+    body = list(tokens)
+    if len(body) >= 5 and body[0:2] == ['ip', 'ospf'] and body[2].isdigit() and body[3].lower() == 'area':
+        body = ['ip', 'ospf', 'area', body[4]]
+    return ' '.join(body)
+
+
+def parse_frr_config(text):
+    """vtyshの show running-config から、保存する塊（router … / interface … 等）の行を取り出す。
+    ヘッダー・ip route（swcliの設定が持つ）・end・exit は含めない"""
+    out = []
+    keep = False
+    for raw in text.splitlines():
+        if not raw.strip() or raw.startswith('!'):
+            continue
+        if raw[0] not in ' \t':
+            keep = raw.startswith(KEEP_PREFIXES)
+            if keep:
+                if out:
+                    out.append('!')
+                out.append(raw)
+        elif keep:
+            out.append(raw)
+    return out
+
+
+def split_stanzas(lines):
+    stanzas, cur = [], []
+    for line in lines:
+        if line == '!':
+            if cur:
+                stanzas.append(cur)
+            cur = []
+        else:
+            cur.append(line)
+    if cur:
+        stanzas.append(cur)
+    return stanzas
+
+
+def display_line(line):
+    """FRRの行をCiscoの書き方にして見せる（running-config用）"""
+    m = re.fullmatch(r'(\s*)network (\d+\.\d+\.\d+\.\d+)/(\d+) area (\S+)', line)
+    if m:
+        return f'{m.group(1)}network {m.group(2)} {prefix_to_wildcard(int(m.group(3)))} area {m.group(4)}'
+    m = re.fullmatch(r'(\s*)ospf router-id (\S+)', line)
+    if m:
+        return f'{m.group(1)}router-id {m.group(2)}'
+    m = re.fullmatch(r'(\s*)ip ospf area (\S+)', line)
+    if m:
+        return f'{m.group(1)}ip ospf 1 area {m.group(2)}'
+    return line
+
+
+def render_frr_conf(hostname, lines):
+    head = f'frr defaults traditional\nhostname {hostname}\nservice integrated-vtysh-config\n!\n'
+    return head + ('\n'.join(lines) + '\n!\n' if lines else '') + 'end\n'
 
 
 class L3Plugin:
@@ -82,6 +206,7 @@ class L3Plugin:
             lines.append(f' ip address {ip} {self.sw.prefix_to_mask(int(prefix))}')
         else:
             lines.append(' no ip address')
+        lines += self.interface_extra_lines(cfg, name)
         if p.get('shutdown'):
             lines.append(' shutdown')
         return lines
@@ -91,7 +216,22 @@ class L3Plugin:
         for r in self.routes(cfg):
             net = ipaddress.ip_network(r['net'])
             out.append(f'ip route {net.network_address} {net.netmask} {r["nh"]}')
-        return out + ['!'] if out else []
+        out = out + ['!'] if out else []
+        # interface vlan N と ルーテッドポートの塊は、swcliの interface の下に出すので、ここでは出さない
+        shown = {f'vlan{v}' for v in self.sw.svi_ids(cfg)} | self.routed_ports(cfg)
+        for stanza in split_stanzas(cfg.get('frr', [])):
+            if stanza[0].startswith('interface ') and stanza[0].split(None, 1)[1] in shown:
+                continue
+            head = 'router ospf 1' if stanza[0] == 'router ospf' else stanza[0]
+            out += [head] + [display_line(x) for x in stanza[1:]] + ['!']
+        return out
+
+    def interface_extra_lines(self, cfg, dev):
+        """interface <dev> の下に出すFRRの設定（ip ospf cost 等）"""
+        for stanza in split_stanzas(cfg.get('frr', [])):
+            if stanza[0] == f'interface {dev}':
+                return [display_line(x) for x in stanza[1:]]
+        return []
 
     # ---- コマンド ----
     def grammar(self, cli):
@@ -193,17 +333,104 @@ class L3Plugin:
                 cli.modify(lambda cfg: sw.port_cfg(cfg, name).pop('address', None))
 
         show_route = (['show', 'ip', 'route'], lambda a: print(self.show_ip_route(cli.cfg())), 'IP routing table')
+
+        def frr_show(prefix):
+            return lambda a: self.run_show(cli, prefix + (' ' + a[0] if a else ''))
+
+        shows = [
+            (['show', 'ip', 'route', '<line>'], frr_show('show ip route'), 'IP routing table'),
+            (['show', 'ip', 'ospf'], frr_show('show ip ospf'), 'OSPF information'),
+            (['show', 'ip', 'ospf', '<line>'], frr_show('show ip ospf'), 'OSPF information'),
+            (['show', 'ip', 'bgp'], frr_show('show ip bgp'), 'BGP information'),
+            (['show', 'ip', 'bgp', '<line>'], frr_show('show ip bgp'), 'BGP information'),
+            (['show', 'ip', 'rip'], frr_show('show ip rip'), 'IP RIP information'),
+            (['show', 'ip', 'protocols'], frr_show('show ip protocols'), 'IP routing protocol process parameters and statistics'),
+        ]
+
+        def enter_router(proto):
+            def fn(a):
+                head = f'router {proto}' + (f' {a[0]}' if proto == 'bgp' and a else '')
+                if self.run_config(cli, [], head):
+                    cli.mode = 'router'
+                    cli.frr_router = head
+
+            return fn
+
+        def leave_router(proto):
+            def fn(a):
+                self.run_config(cli, [], f'no router {proto}' + (f' {a[0]}' if proto == 'bgp' and a else ''))
+
+            return fn
+
+        def router_line(a):
+            tokens = a[0].split()
+            # Ciscoと同じく、router モードの中でも設定モードのコマンド（interface …、別の router …、ip route …）はそのまま通る
+            try:
+                node, args = sw.walk(cli.trees['config'], tokens)
+            except sw.ParseError:
+                node = None
+            if node is not None and node.func is not None:
+                cli.mode = 'config'
+                node.func(args)
+                return
+            proto = cli.frr_router.split()[1]
+            command, err = translate_router_command(proto, tokens, sw.is_ipv4, sw.mask_to_prefix)
+            if err:
+                print(err)
+                return
+            self.run_config(cli, [cli.frr_router], command)
+
+        def iface_device():
+            if cli.mode == 'svi':
+                return f'vlan{cli.svi}'
+            name = single_port()
+            if name is None:
+                return None
+            if not sw.port_cfg(cli.cfg(), name).get('routed'):
+                print('% This is a switchport. Use "no switchport" to make it a routed port first.')
+                return None
+            return name
+
+        def iface_ospf(negate):
+            def fn(a):
+                dev = iface_device()
+                if dev is None:
+                    return
+                command = translate_interface_command(['ip', 'ospf'] + a[0].split())
+                self.run_config(cli, [f'interface {dev}'], ('no ' if negate else '') + command)
+
+            return fn
+
+        iface_entries = [
+            (['ip', 'ospf', '<line>'], iface_ospf(False), 'OSPF interface commands'),
+            (['no', 'ip', 'ospf', '<line>'], iface_ospf(True), 'OSPF interface commands'),
+        ]
+        router_entries = [(['router', 'ospf'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
+                          (['router', 'ospf', '<word>'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
+                          (['no', 'router', 'ospf'], leave_router('ospf'), 'Remove OSPF'),
+                          (['no', 'router', 'ospf', '<word>'], leave_router('ospf'), 'Remove OSPF'),
+                          (['router', 'bgp', '<word>'], enter_router('bgp'), 'Border Gateway Protocol (BGP)'),
+                          (['no', 'router', 'bgp', '<word>'], leave_router('bgp'), 'Remove BGP'),
+                          (['router', 'rip'], enter_router('rip'), 'Routing Information Protocol (RIP)'),
+                          (['no', 'router', 'rip'], leave_router('rip'), 'Remove RIP')]
         return {
-            'exec': [show_route],
-            'user': [show_route],
-            'config': [
+            'exec': [show_route] + shows,
+            'user': [show_route] + shows,
+            'router': [
+                (['end'], cli.do_end, 'Exit from configure mode'),
+                (['exit'], cli.do_exit, 'Exit from the current mode'),
+                (['do', '<line>'], cli.do_do, 'To run exec commands in config mode'),
+                (['<line>'], router_line, 'Routing protocol command'),
+            ],
+            'svi': iface_entries,
+            'config': router_entries + [
                 (['ip', 'routing'], set_routing(True), 'Enable IP routing'),
                 (['no', 'ip', 'routing'], set_routing(False), 'Disable IP routing'),
                 (['ip', 'route', '<ip>', '<mask>', '<ip>'], add_route, 'Establish static routes'),
                 (['no', 'ip', 'route', '<ip>', '<mask>'], del_route, 'Remove static routes'),
                 (['no', 'ip', 'route', '<ip>', '<mask>', '<ip>'], del_route, 'Remove a static route'),
             ],
-            'interface': [
+            'interface': iface_entries + [
                 (['no', 'switchport'], no_switchport, 'Make the interface a routed port'),
                 (['switchport'], switchport, 'Set the interface to switchport (Layer 2) mode'),
                 (['ip', 'address', '<ip>', '<mask>'], ip_address, 'Set the IP address of a routed port'),
@@ -218,6 +445,55 @@ class L3Plugin:
         if out.returncode != 0:
             return '% Routing is starting. Try again in a few seconds.'
         return out.stdout.rstrip()
+
+    # ---- FRRへの受け渡し（OSPF・BGP・RIP） ----
+    def frr_ready(self, cli):
+        """FRRにコマンドを渡せる状態か。渡せなければ理由を出す"""
+        if not self.routing(cli.cfg()):
+            print('% IP routing not enabled. Use "ip routing" first.')
+            return False
+        if not self.frr_running():
+            print('% Routing is starting. Try again in a few seconds.')
+            return False
+        return True
+
+    def run_show(self, cli, command):
+        if not self.frr_ready(cli):
+            return
+        out = self.sw.sh('vtysh', '-c', command, timeout=10)
+        text = (out.stdout + out.stderr).rstrip()
+        if text:
+            print(text)
+
+    def run_config(self, cli, contexts, command):
+        """vtyshの設定モードで contexts に入ってから command を渡す。成功したら設定を保存用に写す。成功したか"""
+        if not self.frr_ready(cli):
+            return False
+        args = ['vtysh', '-c', 'configure terminal']
+        for c in contexts:
+            args += ['-c', c]
+        args += ['-c', command]
+        out = self.sw.sh(*args, timeout=10)
+        text = (out.stdout + out.stderr).strip()
+        if text:
+            print(text)
+        self.store_frr(cli)
+        return out.returncode == 0 and '%' not in text
+
+    def store_frr(self, cli):
+        """FRRの設定を、swcliの設定（frrキー）に写す。write memoryで startup.json に入り、FRRの起動のたびに書き戻される"""
+        out = self.sw.sh('vtysh', '-c', 'show running-config', timeout=10)
+        if out.returncode != 0:
+            return
+        lines = parse_frr_config(out.stdout)
+
+        def change(cfg):
+            if lines:
+                cfg['frr'] = lines
+            else:
+                cfg.pop('frr', None)
+
+        cli.modify(change)
 
     # ---- エージェント（1秒ごと） ----
     def tick(self, cfg):
@@ -292,7 +568,7 @@ class L3Plugin:
         self.frr_started = time.time()
         # デーモンの一覧は既定のまま（zebra・staticdは常に起動）。設定ファイルは起動のたびに作り直す
         with open(FRR_CONF, 'w') as f:
-            f.write(f'frr defaults traditional\nhostname {cfg.get("hostname", "switch")}\nservice integrated-vtysh-config\n!\nend\n')
+            f.write(render_frr_conf(cfg.get('hostname', 'switch'), cfg.get('frr', [])))
         if not os.path.exists(FRR_VTYSH_CONF):
             open(FRR_VTYSH_CONF, 'w').close()
         sw.sh('chown', 'frr:frr', FRR_CONF)

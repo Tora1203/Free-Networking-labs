@@ -7,6 +7,7 @@ test_swcliと同じく、コンテナの外でCLIの解釈と設定の保存・�
 """
 import unittest
 
+import l3
 from test_swcli import CliTestCase, sw
 
 
@@ -92,6 +93,109 @@ class L3CommandTest(CliTestCase):
         saved = sw.load(sw.STARTUP)
         self.assertTrue(saved['ip_routing'])
         self.assertEqual(saved['routes'], [{'net': '10.1.0.0/24', 'nh': '192.168.0.2'}])
+
+
+class TranslationTest(unittest.TestCase):
+    def tr(self, proto, line):
+        return l3.translate_router_command(proto, line.split(), sw.is_ipv4, sw.mask_to_prefix)
+
+    def test_wildcard(self):
+        self.assertEqual(l3.wildcard_to_prefix('0.0.0.255', sw.is_ipv4, sw.mask_to_prefix), 24)
+        self.assertEqual(l3.wildcard_to_prefix('0.0.0.3', sw.is_ipv4, sw.mask_to_prefix), 30)
+        self.assertIsNone(l3.wildcard_to_prefix('0.255.0.255', sw.is_ipv4, sw.mask_to_prefix))
+        self.assertEqual(l3.prefix_to_wildcard(24), '0.0.0.255')
+        self.assertEqual(l3.prefix_to_wildcard(0), '255.255.255.255')
+
+    def test_ospf_network_and_router_id(self):
+        self.assertEqual(self.tr('ospf', 'network 10.0.0.0 0.0.0.255 area 0'), ('network 10.0.0.0/24 area 0', None))
+        self.assertEqual(self.tr('ospf', 'no network 10.0.0.0 0.0.0.255 area 0'), ('no network 10.0.0.0/24 area 0', None))
+        self.assertEqual(self.tr('ospf', 'network 10.0.0.0/24 area 0'), ('network 10.0.0.0/24 area 0', None))
+        self.assertEqual(self.tr('ospf', 'router-id 1.1.1.1'), ('ospf router-id 1.1.1.1', None))
+        self.assertEqual(self.tr('ospf', 'no router-id'), ('no ospf router-id', None))
+        self.assertIsNotNone(self.tr('ospf', 'network 10.0.0.0 0.255.0.255 area 0')[1])
+
+    def test_ospf_other_commands(self):
+        self.assertEqual(self.tr('ospf', 'passive-interface vlan 10'), ('passive-interface vlan10', None))
+        self.assertEqual(self.tr('ospf', 'passive-interface default'), ('passive-interface default', None))
+        self.assertEqual(self.tr('ospf', 'redistribute connected subnets'), ('redistribute connected', None))
+        self.assertEqual(self.tr('ospf', 'default-information originate always'), ('default-information originate always', None))
+        self.assertEqual(self.tr('bgp', 'neighbor 10.0.0.2 remote-as 65002'), ('neighbor 10.0.0.2 remote-as 65002', None))
+
+    def test_interface_command(self):
+        self.assertEqual(l3.translate_interface_command(['ip', 'ospf', 'cost', '10']), 'ip ospf cost 10')
+        self.assertEqual(l3.translate_interface_command(['ip', 'ospf', '1', 'area', '0']), 'ip ospf area 0')
+
+    FRR_OUTPUT = '''Building configuration...
+
+Current configuration:
+!
+frr version 10.2.2
+frr defaults traditional
+hostname sw1
+service integrated-vtysh-config
+!
+ip route 10.99.0.0/24 10.0.0.2
+!
+interface vlan10
+ ip ospf cost 5
+exit
+!
+router ospf
+ ospf router-id 1.1.1.1
+ network 10.10.0.0/24 area 0
+exit
+!
+end
+'''
+
+    def test_parse_frr_config_keeps_only_protocol_blocks(self):
+        self.assertEqual(
+            l3.parse_frr_config(self.FRR_OUTPUT),
+            ['interface vlan10', ' ip ospf cost 5', '!', 'router ospf', ' ospf router-id 1.1.1.1', ' network 10.10.0.0/24 area 0'],
+        )
+
+    def test_render_frr_conf_roundtrip(self):
+        lines = l3.parse_frr_config(self.FRR_OUTPUT)
+        conf = l3.render_frr_conf('sw1', lines)
+        self.assertIn('hostname sw1', conf)
+        self.assertNotIn('ip route', conf)
+        self.assertEqual(l3.parse_frr_config(conf), lines)
+        self.assertTrue(l3.render_frr_conf('x', []).endswith('end\n'))
+
+    def test_display_line(self):
+        self.assertEqual(l3.display_line(' network 10.10.0.0/24 area 0'), ' network 10.10.0.0 0.0.0.255 area 0')
+        self.assertEqual(l3.display_line(' ospf router-id 1.1.1.1'), ' router-id 1.1.1.1')
+        self.assertEqual(l3.display_line(' ip ospf area 0'), ' ip ospf 1 area 0')
+        self.assertEqual(l3.display_line(' ip ospf cost 5'), ' ip ospf cost 5')
+
+
+class FrrConfigDisplayTest(CliTestCase):
+    def store(self, lines):
+        cfg = sw.load(sw.RUNNING)
+        cfg['frr'] = lines
+        sw.save(sw.RUNNING, cfg)
+
+    def test_router_block_and_interface_block_in_running_config(self):
+        self.configure(['vlan 10', 'interface vlan 10', 'ip address 10.10.0.1 255.255.255.0', 'no shutdown'])
+        self.store(l3.parse_frr_config(TranslationTest.FRR_OUTPUT))
+        config = self.running_config()
+        self.assertIn('router ospf 1\n router-id 1.1.1.1\n network 10.10.0.0 0.0.0.255 area 0\n!', config)
+        # interface vlan10 の塊は、swcliの interface Vlan10 の下に入る（別の塊として出ない）
+        self.assertIn('interface Vlan10\n ip address 10.10.0.1 255.255.255.0\n ip ospf cost 5\n', config)
+        self.assertNotIn('interface vlan10', config)
+
+    def test_router_command_needs_ip_routing(self):
+        out = self.configure(['router ospf'])
+        self.assertIn('IP routing not enabled', out)
+        self.assertNotIn('router ospf', self.running_config())
+
+    def test_show_ospf_needs_ip_routing(self):
+        self.assertIn('IP routing not enabled', self.run_lines(['show ip ospf neighbor']))
+
+    def test_interface_ospf_needs_a_routed_port(self):
+        self.configure(['ip routing'])
+        out = self.configure(['interface eth2', 'ip ospf cost 10'])
+        self.assertIn('switchport', out)
 
 
 if __name__ == '__main__':
