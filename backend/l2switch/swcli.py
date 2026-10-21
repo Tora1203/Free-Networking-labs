@@ -1830,6 +1830,8 @@ def running_svi_lines(cfg):
             lines.append(f' ip address {ip} {prefix_to_mask(int(prefix))}')
         else:
             lines.append(' no ip address')
+        for plugin in PLUGINS:
+            lines += plugin.interface_extra_lines(cfg, f'vlan{vid}')  # ip ospf cost 等（FRRの設定）
         if v['shutdown']:
             lines.append(' shutdown')
         lines.append('!')
@@ -2264,7 +2266,7 @@ def walk(root, tokens):
     return node, args
 
 
-SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line')
+SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line', 'router')  # router＝router ospf等（プラグイン l3.py、FRRに渡す）
 
 
 def filter_output(lines, kind, pattern):
@@ -2542,7 +2544,7 @@ class Cli:
         }
         for plugin in PLUGINS:  # L3スイッチのコマンド（l3.py）を足す。L2スイッチのイメージにはプラグインが無い
             for mode, entries in plugin.grammar(self).items():
-                grammar[mode] = grammar[mode] + entries
+                grammar[mode] = grammar.get(mode, []) + entries
         return grammar
 
     def parse(self, tokens):
@@ -3157,7 +3159,7 @@ class Cli:
         host = self.cfg()['hostname']
         return {'exec': f'{host}#', 'config': f'{host}(config)#', 'interface': f'{host}(config-if)#',
                 'vlan': f'{host}(config-vlan)#', 'mst': f'{host}(config-mst)#', 'svi': f'{host}(config-if)#',
-                'line': f'{host}(config-line)#', 'user': f'{host}>'}[self.mode]
+                'line': f'{host}(config-line)#', 'router': f'{host}(config-router)#', 'user': f'{host}>'}[self.mode]
 
     def execute(self, line):
         # Ciscoと同じく「show ... | include 正規表現」等で出力を絞る（include / exclude / begin / section）

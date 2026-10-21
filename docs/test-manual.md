@@ -350,7 +350,13 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] `write memory` してからノードを停止→起動すると、`ip routing`・静的経路・ルーテッドポートが戻る（**未確認**）
 - [ ] スナップショットで取って戻す、ノードの初期化（wipe）が、L2スイッチと同じようにできる
 - [ ] 古いL2スイッチのラボを開いても、L2スイッチのまま（L3スイッチにならない）
-- [ ] 今は `router ospf` などは使えない（段階2以降）
+- [ ] **OSPF（段階2）**：L3スイッチ2台をつなぎ、両方で `ip routing`、ルーテッドポート（またはSVI）に `ip address`、`router ospf 1` → `router-id` → `network 10.0.0.0 0.0.0.3 area 0` を設定する
+- [ ] 40秒ほどで `show ip ospf neighbor` が `Full` になり、`show ip route` に `O` の経路（相手の先のネットワーク）が出る。末端のPCどうしでpingが通る
+- [ ] `interface vlan 10` の中で `ip ospf cost 5`、`router ospf` の中で `passive-interface vlan 10` が通る。`show running-config` に `router ospf 1`（`network … 0.0.0.3 area 0` のワイルドカード形式）が出て、`interface Vlan10` の下に `ip ospf …` が出る
+- [ ] `write memory` してノードを停止→起動すると、`startup-config` だけからOSPFが戻る（約40秒でFull）
+- [ ] `no ip routing` の間は `router ospf`・`show ip ospf neighbor` が「IP routing not enabled」で断られる。`ip routing` に戻すとOSPFも戻る
+- [ ] `network 10.0.0.0 0.255.0.255 area 0` のような連続しないワイルドカードは断られる
+- [ ] BGP・RIPのコマンドは渡せるが、Ciscoの書き方の翻訳と動作確認は段階3（未確認）
 
 ## 7. エクスポート / インポート
 

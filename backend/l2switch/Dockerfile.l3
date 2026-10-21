@@ -2,10 +2,12 @@
 # nftables（no ip routing の間の転送止め）を足し、swcliのプラグイン l3.py を入れる。
 # swcliは起動時に同じディレクトリのl3.pyを読み込む（無ければL2スイッチのまま）。
 #   fnl/l3switch:1（2026-10-21）：ip routing、静的経路、show ip route、ルーテッドポート（段階1）
+#   fnl/l3switch:2（2026-10-21）：ospfd・bgpd・ripdを有効に。router ospf/bgp/rip、ip ospf …（段階2）
 #
-#   docker build -t fnl/l2switch:7 backend/l2switch
-#   docker build -t fnl/l3switch:1 -f backend/l2switch/Dockerfile.l3 backend/l2switch
-ARG BASE=fnl/l2switch:7
+#   docker build -t fnl/l2switch:8 backend/l2switch
+#   docker build -t fnl/l3switch:2 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+ARG BASE=fnl/l2switch:8
 FROM ${BASE}
-RUN apk add --no-cache frr nftables
+RUN apk add --no-cache frr nftables \
+ && sed -i 's/^ospfd=no/ospfd=yes/; s/^bgpd=no/bgpd=yes/; s/^ripd=no/ripd=yes/' /etc/frr/daemons
 COPY l3.py /usr/local/bin/l3.py

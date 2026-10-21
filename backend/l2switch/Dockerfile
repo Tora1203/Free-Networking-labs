@@ -7,6 +7,7 @@
 #   fnl/l2switch:6（2026-10-15）：コードレビュー（PR #22）の指摘を修正（Ctrl+Cで落ちない、STP設定の入れ直し、static MACの再試行ほか）
 
 #   fnl/l2switch:7（2026-10-21）：swcliにプラグイン（l3.py）の拡張点を追加（L2スイッチの動きは変わらない）
+#   fnl/l2switch:8（2026-10-21）：プラグインの拡張点を追加（routerモード、interface配下のFRR設定。L2スイッチの動きは変わらない）
 
 # mstpdはAlpineのパッケージに無いのでソースから作る。コンテナの中で動かすための改修はmstpd/fnl.patch
 FROM alpine:3.22 AS mstpd

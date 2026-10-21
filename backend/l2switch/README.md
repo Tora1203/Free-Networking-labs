@@ -145,13 +145,13 @@ running-configを流し込み直すと同じ設定になるか、`write memory`�
 
 ## L3スイッチ（fnl/l3switch、2026-10-21〜、段階1）
 
-L2スイッチのイメージ（`fnl/l2switch:7`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
+L2スイッチのイメージ（`fnl/l2switch:8`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
 （`Dockerfile.l3`）。`swcli`は起動時に同じディレクトリの`l3.py`を読み込むので、L2スイッチのイメージ（`l3.py`なし）の動きは変わらない。
 設計は`docs/l3-switch-design.md`。
 
 ```
-docker build -t fnl/l2switch:7 backend/l2switch
-docker build -t fnl/l3switch:1 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l2switch:8 backend/l2switch
+docker build -t fnl/l3switch:2 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -168,4 +168,25 @@ docker build -t fnl/l3switch:1 -f backend/l2switch/Dockerfile.l3 backend/l2switc
 - **FRRの起動はパイプで待たない**：`frrinit.sh start`が起動したデーモンが出力の口を握り続け、パイプで受けると30秒固まる（エージェント全体が止まる）。出力はファイル（`/run/fnl-switch/frr-init.log`）に逃がす。
 - **静的経路の入れ方**：経路は設定（running-config）に持ち、エージェントが5秒ごとにFRRと突き合わせる（FRRが再起動して経路を失っても戻る）。FRRの設定ファイルは起動のたびに作り直す。
 - **ラボを起動した直後**は、STP（rapid-stp）がポートを転送状態にするまで数秒かかる。ping等はその後に確かめる。
+
+### 段階2：OSPF（BGP・RIPも同じ仕組み、`fnl/l3switch:2`）
+
+`router ospf` / `router bgp <AS>` / `router rip` に入ると、中のコマンドをFRRの`vtysh`に渡す（`?`ヘルプとTab補完はFRRのコマンドには効かない）。
+Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startup.json`の`frr`キーに入り、FRRの起動のたびに`frr.conf`へ書き戻される。
+
+| コマンド | 内容 |
+| --- | --- |
+| `router ospf [1]` | OSPFのモードに入る（インスタンス番号は無視） |
+| `router-id 1.1.1.1` | → FRRの`ospf router-id` |
+| `network 10.0.0.0 0.0.0.255 area 0` | → `network 10.0.0.0/24 area 0`（ワイルドカードマスクをプレフィックスに。連続しないマスクは断る） |
+| `passive-interface vlan 10` / `default` | `vlan 10`は`vlan10`に直して渡す |
+| `redistribute connected subnets` | `subnets`は取って渡す |
+| `default-information originate [always]` ほか | そのまま渡す |
+| `interface vlan N`／ルーテッドポート → `ip ospf cost N` ほか | FRRの`interface`に渡す。`ip ospf 1 area 0`は`ip ospf area 0`に |
+| `show ip ospf neighbor` / `interface` / `database` / `show ip protocols` | vtyshの出力のまま |
+
+- `no ip routing`の間は`router …`・`show ip ospf …`を断る（`% IP routing not enabled`）。FRRの設定は残り、`ip routing`で戻る。
+- routerモードの中でも、`interface …`・別の`router …`・`ip route …`などの設定モードのコマンドは、そのまま通る（Ciscoと同じ）。
+- `show running-config`では、FRRの`interface`の設定をswcliの`interface`の下に混ぜて出し、`network`はワイルドカード形式、`router ospf 1`で出す。FRRの`ip ospf passive`は、Ciscoの`passive-interface`ではなくFRRの書き方のまま出る。
+- 起動後、OSPFの隣接（Full）まで約40秒（hello 10秒・dead 40秒）。
 

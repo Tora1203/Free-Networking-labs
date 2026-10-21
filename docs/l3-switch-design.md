@@ -178,3 +178,19 @@ except ImportError:
 - 確かめたこと（コンテナの中、ネットワーク名前空間で2台のホストをVLAN10・20につないだ）：`no ip routing`では同じVLANは通りVLAN間は止まる／`ip routing`でVLAN間が通る／
   静的経路が`show ip route`に出る／ルーテッドポートにアドレスが付く。**未確認**：`write memory`で戻した時の起動、ルーテッドポート越しの疎通、containerlabのラボとして起動した場合。
 
+## 11. 段階2の実装メモ（2026-10-21、be/l3-ospf）
+
+- **パススルーの形**：`router ospf/bgp/rip` のモード（`config-router`）では、`<line>`の文法で何でも受けてFRRの`vtysh -c 'configure terminal' -c 'router ospf' -c '<コマンド>'`に渡す。
+  swcliが解釈するのは、設定モードのコマンド（`interface …`等）かどうかと、Cisco風の書き方の翻訳（`network`のワイルドカード、`router-id`、`redistribute … subnets`、`vlan 10`）だけ。
+  FRRのコマンドが何でも通るので、OSPFだけでなくBGP・RIPのコマンドも渡せる（翻訳と確認は段階3）。
+- **設定の持ち方**：段階1の案（3章：`frr`キーに`show running-config`の全文）を、**必要な塊だけ**に絞った。FRRの`show running-config`から`router …`・`interface …`・`route-map`・`prefix-list`等の塊だけを
+  `cfg['frr']`（行のリスト）に写す。`ip route`はswcliの`routes`が持つので除く（持ち主が二重にならない）。設定コマンドを1つ渡すたびに写し、`write memory`で`startup.json`に入る。
+  FRRの起動のたびに、`frr.conf`をこの行から作り直す（`render_frr_conf`）。
+- **`show running-config`の合成**（7章で一番手間と見ていたところ）：`interface vlan N`とルーテッドポートの塊は、swcliの`interface`の下に混ぜて出す（`ip address`の後、`shutdown`の前）。
+  `router ospf`は`router ospf 1`、`network A/L`は`network A W`、`ospf router-id`は`router-id`で出す。それ以外の塊はFRRの書き方のまま。
+- **デーモン**：`ospfd`・`bgpd`・`ripd`をイメージの`/etc/frr/daemons`で有効にした（`fnl/l3switch:2`）。FRR一式のメモリは測定済みで約24MiB（設計メモ9章、ospfd・bgpd込み）。
+- **確かめたこと**（コンテナ2台をDockerのネットワークで`eth1`同士つないだ）：`ip routing`→ルーテッドポート（10.0.0.0/30）とSVI（末端）→`router ospf`でワイルドカードの`network`、`passive-interface vlan 10`→隣接がFull、
+  相手の末端が`O>*`で学習され、末端どうしのpingが通る／`write memory`→コンテナ再起動で、startup-configだけからOSPFがFullまで戻り、pingも通る。
+- **未確認・未対応**：BGPの翻訳（`network A mask M`→`network A/L`、`ebgp-requires-policy`の扱い）、RIP、`?`ヘルプ・Tab補完、Ciscoの`passive-interface`での表示、
+  複数インスタンスの`router ospf 2`、VRF。containerlabのラボとして起動した場合。
+
