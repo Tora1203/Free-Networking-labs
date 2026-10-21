@@ -356,7 +356,11 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] `write memory` してノードを停止→起動すると、`startup-config` だけからOSPFが戻る（約40秒でFull）
 - [ ] `no ip routing` の間は `router ospf`・`show ip ospf neighbor` が「IP routing not enabled」で断られる。`ip routing` に戻すとOSPFも戻る
 - [ ] `network 10.0.0.0 0.255.0.255 area 0` のような連続しないワイルドカードは断られる
-- [ ] BGP・RIPのコマンドは渡せるが、Ciscoの書き方の翻訳と動作確認は段階3（未確認）
+- [ ] **BGP（段階3）**：L3スイッチ2台をルーテッドポートでつなぎ、`router bgp 65001` → `bgp router-id` → `no bgp ebgp-requires-policy` → `neighbor 10.0.0.2 remote-as 65002` → `address-family ipv4` → `network 10.10.1.0 mask 255.255.255.0` → `neighbor 10.0.0.2 activate` → `exit-address-family`。反対側も同様にする
+- [ ] `show ip bgp summary` が `Established`（`PfxRcd` が1）になり、`show ip route` に `B` が出る。末端どうしでpingが通る
+- [ ] `no bgp ebgp-requires-policy` を入れないと、eBGPで経路が交換されない（FRRの仕様。ルーターと同じ）
+- [ ] `show running-config` に `router bgp 65001` が、`network … mask …` の形で出る。`write memory` → 停止→起動で戻る
+- [ ] **RIP**：`router rip` → `version 2` → `network 10.0.0.0` → `no auto-summary`（エラーにならない）で、`show ip route` に `R` が出る
 
 ## 7. エクスポート / インポート
 
