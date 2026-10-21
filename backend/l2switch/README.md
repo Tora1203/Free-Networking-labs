@@ -234,8 +234,14 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
 
 - **VRRPの仕組み**：FRRのvrrpdは、仮想ルーター用のmacvlan（`vrrp4-<ifindex>-<VRID>`、MAC `00:00:5e:00:01:<VRID>`）を**作らない**。設定（`frr`キー）に合わせてエージェントが作り、
   仮想アドレス（`vrrp N ip`のアドレス、プレフィックス長はSVIと同じ）を付ける。Backupの間はvrrpdがmacvlanをprotodownにして無効にする。`no ip routing`の間はmacvlanを消す。
-- **VRRPの版は3**（FRRの既定）。Ciscoの旧VRRP（版2）とは混在しない。同じ種類のスイッチ同士なら問題ない。
-- **既知の制限**：VRRPの入っているSVIを`shutdown`しても、そのスイッチの`show vrrp`は`Master`のままになる（隔離されるので、もう一方が引き継ぐ動作には影響しない）。
+- **VRRPの制約（2026-10-21、コンテナ2台で実測）**
+  - **版**：既定は版3（FRR）。インスタンスごとに`vrrp N version 2`で版2にできる（グローバルの`vrrp version`というコマンドは無い）。**版が食い違うと広告を読み合えず、両方がMasterになる**（実測：片方を版2にすると、数秒で両方`Master`）。両端で版をそろえる。Ciscoの旧VRRP（版2）と組むなら両端を版2にする（実機との相互接続は未確認）。
+  - **切り替え**：Masterを止めてからBackupがMasterになるまで**約3.8秒**（広告間隔1秒×3＋α。`vrrp N timers advertise`で短縮できる）。優先度の高い側は、戻るとプリエンプトしてMasterを取り戻す（実測）。
+  - **SVIを`shutdown`した側の表示**：そのスイッチの`show vrrp`は`Master`のままになる（実測。SVIは`DOWN`、macvlanは`LOWERLAYERDOWN`なのにvrrpdが`Initialize`に移らない。macvlanを管理上落としても変わらない＝FRRのvrrpdの動作）。もう一方は引き継ぐので通信には影響せず、`no shutdown`で正しい状態に戻る。表示だけの問題。
+  - **IPv4だけ**：エージェントが作るのは`vrrp4-…`のmacvlanだけ。IPv6のVRRPは使えない。
+  - **ルーティングが前提**：`no ip routing`の間はmacvlanを消す（VRRPは止まる）。設定は残り、`ip routing`で戻る。再起動後は`startup-config`だけから復元される（実測：sw1を再起動し、約9秒でMasterに戻った）。
+  - **足りない機能**：認証、トラッキング（`vrrp N track`）、`show vrrp brief`の1行表示（`brief`も詳細表示になる）、プリエンプトの遅延（FRRの対応は未確認）。`running-config`には、FRRの書き方で`vrrp 1`の行が単独で出る（Ciscoには無い行）。
+  - **入力のタイミング**：`vrrp N ip`はSVIにアドレスが付いてから（エージェントが1秒ごとに反映）でないと受け付けられない。続けて貼り付けると失敗することがある。
 - **DHCPリレーの仕組み**：`ip helper-address`はswcliの設定（SVIは`svi`、ルーテッドポートは`interfaces`の`helpers`）に持つ。エージェントが`dhcp-helper -s <サーバー> -i <インターフェース>`を動かす
   （サーバーは全インターフェースの分をまとめる。インターフェースごとに別のサーバーに振り分けることはしない）。設定が変われば作り直し、無くなれば止める。
 - **`ip routing`直後のコマンド**：FRRの起動を最大10秒待ってから渡す（打ってすぐ「起動中」で失敗しない）。ただし`vrrp 1 ip`はSVIにアドレスが付いてからでないと受け付けられない
