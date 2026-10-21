@@ -150,3 +150,18 @@ except ImportError:
 1. `fnl/l3switch:0`（実験用）を作り、コンテナの中で手作業で`ip_forward=1`＋`zebra`＋`ospfd`を動かして、
    2台のL3スイッチ間でOSPFが張れることと、メモリ・起動時間を確認する。
 2. 問題がなければ、`isSwitchKind()`のリファクタ（フロント）→ 段階1の実装。
+
+## 9. 実測の結果（2026-10-21）
+
+8章の最初の一歩を行った。`fnl/l3switch:0`（`fnl/l2switch:6`に`apk add frr frr-pythontools`だけ足した実験用）を2台動かし、手作業で確認した。
+
+| 項目 | 結果 |
+| --- | --- |
+| イメージの大きさ | 123MB（L2スイッチ86.6MB、FRR分は約36MB） |
+| メモリ | FRR一式（zebra・ospfd・bgpd・staticd・mgmtd・watchfrr）でコンテナ全体約24MiB。見込み（100〜150MB）より大幅に小さい |
+| FRRの起動 | 約0.5秒（`frrinit.sh start`） |
+| OSPF | 2台のあいだでFullまで成立（`daemons`で`ospfd=yes`、`frr.conf`に`router ospf`だけ） |
+
+- 未確認：`swcli`・mstpd・FRRを同時に動かした時の起動時間（実験ではFRRだけ動かした）、SVI（`vlanN`）とルーテッドポート上でのOSPF。段階1・2で確認する。
+- 要確認：Dockerの既定では`net.ipv4.ip_forward`を書き換えられなかった（読み取り専用）。`ip routing`で確実に1にする方法
+  （ルーターの`ip_forward`の扱いに合わせる、またはlabのYAMLの`sysctls`）を段階1で決める。
