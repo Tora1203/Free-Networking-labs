@@ -54,6 +54,8 @@ export const CONTAINER_CAPABILITIES: Partial<Record<PaletteNodeKind, { privilege
   router: { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
   // L2スイッチ（コンテナ内のLinuxブリッジ、2026-10-13〜）はブリッジ/VLANの操作にNET_ADMINが要る
   'l2-switch': { privileged: false, capAdd: ['NET_ADMIN'] },
+  // L3スイッチのFRR（zebra）がSYS_ADMINを要求する（無いとzebraが起動しない。ルーターと同じ）
+  'l3-switch': { privileged: false, capAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'] },
 }
 
 // コンテナを持つノードか。L2スイッチは2026-10-13からコンテナになったが、それ以前に作られた
@@ -333,7 +335,7 @@ export function hasSwitchWithoutConfigBind(yamlText: string): boolean {
     return Object.values(doc?.topology?.nodes ?? {}).some(
       (n) =>
         typeof n?.image === 'string' &&
-        n.image.startsWith('fnl/l2switch') &&
+        (n.image.startsWith('fnl/l2switch') || n.image.startsWith('fnl/l3switch')) &&
         !(Array.isArray(n.binds) && n.binds.some((b) => typeof b === 'string' && b.startsWith('switch-config/'))),
     )
   } catch {

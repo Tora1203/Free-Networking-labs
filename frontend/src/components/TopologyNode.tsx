@@ -7,6 +7,7 @@ import { NODE_RUN_STATUS_LABEL, useNodeRunStatus } from './nodeRuntimeContext'
 const KIND_VISUAL: Record<PaletteNodeKind, { badge: string; className: string }> = {
   router: { badge: 'R', className: 'topo-node--router' },
   'l2-switch': { badge: 'SW', className: 'topo-node--switch' },
+  'l3-switch': { badge: 'L3', className: 'topo-node--switch topo-node--l3switch' },
   pc: { badge: 'PC', className: 'topo-node--pc' },
 }
 

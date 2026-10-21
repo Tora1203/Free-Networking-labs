@@ -22,7 +22,7 @@ interface EdgeIfaceData {
   targetIface: string
   [key: string]: unknown
 }
-const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', pc: 'PC' }
+const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', 'l3-switch': 'L3SW', pc: 'PC' }
 
 interface RawTopologyYaml {
   name?: string
@@ -47,6 +47,7 @@ const GRID_SPACING_Y = 140
 // （frontend/src/types/lab.tsのPALETTE_NODE_CONFIGSと対応）
 function guessPaletteKind(clabKind: string | undefined, image: string | undefined): PaletteNodeKind {
   if (clabKind === 'ovs-bridge') return 'l2-switch' // 2026-10-13以前のラボ
+  if (image?.startsWith('fnl/l3switch')) return 'l3-switch' // 2026-10-21〜
   if (image?.startsWith('fnl/l2switch')) return 'l2-switch' // :1（2026-10-13）も含む
   // ルーターのイメージのタグが上がっても（fnl/frr:1 → :2）古いラボのルーターをルーターと分かるよう、前方一致で見る。
   // 2026-10-15まで今のタグとの完全一致で見ていたため、タグを上げた時に古いルーターがPCと判定され、
@@ -67,7 +68,7 @@ export function parseTopologyYaml(yamlText: string): ParsedTopology {
   const rawNodes = parsed.topology?.nodes ?? {}
   const rawLinks = parsed.topology?.links ?? []
 
-  const counters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, pc: 0 }
+  const counters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, 'l3-switch': 0, pc: 0 }
   const nodes: Node[] = Object.entries(rawNodes).map(([clabName, def], i) => {
     const kind = guessPaletteKind(def?.kind, def?.image)
     const config = PALETTE_NODE_CONFIGS[kind]
