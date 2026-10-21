@@ -26,24 +26,28 @@ import {
   type ApplyResponse,
   type TopologyContent,
 } from '../api/client'
+import { dump as dumpYaml, load as loadYaml } from 'js-yaml'
 import { ensureFrrConfig, ensureSwitchConfig } from '../api/ovsHelperClient'
 import { readLabTitle, serializeAnnotations } from './annotations'
 import type { PaletteNodeKind } from '../types/lab'
 import { assertExecOk, buildNodeSyncCommands, buildTopologyContent, buildWipeCommand, parseImportedTopology, topologyToYaml } from './labTopology'
 import { netemKey, netemKeyFromShow } from './linkCondition'
-import { getLabDisplayName, labTitleKey } from './labName'
+import { getLabDisplayName, labTitleKey, rememberLabDisplayName, toSafeLabName } from './labName'
 import {
   SNAPSHOT_LIMIT,
   buildReadConfigCommand,
+  buildSnapshotExport,
   buildSnapshotFiles,
   buildWriteConfigCommand,
   decodeConfigOutput,
   isSnapshotLabName,
+  parseSnapshotExport,
   parseSnapshotLabName,
   readSnapshotMeta,
   snapshotLabName,
   stripSnapshotMeta,
   type NodeConfig,
+  type SnapshotFiles,
   type SnapshotMeta,
 } from './snapshot'
 
@@ -420,15 +424,46 @@ export async function createLabSnapshot(
   const { configs, skipped } = await readNodeConfigs(labName, built)
   const name = snapshotLabName(labName)
   const files = buildSnapshotFiles(name, yamlText, annotationsText, { ...input, configs, skipped })
+  return writeSnapshotFiles(name, files)
+}
+
+// スナップショットのラボ（YAML＋annotations）を書く。annotationsの保存に失敗したら、設定を持たない半端なものを残さない
+async function writeSnapshotFiles(name: string, files: SnapshotFiles): Promise<SnapshotEntry> {
   await putLabTopologyYaml(name, files.yaml)
   try {
     await putLabAnnotations(name, files.annotations)
   } catch (e) {
-    // 設定を持たない半端なスナップショットを残さない
     await deleteLabFile(name, `${name}.clab.yml`).catch(() => undefined)
     throw e
   }
   return { labName: name, yamlFileName: `${name}.clab.yml`, annotationsFileName: `${name}.clab.yml.annotations.json`, meta: files.meta }
+}
+
+// スナップショットを1つのJSONファイルの中身にする（他のユーザーに渡す、課題の初期状態を配る）
+export async function exportLabSnapshot(entry: SnapshotEntry): Promise<string> {
+  const [yamlText, annotations] = await Promise.all([getLabTopologyYaml(entry.labName), getLabAnnotations(entry.labName)])
+  return buildSnapshotExport(yamlText, annotations)
+}
+
+// 書き出したファイルの中身を、このラボの新しいスナップショットとして保存する（そこから「戻す」で使う）。
+// 日時はいま取り込んだ時刻になる（名前・メモ・設定は元のまま）
+export async function importLabSnapshot(parentLab: string, fileText: string): Promise<SnapshotEntry> {
+  const parsed = parseSnapshotExport(fileText)
+  const existing = await listLabSnapshots(parentLab)
+  if (existing.length >= SNAPSHOT_LIMIT) {
+    throw new Error(`スナップショットは1つのラボに${SNAPSHOT_LIMIT}個までです。不要なものを削除してから取り込んでください`)
+  }
+  // 名前は日時（秒）なので、同じ秒に取り込むと重なる。重なったら1秒ずつずらす
+  const taken = new Set(existing.map((e) => e.labName))
+  let name = snapshotLabName(parentLab)
+  for (let i = 1; taken.has(name) && i < 60; i++) name = snapshotLabName(parentLab, new Date(Date.now() + i * 1000))
+  const files = buildSnapshotFiles(name, parsed.yaml, parsed.annotations, {
+    title: parsed.meta.title,
+    note: parsed.meta.note,
+    configs: parsed.meta.configs,
+    skipped: parsed.meta.skipped,
+  })
+  return writeSnapshotFiles(name, files)
 }
 
 // スナップショットのYAMLとannotations（snapshotキーを除く）を読む
@@ -460,4 +495,51 @@ export async function restoreNodeConfigs(
     }),
   )
   return { restored, failures }
+}
+
+// スナップショットから新しいラボを作る（「別のラボとして開く」、2026-10-21）。元のラボには触れない。
+// 設定を持つスナップショットは、新しいラボを起動して設定を書き戻し、そのノードを再起動する
+// （設定の置き場所はノードの中なので、ホスト側にファイルを置く特別な手段は要らない）。
+// ラボ名は「<元の表示名>のコピー」（重なれば(2)(3)…）。失敗しても作ったラボは残し、できなかったことを返す
+export async function createLabFromSnapshot(
+  entry: SnapshotEntry,
+  username: string | null,
+  baseTitle: string,
+  onProgress: (message: string) => void,
+): Promise<{ labName: string; title: string; failures: string[] }> {
+  const { ids, titles } = await listLabNames()
+  let title = `${baseTitle}のコピー`
+  for (let n = 2; ids.has(toSafeLabName(title, username)) || titles.has(labTitleKey(title)); n++) title = `${baseTitle}のコピー(${n})`
+  const labName = toSafeLabName(title, username)
+
+  onProgress('新しいラボを作っています...')
+  const snap = await loadLabSnapshot(entry)
+  const doc = loadYaml(snap.yaml) as { name?: string }
+  doc.name = labName
+  const annotations = { ...(JSON.parse(snap.annotations) as Record<string, unknown>), title }
+  await putLabTopologyYaml(labName, dumpYaml(doc, { lineWidth: -1 }))
+  await putLabAnnotations(labName, JSON.stringify(annotations))
+  rememberLabDisplayName(labName, title)
+
+  const failures: string[] = []
+  const configs = entry.meta.configs
+  if (Object.keys(configs).length === 0) return { labName, title, failures }
+
+  onProgress('ラボを起動しています...')
+  const started = await startSavedLab(labName)
+  failures.push(...started.failures)
+
+  onProgress('設定を書き戻して再起動しています...')
+  const restoredResult = await restoreNodeConfigs(labName, configs, new Set(Object.keys(configs)))
+  failures.push(...restoredResult.failures)
+  // 再起動したノードと隣のノードは、中の設定（アドレス・ケーブル・リンクの品質）が消えているので流し直す
+  const { nodes, edges } = parseImportedTopology(await getLabTopologyYaml(labName), await getLabAnnotations(labName).catch(() => null))
+  const built = buildTopologyContent(nodes, edges, labName)
+  const affected = new Set(restoredResult.restored)
+  for (const id of restoredResult.restored) for (const neighbor of built.neighbors.get(id) ?? []) affected.add(neighbor)
+  const commands = buildNodeSyncCommands(built)
+  const synced = await runNodeSyncs(labName, commands, [...affected].filter((id) => commands.has(id)))
+  failures.push(...synced.failures)
+  failures.push(...(await applyLinkConditions(labName, built, new Set(affected), [...affected], newLinkRuntimeState())))
+  return { labName, title, failures }
 }

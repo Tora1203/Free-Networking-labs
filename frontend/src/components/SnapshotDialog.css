@@ -94,3 +94,8 @@
   gap: 4px;
   flex-shrink: 0;
 }
+
+.snapshot-dialog__message {
+  font-size: 11px;
+  color: var(--status-running);
+}
