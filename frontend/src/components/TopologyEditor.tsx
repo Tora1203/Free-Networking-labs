@@ -80,7 +80,7 @@ import { useAuthStore } from '../store/authStore'
 import './TopologyEditor.css'
 
 // パレットの種別ごとに「R1」「SW1」「PC1」のような短い表示名を振るための接頭辞とカウンター
-const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', pc: 'PC' }
+const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', 'l3-switch': 'L3SW', pc: 'PC' }
 
 const nodeTypes = { topoNode: TopologyNode, labelNode: LabelNode, areaNode: AreaNode }
 const edgeTypes = { floating: FloatingEdge }
@@ -129,7 +129,7 @@ function makeNodeData(kind: PaletteNodeKind, shortLabel: string): TopoNodeData {
 // 下のuseEffectで既存ラボのYAMLから復元するので、このinitialNodes/initialEdgesは使われない）
 const initialNodes: Node[] = []
 const initialEdges: Edge[] = []
-const initialCounters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, pc: 0 }
+const initialCounters: Record<PaletteNodeKind, number> = { router: 0, 'l2-switch': 0, 'l3-switch': 0, pc: 0 }
 
 // ラベル・エリアのid採番。crypto.randomUUID()はセキュアコンテキスト（https/localhost）でしか
 // 使えず、LANのIPに http:// でアクセスする運用（docs/api-contract.md参照）があるため使わない

@@ -8,7 +8,7 @@ export const DND_MIME_TYPE = 'application/reactflow-node-kind'
 export const LABEL_DND_VALUE = 'label'
 export const AREA_DND_VALUE = 'area'
 
-const paletteOrder: PaletteNodeKind[] = ['router', 'l2-switch', 'pc']
+const paletteOrder: PaletteNodeKind[] = ['router', 'l2-switch', 'l3-switch', 'pc']
 
 export default function NodePalette() {
   const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind | typeof LABEL_DND_VALUE | typeof AREA_DND_VALUE) => {

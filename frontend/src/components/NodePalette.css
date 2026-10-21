@@ -44,6 +44,10 @@
   border-left: 4px solid var(--node-switch);
 }
 
+.node-palette__item--l3-switch {
+  border-left: 4px solid var(--node-switch);
+}
+
 .node-palette__item--pc {
   border-left: 4px solid var(--node-pc);
 }

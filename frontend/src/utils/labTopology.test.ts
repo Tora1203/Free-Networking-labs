@@ -40,6 +40,7 @@ describe('parseTopologyYaml：ノードの種類の判定', () => {
   it('今のパレットのイメージ', () => {
     expect(kindOf(PALETTE_NODE_CONFIGS.router.image)).toBe('router')
     expect(kindOf(PALETTE_NODE_CONFIGS['l2-switch'].image)).toBe('l2-switch')
+    expect(kindOf(PALETTE_NODE_CONFIGS['l3-switch'].image)).toBe('l3-switch')
     expect(kindOf(PALETTE_NODE_CONFIGS.pc.image)).toBe('pc')
   })
 
@@ -63,7 +64,7 @@ describe('parseTopologyYaml：ノードの種類の判定', () => {
     )
     expect(p.edges).toHaveLength(1)
     expect(p.edges[0].data).toEqual({ sourceIface: 'eth3', targetIface: 'eth7' })
-    expect(p.counters).toEqual({ router: 0, 'l2-switch': 0, pc: 2 })
+    expect(p.counters).toEqual({ router: 0, 'l2-switch': 0, 'l3-switch': 0, pc: 2 })
   })
 })
 
@@ -239,5 +240,42 @@ describe('buildWipeCommand（ノードを初期状態に戻す）', () => {
   it('シェルに渡るので、使えない文字を含むルーター名は拒否する', () => {
     expect(() => buildWipeCommand('router', "r'; reboot; '")).toThrow()
     expect(() => buildWipeCommand('router', '$(id)')).toThrow()
+  })
+})
+
+describe('L3スイッチ（2026-10-21）', () => {
+  const l3Nodes = [node('l3sw-1', 'l3-switch', 10, 20), node('pc-1', 'pc', 200, 20), node('router-1', 'router', 400, 20)]
+  const l3Edges = [edge('l3sw-1', 'eth1', 'pc-1', 'eth1'), edge('l3sw-1', 'eth2', 'router-1', 'eth1')]
+  const built = buildTopologyContent(l3Nodes, l3Edges, 'lab1')
+
+  it('L2スイッチと同じ設定の保存先のbind mountが付き、zebraのためSYS_ADMINまで持つ', () => {
+    expect(built.topologyContent.topology.nodes['l3sw-1']).toEqual({
+      kind: 'linux',
+      image: PALETTE_NODE_CONFIGS['l3-switch'].image,
+      privileged: false,
+      'cap-add': ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'],
+      binds: ['switch-config/l3sw-1:/etc/fnl-switch'],
+    })
+  })
+
+  it('スイッチとして扱う（設定の保存先の用意・設定の保存・初期化の対象）', () => {
+    expect(built.switchClabNames).toEqual(['l3sw-1'])
+    expect(built.routerClabNames).toEqual(['router-1'])
+    expect(buildWipeCommand('l2-switch', 'l3sw-1')).toContain('startup.json')
+    expect(hasSwitchWithoutConfigBind('name: x\ntopology:\n  nodes:\n    s: {kind: linux, image: "fnl/l3switch:1"}\n')).toBe(true)
+  })
+
+  it('保存して読み込むとL3スイッチのまま（PCやL2スイッチにならない）', () => {
+    const yaml = topologyToYaml(built.topologyContent)
+    const annotations = serializeAnnotations(l3Nodes, built.portAnnotations, built.switchOriginalIds, 'テスト')
+    const parsed = parseImportedTopology(yaml, annotations)
+    const kinds = Object.fromEntries(parsed.nodes.map((n) => [n.id, (n.data as { kind: string }).kind]))
+    expect(kinds).toEqual({ 'l3sw-1': 'l3-switch', 'pc-1': 'pc', 'router-1': 'router' })
+    expect(parsed.counters['l3-switch']).toBe(1)
+  })
+
+  it('スイッチ側にはIPアドレスの入力を持たせない（アドレスはCLIで設定する）', () => {
+    const withAddress = buildTopologyContent(l3Nodes, [edge('l3sw-1', 'eth1', 'pc-1', 'eth1', { sourceAddress: '10.0.0.1/24' })], 'lab1')
+    expect(withAddress.addressTasks.every((t) => t.nodeName !== 'l3sw-1')).toBe(true)
   })
 })
