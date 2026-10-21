@@ -198,6 +198,20 @@ end
 
 
 class FrrConfigDisplayTest(CliTestCase):
+    def test_policy_blocks_in_running_config(self):
+        self.store(['ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24', '!', 'ip prefix-list ONLY10 seq 10 deny 0.0.0.0/0 le 32', '!',
+                    'route-map IN permit 10', ' match ip address prefix-list ONLY10', ' set local-preference 200'])
+        config = self.running_config()
+        self.assertIn('ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24\nip prefix-list ONLY10 seq 10 deny 0.0.0.0/0 le 32\n!\nroute-map IN permit 10\n'
+                      ' match ip address prefix-list ONLY10\n set local-preference 200\n!', config)
+
+    def test_route_map_needs_ip_routing(self):
+        out = self.configure(['route-map IN permit 10'])
+        self.assertIn('IP routing not enabled', out)
+        out = self.configure(['ip prefix-list A seq 5 permit 10.0.0.0/8'])
+        self.assertIn('IP routing not enabled', out)
+        self.assertIn('Invalid', self.configure(['route-map IN allow 10']))
+
     def test_bgp_block_in_running_config(self):
         self.store(['router bgp 65001', ' bgp router-id 1.1.1.1', ' neighbor 10.0.0.2 remote-as 65002', ' !', ' address-family ipv4 unicast',
                     '  network 10.10.1.0/24', ' exit-address-family'])

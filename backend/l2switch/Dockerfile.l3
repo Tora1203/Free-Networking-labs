@@ -4,10 +4,11 @@
 #   fnl/l3switch:1（2026-10-21）：ip routing、静的経路、show ip route、ルーテッドポート（段階1）
 #   fnl/l3switch:2（2026-10-21）：ospfd・bgpd・ripdを有効に。router ospf/bgp/rip、ip ospf …（段階2）
 #   fnl/l3switch:3（2026-10-21）：BGP・RIPのCisco風の翻訳（network … mask、address-family ipv4、クラスフルのnetwork）（段階3）
+#   fnl/l3switch:4（2026-10-21）：route-map・ip prefix-list・ip as-path・ip community-list（ポリシー）
 #
-#   docker build -t fnl/l2switch:8 backend/l2switch
-#   docker build -t fnl/l3switch:3 -f backend/l2switch/Dockerfile.l3 backend/l2switch
-ARG BASE=fnl/l2switch:8
+#   docker build -t fnl/l2switch:9 backend/l2switch
+#   docker build -t fnl/l3switch:4 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+ARG BASE=fnl/l2switch:9
 FROM ${BASE}
 RUN apk add --no-cache frr nftables \
  && sed -i 's/^ospfd=no/ospfd=yes/; s/^bgpd=no/bgpd=yes/; s/^ripd=no/ripd=yes/' /etc/frr/daemons
