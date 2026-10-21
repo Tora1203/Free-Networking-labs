@@ -151,7 +151,7 @@ L2スイッチのイメージ（`fnl/l2switch:9`〜）に、FRR（zebra・static
 
 ```
 docker build -t fnl/l2switch:9 backend/l2switch
-docker build -t fnl/l3switch:4 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l3switch:5 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -222,4 +222,22 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
 
 - `show running-config`では、`ip prefix-list`等の1行の設定は続けて、`route-map`はFRRの書き方のまま出る。
 - **`access-list`（番号付き）は未対応**：Ciscoでは経路用とパケット用で同じ名前を使うが、FRRの`access-list`は経路用。パケット用のACLは段階4（nftables）で、同じ入力を両方に反映する形を設計する。
+
+### VRRP・DHCPリレー（`fnl/l3switch:5`、段階4の一部）
+
+| コマンド | 内容 |
+| --- | --- |
+| `vrrp 1 ip 10.10.0.1` / `vrrp 1 priority 120` / `vrrp 1 preempt` ほか | `interface vlan N`・ルーテッドポートの中。FRRのvrrpdに渡す（`no vrrp …`で削除） |
+| `vrrp 1 timers advertise 3` | → `vrrp 1 advertisement-interval 3000`（Ciscoは秒、FRRはミリ秒） |
+| `show vrrp` / `show vrrp brief` | vtyshの出力のまま（`brief`も同じ詳細表示） |
+| `ip helper-address A.B.C.D` / `no ip helper-address [A.B.C.D]` | DHCPリレー。`interface vlan N`・ルーテッドポートの中。何個でも。`show running-config`では`ip address`の次に出る |
+
+- **VRRPの仕組み**：FRRのvrrpdは、仮想ルーター用のmacvlan（`vrrp4-<ifindex>-<VRID>`、MAC `00:00:5e:00:01:<VRID>`）を**作らない**。設定（`frr`キー）に合わせてエージェントが作り、
+  仮想アドレス（`vrrp N ip`のアドレス、プレフィックス長はSVIと同じ）を付ける。Backupの間はvrrpdがmacvlanをprotodownにして無効にする。`no ip routing`の間はmacvlanを消す。
+- **VRRPの版は3**（FRRの既定）。Ciscoの旧VRRP（版2）とは混在しない。同じ種類のスイッチ同士なら問題ない。
+- **既知の制限**：VRRPの入っているSVIを`shutdown`しても、そのスイッチの`show vrrp`は`Master`のままになる（隔離されるので、もう一方が引き継ぐ動作には影響しない）。
+- **DHCPリレーの仕組み**：`ip helper-address`はswcliの設定（SVIは`svi`、ルーテッドポートは`interfaces`の`helpers`）に持つ。エージェントが`dhcp-helper -s <サーバー> -i <インターフェース>`を動かす
+  （サーバーは全インターフェースの分をまとめる。インターフェースごとに別のサーバーに振り分けることはしない）。設定が変われば作り直し、無くなれば止める。
+- **`ip routing`直後のコマンド**：FRRの起動を最大10秒待ってから渡す（打ってすぐ「起動中」で失敗しない）。ただし`vrrp 1 ip`はSVIにアドレスが付いてからでないと受け付けられない
+  （アドレスはエージェントが1秒ごとに反映するので、続けて貼り付けると失敗することがある）。
 

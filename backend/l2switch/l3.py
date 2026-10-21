@@ -35,6 +35,7 @@ FRR_INIT = '/usr/lib/frr/frrinit.sh'
 NFT_TABLE = 'fnl_l3'
 ROUTE_CHECK_SEC = 5
 FRR_RETRY_SEC = 15
+FRR_WAIT_SEC = 10
 FRR_LOG = '/run/fnl-switch/frr-init.log'
 
 NOT_ENABLED = 'Default gateway is not set'
@@ -148,6 +149,14 @@ def translate_interface_command(tokens):
     return ' '.join(body)
 
 
+def translate_vrrp_command(tokens):
+    """interface の中の vrrp … をFRRのコマンドにする（Cisco：timers advertise 秒 → FRR：advertisement-interval ミリ秒）"""
+    body = list(tokens)
+    if len(body) >= 4 and body[1:3] == ['timers', 'advertise'] and body[3].isdigit():
+        body = [body[0], 'advertisement-interval', str(int(body[3]) * 1000)] + body[4:]
+    return ' '.join(['vrrp'] + body)
+
+
 def parse_frr_config(text):
     """vtyshの show running-config から、保存する塊（router … / interface … 等）の行を取り出す。
     ヘッダー・ip route（swcliの設定が持つ）・end・exit は含めない"""
@@ -209,11 +218,20 @@ def render_frr_conf(hostname, lines):
     return head + ('\n'.join(lines) + '\n!\n' if lines else '') + 'end\n'
 
 
+def is_up(name):
+    try:
+        with open(f'/sys/class/net/{name}/flags') as f:
+            return bool(int(f.read(), 16) & 1)
+    except (OSError, ValueError):
+        return False
+
+
 class L3Plugin:
     def __init__(self, sw):
         self.sw = sw  # swcli自身（関数・値の参照用）
         self.routed_prev = set()
         self.forward_state = None
+        self.dhcp_state = None
         self.last_route_check = 0.0
         self.frr_started = 0.0
 
@@ -279,12 +297,19 @@ class L3Plugin:
             out.append('!')
         return out
 
+    @staticmethod
+    def helpers_of(cfg, dev):
+        m = re.fullmatch(r'vlan(\d+)', dev)
+        holder = cfg.get('svi', {}).get(m.group(1), {}) if m else cfg.get('interfaces', {}).get(dev, {})
+        return list(holder.get('helpers', []))
+
     def interface_extra_lines(self, cfg, dev):
-        """interface <dev> の下に出すFRRの設定（ip ospf cost 等）"""
+        """interface <dev> の下に出す設定：ip helper-address（swcliの設定）と、FRRの設定（ip ospf cost、vrrp 等）"""
+        lines = [f' ip helper-address {h}' for h in self.helpers_of(cfg, dev)]
         for stanza in split_stanzas(cfg.get('frr', [])):
             if stanza[0] == f'interface {dev}':
-                return [display_line(x) for x in stanza[1:]]
-        return []
+                return lines + [display_line(x) for x in stanza[1:]]
+        return lines
 
     # ---- コマンド ----
     def grammar(self, cli):
@@ -400,6 +425,9 @@ class L3Plugin:
             (['show', 'ip', 'protocols'], frr_show('show ip protocols'), 'IP routing protocol process parameters and statistics'),
             (['show', 'ip', 'prefix-list'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
             (['show', 'ip', 'prefix-list', '<line>'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
+            (['show', 'vrrp'], frr_show('show vrrp'), 'VRRP information'),
+            (['show', 'vrrp', 'brief'], frr_show('show vrrp'), 'VRRP information'),
+            (['show', 'vrrp', '<line>'], frr_show('show vrrp'), 'VRRP information'),
             (['show', 'route-map'], frr_show('show route-map'), 'route-map information'),
             (['show', 'route-map', '<line>'], frr_show('show route-map'), 'route-map information'),
         ]
@@ -491,9 +519,60 @@ class L3Plugin:
 
             return fn
 
+        def iface_vrrp(negate):
+            def fn(a):
+                dev = iface_device()
+                if dev is None:
+                    return
+                self.run_config(cli, [f'interface {dev}'], ('no ' if negate else '') + translate_vrrp_command(a[0].split()))
+
+            return fn
+
+        def helper_holder(cfg):
+            """ip helper-address を持つ設定の辞書（SVIか、ルーテッドポート）。持てない場所なら None"""
+            if cli.mode == 'svi':
+                return cfg.setdefault('svi', {}).setdefault(str(cli.svi), {})
+            name = single_port()
+            if name is None:
+                return None
+            if not sw.port_cfg(cfg, name).get('routed'):
+                print('% This is a switchport. Use "no switchport" to make it a routed port first.')
+                return None
+            return sw.port_cfg(cfg, name)
+
+        def helper_add(a):
+            if not sw.is_ipv4(a[0]):
+                print("% Invalid input detected at '^' marker.")
+                return
+
+            def change(cfg):
+                holder = helper_holder(cfg)
+                if holder is not None and a[0] not in holder.get('helpers', []):
+                    holder['helpers'] = holder.get('helpers', []) + [a[0]]
+
+            cli.modify(change)
+
+        def helper_del(a):
+            def change(cfg):
+                holder = helper_holder(cfg)
+                if holder is None:
+                    return
+                left = [h for h in holder.get('helpers', []) if a and h != a[0]]
+                if left:
+                    holder['helpers'] = left
+                else:
+                    holder.pop('helpers', None)
+
+            cli.modify(change)
+
         iface_entries = [
             (['ip', 'ospf', '<line>'], iface_ospf(False), 'OSPF interface commands'),
             (['no', 'ip', 'ospf', '<line>'], iface_ospf(True), 'OSPF interface commands'),
+            (['vrrp', '<line>'], iface_vrrp(False), 'VRRP Interface configuration commands'),
+            (['no', 'vrrp', '<line>'], iface_vrrp(True), 'VRRP Interface configuration commands'),
+            (['ip', 'helper-address', '<ip>'], helper_add, 'Specify a destination address for UDP broadcasts (DHCP relay)'),
+            (['no', 'ip', 'helper-address'], helper_del, 'Remove all helper addresses'),
+            (['no', 'ip', 'helper-address', '<ip>'], helper_del, 'Remove a helper address'),
         ]
         router_entries = [(['router', 'ospf'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
                           (['router', 'ospf', '<word>'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
@@ -560,10 +639,17 @@ class L3Plugin:
         if not self.routing(cli.cfg()):
             print('% IP routing not enabled. Use "ip routing" first.')
             return False
-        if not self.frr_running():
-            print('% Routing is starting. Try again in a few seconds.')
-            return False
+        # ip routing の直後は、エージェントがFRRを起動し終えるまで数秒かかる。打ってすぐ失敗しないよう、最大10秒待つ
+        deadline = time.time() + FRR_WAIT_SEC
+        while not self.frr_ready_now():
+            if time.time() > deadline:
+                print('% Routing is starting. Try again in a few seconds.')
+                return False
+            time.sleep(0.5)
         return True
+
+    def frr_ready_now(self):
+        return self.frr_running() and self.sw.sh('vtysh', '-c', 'show version', timeout=5).returncode == 0
 
     def run_show(self, cli, command):
         if not self.frr_ready(cli):
@@ -610,6 +696,8 @@ class L3Plugin:
         self.sync_routed_ports(cfg, routed)
         self.sync_forwarding(routing, routed)
         self.sync_frr(cfg, routing)
+        self.sync_vrrp(cfg, routing)
+        self.sync_dhcp_helper(cfg)
 
     def sync_routed_ports(self, cfg, routed):
         sw = self.sw
@@ -629,6 +717,96 @@ class L3Plugin:
             if os.path.exists(f'/sys/class/net/{name}'):
                 sw.sh('ip', '-4', 'addr', 'flush', 'dev', name)
         self.routed_prev = set(routed)
+
+    @staticmethod
+    def vrrp_instances(cfg):
+        """FRRの設定にある VRRP のインスタンス {(デバイス, VRID): [仮想アドレス…]}。interface <dev> の下の `vrrp N …` から取る"""
+        found = {}
+        for stanza in split_stanzas(cfg.get('frr', [])):
+            if not stanza[0].startswith('interface '):
+                continue
+            dev = stanza[0].split(None, 1)[1]
+            for line in stanza[1:]:
+                m = re.match(r'\s*vrrp (\d+)\b(?: ip (\d+\.\d+\.\d+\.\d+))?', line)
+                if m:
+                    ips = found.setdefault((dev, int(m.group(1))), [])
+                    if m.group(2):
+                        ips.append(m.group(2))
+        return found
+
+    @staticmethod
+    def interface_address(cfg, dev):
+        """SVI・ルーテッドポートの 'ip/プレフィックス'（仮想アドレスのプレフィックス長に使う）"""
+        m = re.fullmatch(r'vlan(\d+)', dev)
+        holder = cfg.get('svi', {}).get(m.group(1), {}) if m else cfg.get('interfaces', {}).get(dev, {})
+        return holder.get('address')
+
+    def sync_vrrp(self, cfg, routing):
+        """FRRのvrrpdは、VRRPの仮想ルーター用のmacvlan（vrrp4-<ifindex>-<VRID>）を作ってくれない。
+        設定に合わせてここで作り、要らなくなったものは消す（仮想アドレスはvrrpdがMasterの時だけ付ける）"""
+        sw = self.sw
+        want = {}
+        if routing:
+            for (dev, vrid), ips in self.vrrp_instances(cfg).items():
+                try:
+                    with open(f'/sys/class/net/{dev}/ifindex') as f:
+                        want[f'vrrp4-{int(f.read())}-{vrid}'] = (dev, vrid, ips)
+                except (OSError, ValueError):
+                    continue  # まだデバイスが無い（SVIの作成待ち）
+        have = [n for n in os.listdir('/sys/class/net') if re.fullmatch(r'vrrp4-\d+-\d+', n)]
+        for name, (dev, vrid, ips) in want.items():
+            if name not in have:
+                sw.sh('ip', 'link', 'add', name, 'link', dev, 'addr', f'00:00:5e:00:01:{vrid:02x}', 'type', 'macvlan', 'mode', 'bridge')
+            # 仮想アドレスはmacvlanに付けておく。Backupの間はvrrpdがmacvlanをprotodownにして無効にする
+            base = self.interface_address(cfg, dev)
+            prefix = base.split('/')[1] if base else '24'
+            wanted = [f'{ip}/{prefix}' for ip in ips]
+            current = [line.split()[3] for line in sw.sh('ip', '-4', '-o', 'addr', 'show', 'dev', name).stdout.splitlines() if len(line.split()) > 3]
+            if sorted(current) != sorted(wanted):
+                sw.sh('ip', '-4', 'addr', 'flush', 'dev', name)
+                for addr in wanted:
+                    sw.sh('ip', 'addr', 'add', addr, 'dev', name)
+            if name not in have or not is_up(name):
+                sw.sh('ip', 'link', 'set', name, 'up')
+        for name in have:
+            if name not in want:
+                sw.sh('ip', 'link', 'del', name)
+
+    def sync_dhcp_helper(self, cfg):
+        """ip helper-address のあるSVI・ルーテッドポートで受けたDHCP要求を、サーバーへ中継する（dhcp-helper）。
+        サーバーは全インターフェースのものをまとめる（インターフェースごとに変える使い方は今は無い）"""
+        sw = self.sw
+        servers, ifaces = set(), set()
+        for vid in sw.svi_ids(cfg):
+            hs = self.helpers_of(cfg, f'vlan{vid}')
+            if hs and os.path.exists(f'/sys/class/net/vlan{vid}'):
+                servers |= set(hs)
+                ifaces.add(f'vlan{vid}')
+        for name in self.routed_ports(cfg):
+            hs = self.helpers_of(cfg, name)
+            if hs and os.path.exists(f'/sys/class/net/{name}'):
+                servers |= set(hs)
+                ifaces.add(name)
+        want = (tuple(sorted(servers)), tuple(sorted(ifaces)))
+        running = sw.sh('pidof', 'dhcp-helper').returncode == 0
+        if want == self.dhcp_state and (running or not servers):
+            return
+        sw.sh('pkill', '-x', 'dhcp-helper')
+        self.dhcp_state = want
+        if not servers:
+            return
+        args = ['dhcp-helper']
+        for server in want[0]:
+            args += ['-s', server]
+        for iface in want[1]:
+            args += ['-i', iface]
+        # デーモンが出力の口を握ったままになるので、パイプで待たない（run_initと同じ事情）
+        try:
+            code = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=10, start_new_session=True).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            code = 124
+        if code != 0:
+            print('l3: dhcp-helperを起動できません', flush=True)
 
     def sync_forwarding(self, routing, routed):
         """no ip routing の間は、SVI・ルーテッドポートから入るパケットの転送を止める（コンテナの ip_forward は
