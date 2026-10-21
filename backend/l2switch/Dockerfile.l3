@@ -1,0 +1,11 @@
+# L3スイッチ用イメージ（2026-10-21〜、設計：docs/l3-switch-design.md）。L2スイッチのイメージにFRR（zebra・staticd）と
+# nftables（no ip routing の間の転送止め）を足し、swcliのプラグイン l3.py を入れる。
+# swcliは起動時に同じディレクトリのl3.pyを読み込む（無ければL2スイッチのまま）。
+#   fnl/l3switch:1（2026-10-21）：ip routing、静的経路、show ip route、ルーテッドポート（段階1）
+#
+#   docker build -t fnl/l2switch:7 backend/l2switch
+#   docker build -t fnl/l3switch:1 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+ARG BASE=fnl/l2switch:7
+FROM ${BASE}
+RUN apk add --no-cache frr nftables
+COPY l3.py /usr/local/bin/l3.py
