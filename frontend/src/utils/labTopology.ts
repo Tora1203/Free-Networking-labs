@@ -4,7 +4,7 @@
 import type { Node, Edge } from '@xyflow/react'
 import { dump as dumpYaml, load as loadYaml } from 'js-yaml'
 import type { TopoNodeData } from '../components/TopologyNode'
-import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
+import { PALETTE_NODE_CONFIGS, isSwitchKind, type PaletteNodeKind } from '../types/lab'
 import { parseTopologyYaml } from './topologyFromYaml'
 import { applyAnnotations, applyPortAnnotations, restoreSwitchIdentities } from './annotations'
 import type { ExecResponse, TopologyContent } from '../api/client'
@@ -178,7 +178,7 @@ export function buildTopologyContent(
     // L2スイッチとルーターは常に現在のパレット定義のイメージで起動する。古いラボのovs-bridgeの
     // スイッチ（2026-10-13〜）や、エージェントの無いFRR公式イメージのルーター（2026-10-14〜）もここで置き換わる
     const kindConfig =
-      data.kind === 'l2-switch' || data.kind === 'router' ? PALETTE_NODE_CONFIGS[data.kind] : { clabKind: data.clabKind, image: data.image }
+      isSwitchKind(data.kind) || data.kind === 'router' ? PALETTE_NODE_CONFIGS[data.kind] : { clabKind: data.clabKind, image: data.image }
     clabNodeNames.set(node.id, clabName)
     nodeKinds.set(node.id, data.kind)
     const caps = CONTAINER_CAPABILITIES[data.kind]
@@ -194,7 +194,7 @@ export function buildTopologyContent(
             `frr-config/${clabName}/frr.conf:/etc/frr/frr.conf`,
             `frr-config/${clabName}/vtysh.conf:/etc/frr/vtysh.conf`,
           ]
-        : data.kind === 'l2-switch'
+        : isSwitchKind(data.kind)
           ? // スイッチのstartup-config（swcliの`write memory`）をホストに残す（2026-10-14追加。
             // それまではコンテナ内にあり、ラボの作り直し・削除で消えていた）。ルーターと同じく
             // 事前にディレクトリが無いとdeployが失敗するので、ensureSwitchConfig()で用意する
@@ -206,7 +206,7 @@ export function buildTopologyContent(
       ...(caps ? { privileged: caps.privileged, 'cap-add': caps.capAdd } : {}),
       ...(binds ? { binds } : {}),
     }
-    if (data.kind === 'l2-switch') switchOriginalIds[clabName] = node.id
+    if (isSwitchKind(data.kind)) switchOriginalIds[clabName] = node.id
   }
 
   // deployより前にensureFrrConfig()を呼ぶ対象（router on a stickのVLANサブインターフェースが
@@ -220,7 +220,7 @@ export function buildTopologyContent(
   // PC/ルーター（コンテナを持つノード）の全clabName。deploy後、全ノードで
   // containerlab自動設定のeth0デフォルトルートを削除する対象（2026-10-07追加）
   const linuxNodeNames = deviceNodes
-    .filter((n) => (n.data as Partial<TopoNodeData>).kind !== 'l2-switch')
+    .filter((n) => !isSwitchKind((n.data as Partial<TopoNodeData>).kind))
     .map((n) => clabNodeNames.get(n.id))
     .filter((name): name is string => !!name)
 
@@ -232,7 +232,7 @@ export function buildTopologyContent(
   const neighbors = new Map<string, Set<string>>()
   const endKind = (id: string) => {
     const kind = nodeKinds.get(id)
-    return kind === 'l2-switch' ? 'switch' : kind === 'pc' ? 'pc' : kind === 'router' ? 'router' : undefined
+    return isSwitchKind(kind) ? 'switch' : kind === 'pc' ? 'pc' : kind === 'router' ? 'router' : undefined
   }
 
   const links = edges.map((edge) => {
@@ -243,8 +243,8 @@ export function buildTopologyContent(
       throw new Error(`リンク「${edge.id}」のインターフェース情報が見つかりません`)
     }
 
-    const sourceIsSwitch = nodeKinds.get(edge.source) === 'l2-switch'
-    const targetIsSwitch = nodeKinds.get(edge.target) === 'l2-switch'
+    const sourceIsSwitch = isSwitchKind(nodeKinds.get(edge.source))
+    const targetIsSwitch = isSwitchKind(nodeKinds.get(edge.target))
     const sourcePort = iface.sourceIface
     const targetPort = iface.targetIface
 
@@ -314,7 +314,7 @@ export function buildTopologyContent(
     gatewayByNode,
     routerClabNames,
     switchClabNames: deviceNodes
-      .filter((n) => (n.data as Partial<TopoNodeData>).kind === 'l2-switch')
+      .filter((n) => isSwitchKind((n.data as Partial<TopoNodeData>).kind))
       .map((n) => clabNodeNames.get(n.id))
       .filter((name): name is string => !!name),
     portAnnotations,
@@ -439,6 +439,6 @@ export function buildWipeCommand(kind: PaletteNodeKind | undefined, nodeName: st
     if (!NODE_NAME_PATTERN.test(nodeName)) throw new Error(`ノード名「${nodeName}」は使えない文字を含んでいます`)
     return `sh -c 'printf "frr version 10.2.1\\nfrr defaults traditional\\nhostname ${nodeName}\\n!\\nline vty\\n!\\n" > /etc/frr/frr.conf'`
   }
-  if (kind === 'l2-switch') return `sh -c 'rm -f /etc/fnl-switch/startup.json /etc/fnl-switch/startup.json.tmp'`
+  if (isSwitchKind(kind)) return `sh -c 'rm -f /etc/fnl-switch/startup.json /etc/fnl-switch/startup.json.tmp'`
   return null
 }

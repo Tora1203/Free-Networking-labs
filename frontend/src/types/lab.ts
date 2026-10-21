@@ -20,6 +20,14 @@ export interface Lab {
 // docs/api-contract.md セクション3の対応表を参照。
 export type PaletteNodeKind = 'router' | 'l2-switch' | 'pc'
 
+// スイッチ系のノード種別（swcliのCLIと、startup-configをホストに残す仕組みを持つもの）。
+// 「スイッチなら」という判定は `=== 'l2-switch'` と書かず、これを使う（L3スイッチを足す時に直す所をここに集める）
+export type SwitchKind = 'l2-switch'
+
+export function isSwitchKind(kind: string | undefined): kind is SwitchKind {
+  return kind === 'l2-switch'
+}
+
 export interface PaletteNodeConfig {
   kind: PaletteNodeKind
   label: string

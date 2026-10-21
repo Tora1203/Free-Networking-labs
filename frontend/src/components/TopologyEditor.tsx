@@ -21,7 +21,7 @@ import TopologyNode, { type TopoNodeData } from './TopologyNode'
 import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
-import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
+import { PALETTE_NODE_CONFIGS, isSwitchKind, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
@@ -160,7 +160,7 @@ const SWITCH_CONSOLE_AUTO_COMMAND = 'while true; do swcli; done'
 
 function consoleAutoCommand(kind: PaletteNodeKind | undefined): string | undefined {
   if (kind === 'router') return ROUTER_CONSOLE_AUTO_COMMAND
-  if (kind === 'l2-switch') return SWITCH_CONSOLE_AUTO_COMMAND
+  if (isSwitchKind(kind)) return SWITCH_CONSOLE_AUTO_COMMAND
   return undefined
 }
 
@@ -200,7 +200,7 @@ const OLD_FORMAT_MESSAGE =
 function needsUpgrade(node: Node): boolean {
   if (node.type !== 'topoNode') return false
   const data = node.data as Partial<TopoNodeData>
-  if (data.kind === 'l2-switch') return data.image !== PALETTE_NODE_CONFIGS['l2-switch'].image
+  if (isSwitchKind(data.kind)) return data.image !== PALETTE_NODE_CONFIGS[data.kind].image
   if (data.kind === 'router') return data.image !== PALETTE_NODE_CONFIGS.router.image
   return false
 }
@@ -1374,8 +1374,8 @@ function TopologyEditorInner() {
     : false
 
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
-  const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
-  const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
+  const sourceIsSwitch = pendingConnection ? isSwitchKind(nodeKind(pendingConnection.source)) : false
+  const targetIsSwitch = pendingConnection ? isSwitchKind(nodeKind(pendingConnection.target)) : false
   // ルーターはIPアドレス設定をvtyshのCLIで行う方針にしたため、GUIのプレーンなアドレス/
   // ゲートウェイ入力欄はPCにしか出さない（2026-10-07方針変更：「ルーターはCLIで設定しないと
   // 意味がない」指摘対応。docs/direction.md参照）
