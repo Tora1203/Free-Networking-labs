@@ -149,6 +149,16 @@ class TranslationTest(unittest.TestCase):
         self.assertEqual(l3.display_line(' network 10.0.0.0/24', 'rip'), ' network 10.0.0.0/24')  # クラスフルでない形はそのまま
         self.assertEqual(l3.display_line(' neighbor 10.0.0.2 remote-as 65002', 'bgp'), ' neighbor 10.0.0.2 remote-as 65002')
 
+    def test_vrrp_command(self):
+        self.assertEqual(l3.translate_vrrp_command(['1', 'ip', '10.0.0.1']), 'vrrp 1 ip 10.0.0.1')
+        self.assertEqual(l3.translate_vrrp_command(['1', 'priority', '120']), 'vrrp 1 priority 120')
+        self.assertEqual(l3.translate_vrrp_command(['1', 'timers', 'advertise', '3']), 'vrrp 1 advertisement-interval 3000')
+
+    def test_vrrp_instances_come_from_the_interface_blocks(self):
+        plugin = l3.L3Plugin(None)
+        cfg = {'frr': ['interface vlan10', ' vrrp 1', ' vrrp 1 ip 10.10.0.1', ' vrrp 2 priority 90', '!', 'interface eth3', ' ip ospf cost 5', '!', 'router ospf', ' vrrp 9']}
+        self.assertEqual(plugin.vrrp_instances(cfg), {('vlan10', 1): ['10.10.0.1'], ('vlan10', 2): []})
+
     def test_interface_command(self):
         self.assertEqual(l3.translate_interface_command(['ip', 'ospf', 'cost', '10']), 'ip ospf cost 10')
         self.assertEqual(l3.translate_interface_command(['ip', 'ospf', '1', 'area', '0']), 'ip ospf area 0')
@@ -204,6 +214,31 @@ class FrrConfigDisplayTest(CliTestCase):
         config = self.running_config()
         self.assertIn('ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24\nip prefix-list ONLY10 seq 10 deny 0.0.0.0/0 le 32\n!\nroute-map IN permit 10\n'
                       ' match ip address prefix-list ONLY10\n set local-preference 200\n!', config)
+
+    def test_helper_address_on_svi_and_routed_port(self):
+        self.configure(['vlan 10', 'interface vlan 10', 'ip address 10.10.0.1 255.255.255.0', 'ip helper-address 10.0.0.5', 'ip helper-address 10.0.0.6',
+                        'exit', 'interface eth2', 'no switchport', 'ip address 10.0.1.1 255.255.255.0', 'ip helper-address 10.0.0.5'])
+        config = self.running_config()
+        self.assertIn('interface Vlan10\n ip address 10.10.0.1 255.255.255.0\n ip helper-address 10.0.0.5\n ip helper-address 10.0.0.6\n', config)
+        self.assertIn('interface eth2\n no switchport\n ip address 10.0.1.1 255.255.255.0\n ip helper-address 10.0.0.5\n', config)
+        self.configure(['interface vlan 10', 'no ip helper-address 10.0.0.5'])
+        config = self.running_config()
+        self.assertNotIn('ip helper-address 10.0.0.5\n ip helper-address 10.0.0.6', config)
+        self.assertIn('ip helper-address 10.0.0.6', config)
+        self.configure(['interface vlan 10', 'no ip helper-address'])
+        self.assertNotIn('10.0.0.6', self.running_config())
+
+    def test_helper_address_needs_a_valid_ip_and_a_routed_port(self):
+        self.assertIn('Invalid', self.configure(['interface vlan 10', 'ip helper-address 10.0.0.999']))
+        self.assertIn('switchport', self.configure(['interface eth2', 'ip helper-address 10.0.0.5']))
+
+    def test_vrrp_needs_ip_routing(self):
+        self.assertIn('IP routing not enabled', self.configure(['interface vlan 10', 'vrrp 1 ip 10.0.0.1']))
+
+    def test_vrrp_lines_merge_into_the_interface_block(self):
+        self.configure(['vlan 10', 'interface vlan 10', 'ip address 10.10.0.2 255.255.255.0', 'no shutdown'])
+        self.store(['interface vlan10', ' vrrp 1 ip 10.10.0.1', ' vrrp 1 priority 120'])
+        self.assertIn('interface Vlan10\n ip address 10.10.0.2 255.255.255.0\n vrrp 1 ip 10.10.0.1\n vrrp 1 priority 120\n', self.running_config())
 
     def test_route_map_needs_ip_routing(self):
         out = self.configure(['route-map IN permit 10'])

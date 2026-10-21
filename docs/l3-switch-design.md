@@ -217,3 +217,15 @@ except ImportError:
   受け取ったのは許可した`10.10.1.0/24`だけ（LocPrf 200）、`10.20.1.0/24`は暗黙の拒否で入らない。
 - ビルドの注意：`swcli.py`を変えたら`fnl/l2switch`のタグを上げて作り直し、その上に`fnl/l3switch`を作る（土台のswcliが古いまま`<rmaction>`の引数チェックが無く、エラーになった）。
 
+## 14. 段階4（VRRP・DHCPリレー）の実装メモ（2026-10-21、be/l3-vrrp-dhcp）
+
+ACLは別に設計する（次のPR）。
+
+- **VRRP**：`vrrp …`を`interface`の中でvrrpdに渡す。**FRRはmacvlanを作らない**ので、エージェント（`sync_vrrp`）が`vrrp4-<ifindex>-<VRID>`を作り、仮想アドレスを付ける
+  （`vrrp autoconfigure`はmacvlanを作る機能ではなく、既にあるmacvlanからインスタンスを作る機能。最初に取り違えた）。仮想アドレスをmacvlanに付けたままにし、Backupの間はvrrpdがprotodownにして無効にする。
+  Ciscoの`timers advertise`（秒）はFRRの`advertisement-interval`（ミリ秒）に翻訳。FRRの`vrrp version`というグローバルコマンドは無い（版は既定の3）。
+- **DHCPリレー**：Alpineの`dhcp-helper`（Simon Kelley製の小さなリレー）を、エージェントが管理する。`ip helper-address`はswcliの設定に持つ（FRRの設定ではない）。
+- **確かめたこと**（コンテナ）：VRRP＝2台でMaster（優先度120）／Backupに分かれ、仮想アドレスはMasterのmacvlanだけがUP、Backupに宛てたpingがMasterに届き、Masterを落とすとBackupがMasterになる。
+  DHCPリレー＝VLAN10のクライアントが、リレー経由でdnsmasqからアドレスを取得（DISCOVER→OFFER→REQUEST→ACK）。
+- **未対応**：VRRPの認証・トラッキング、`show vrrp brief`の1行表示、HSRP、DHCPのオプション82、インターフェースごとのDHCPサーバーの振り分け。ACL（次）。
+

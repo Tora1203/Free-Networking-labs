@@ -361,6 +361,10 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] `no bgp ebgp-requires-policy` を入れないと、eBGPで経路が交換されない（FRRの仕様。ルーターと同じ）
 - [ ] `show running-config` に `router bgp 65001` が、`network … mask …` の形で出る。`write memory` → 停止→起動で戻る
 - [ ] **RIP**：`router rip` → `version 2` → `network 10.0.0.0` → `no auto-summary`（エラーにならない）で、`show ip route` に `R` が出る
+- [ ] **VRRP**：L3スイッチ2台を同じVLAN（例：VLAN10）のアクセスポートでつなぎ、両方で `ip routing`、`interface vlan 10` にアドレス（`10.10.0.2`・`10.10.0.3`）を付けてから、`vrrp 1 ip 10.10.0.1`。片方に `vrrp 1 priority 120`
+- [ ] `show vrrp` で、優先度の高い方が `Master`、もう一方が `Backup` になる。PCのゲートウェイを `10.10.0.1` にしてpingが通る。Masterを停止すると数秒でBackupが `Master` になり、pingが続く
+- [ ] `show running-config` の `interface Vlan10` に `vrrp 1 ip …` が出る。`write memory` → 停止→起動で戻る
+- [ ] **DHCPリレー**：`interface vlan 10` に `ip helper-address <DHCPサーバー>`（サーバーはルーテッドポートの先）。VLAN10のPCがDHCPでアドレスを取れる。`show running-config` の `ip address` の次に出る。`no ip helper-address` で止まる
 - [ ] **ポリシー**：L3スイッチ2台のeBGPで、片方が2つのネットワークを `network` で広告する。もう片方で `ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24`、`route-map IN permit 10`（中で `match ip address prefix-list ONLY10`、`set local-preference 200`）、`router bgp` の `address-family ipv4` の中で `neighbor … route-map IN in`
 - [ ] `show ip bgp` に許可したネットワークだけが LocPrf 200 で出て、許可していないものは出ない。`show ip prefix-list`・`show route-map` が出る。`show running-config` に `ip prefix-list` が続けて、`route-map IN permit 10` が出る
 - [ ] `no ip routing` の間は `route-map`・`ip prefix-list` が「IP routing not enabled」で断られる。`route-map IN allow 10` は不正な入力として断られる
