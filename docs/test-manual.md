@@ -361,6 +361,9 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] `no bgp ebgp-requires-policy` を入れないと、eBGPで経路が交換されない（FRRの仕様。ルーターと同じ）
 - [ ] `show running-config` に `router bgp 65001` が、`network … mask …` の形で出る。`write memory` → 停止→起動で戻る
 - [ ] **RIP**：`router rip` → `version 2` → `network 10.0.0.0` → `no auto-summary`（エラーにならない）で、`show ip route` に `R` が出る
+- [ ] **ポリシー**：L3スイッチ2台のeBGPで、片方が2つのネットワークを `network` で広告する。もう片方で `ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24`、`route-map IN permit 10`（中で `match ip address prefix-list ONLY10`、`set local-preference 200`）、`router bgp` の `address-family ipv4` の中で `neighbor … route-map IN in`
+- [ ] `show ip bgp` に許可したネットワークだけが LocPrf 200 で出て、許可していないものは出ない。`show ip prefix-list`・`show route-map` が出る。`show running-config` に `ip prefix-list` が続けて、`route-map IN permit 10` が出る
+- [ ] `no ip routing` の間は `route-map`・`ip prefix-list` が「IP routing not enabled」で断られる。`route-map IN allow 10` は不正な入力として断られる
 
 ## 7. エクスポート / インポート
 

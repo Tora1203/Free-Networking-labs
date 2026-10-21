@@ -206,3 +206,14 @@ except ImportError:
 - **未対応**：route-map・prefix-list・access-listの設定コマンド（設定モードのトップレベル。`frr`キーには保存できる形だが入力の文法が無い）、iBGP・ルートリフレクタの確認、
   BGPの`show`の翻訳、VRRP・DHCPリレー・ACL（段階4）。
 
+## 13. ポリシー系の実装メモ（2026-10-21、be/l3-policy）
+
+- **渡し方**：`router_line`を一般化し、`router …`と`route-map NAME permit|deny SEQ`のどちらも「今の文脈（`cli.frr_router`）＋ `address-family`」でvtyshに渡す。route-mapは専用モード
+  （`config-route-map`、`SUB_MODES`に追加）。`ip prefix-list`・`ip as-path`・`ip community-list`は設定モードのトップレベルの1行をそのまま渡す。翻訳は不要（Ciscoと同じ書き方）。
+- **保存**：`parse_frr_config`の`KEEP_PREFIXES`に既に入れていたので、`frr`キーに写る。`show running-config`では、1行の設定は`!`を挟まず続けて出す。
+- **`access-list`は先送り**：Ciscoの番号付きACL（`access-list 10 permit …`）は、`distribute-list`・`route-map`の`match ip address`（経路）と、`ip access-group`（パケット）の両方に使う。FRRの`access-list`は経路用だけ。
+  段階4で、swcli側にACLを持ち、パケット用はnftablesに、`match ip address N`用の標準ACLは同じ内容をFRRにも入れる形にする。
+- **確かめたこと**（コンテナ2台）：sw1がeBGPで2つのネットワークを広告し、sw2が`ip prefix-list ONLY10`＋`route-map IN`（`match ip address prefix-list`、`set local-preference 200`）を`neighbor … route-map IN in`で適用 →
+  受け取ったのは許可した`10.10.1.0/24`だけ（LocPrf 200）、`10.20.1.0/24`は暗黙の拒否で入らない。
+- ビルドの注意：`swcli.py`を変えたら`fnl/l2switch`のタグを上げて作り直し、その上に`fnl/l3switch`を作る（土台のswcliが古いまま`<rmaction>`の引数チェックが無く、エラーになった）。
+

@@ -145,13 +145,13 @@ running-configを流し込み直すと同じ設定になるか、`write memory`�
 
 ## L3スイッチ（fnl/l3switch、2026-10-21〜、段階1）
 
-L2スイッチのイメージ（`fnl/l2switch:8`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
+L2スイッチのイメージ（`fnl/l2switch:9`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
 （`Dockerfile.l3`）。`swcli`は起動時に同じディレクトリの`l3.py`を読み込むので、L2スイッチのイメージ（`l3.py`なし）の動きは変わらない。
 設計は`docs/l3-switch-design.md`。
 
 ```
-docker build -t fnl/l2switch:8 backend/l2switch
-docker build -t fnl/l3switch:3 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l2switch:9 backend/l2switch
+docker build -t fnl/l3switch:4 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -207,4 +207,19 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
 
 - **`ebgp-requires-policy`はFRRの既定のまま**（ルーターのノードと同じ。`docs/direction.md` 2026-10-09の「FRRの仕様として周知する」）。eBGPで経路を交換するには、`router bgp` の中で `no bgp ebgp-requires-policy` を入れる（またはroute-mapを使う。route-mapの設定コマンドは未対応）。
 - `neighbor` の `activate` は、`address-family` の中でも外でも通る（FRRの既定でIPv4 unicastは有効）。
+
+### ポリシー（route-map・prefix-list ほか、`fnl/l3switch:4`）
+
+設定モードのトップレベルから、FRRに渡す。書き方はCiscoとほぼ同じなので翻訳はしない。`ip routing`の間だけ使える（FRRの設定）。
+
+| コマンド | 内容 |
+| --- | --- |
+| `ip prefix-list NAME [seq N] permit|deny A.B.C.D/L [ge N] [le N]` | プレフィックスリスト（`no ip prefix-list …`で削除） |
+| `route-map NAME permit|deny [SEQ]` | route-mapのモード（`config-route-map`）。中の `match …`・`set …`（`match ip address prefix-list X`、`set local-preference N` 等）をFRRに渡す。SEQ省略は10。`no route-map …`で削除 |
+| `ip as-path access-list …`、`ip community-list …` | そのままFRRへ |
+| `neighbor A route-map NAME in|out`、`neighbor A prefix-list NAME in|out`、`redistribute … route-map NAME` | router の中でそのままFRRへ（段階2・3の仕組み） |
+| `show ip prefix-list [NAME]`、`show route-map [NAME]` | vtyshの出力のまま |
+
+- `show running-config`では、`ip prefix-list`等の1行の設定は続けて、`route-map`はFRRの書き方のまま出る。
+- **`access-list`（番号付き）は未対応**：Ciscoでは経路用とパケット用で同じ名前を使うが、FRRの`access-list`は経路用。パケット用のACLは段階4（nftables）で、同じ入力を両方に反映する形を設計する。
 

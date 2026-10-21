@@ -2109,6 +2109,7 @@ ARG_CHECK = {
     '<iface>': lambda t: norm_iface(t) is not None,
     '<ifaces>': lambda t: norm_iface_range(t) is not None,
     '<word>': lambda t: True,
+    '<rmaction>': lambda t: t.lower() in ('permit', 'deny'),
     '<line>': lambda t: True,
     '<bridge-prio>': lambda t: t.isdigit() and int(t) <= 61440 and int(t) % 4096 == 0,
     '<port-prio>': lambda t: t.isdigit() and int(t) <= 240 and int(t) % 16 == 0,
@@ -2136,6 +2137,7 @@ ARG_HELP = {
     '<iface>': ('ethN', 'Interface (e.g. eth1)'),
     '<ifaces>': ('WORD', 'Interface range (e.g. eth1-3,eth5)'),
     '<word>': ('WORD', ''),
+    '<rmaction>': ('permit|deny', 'Route map denies or permits set operations'),
     '<line>': ('LINE', ''),
     '<bridge-prio>': ('<0-61440>', 'bridge priority in increments of 4096'),
     '<port-prio>': ('<0-240>', 'port priority in increments of 16'),
@@ -2266,7 +2268,7 @@ def walk(root, tokens):
     return node, args
 
 
-SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line', 'router')  # router＝router ospf等（プラグイン l3.py、FRRに渡す）
+SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line', 'router', 'route-map')  # router＝router ospf等（プラグイン l3.py、FRRに渡す）
 
 
 def filter_output(lines, kind, pattern):
@@ -3159,7 +3161,7 @@ class Cli:
         host = self.cfg()['hostname']
         return {'exec': f'{host}#', 'config': f'{host}(config)#', 'interface': f'{host}(config-if)#',
                 'vlan': f'{host}(config-vlan)#', 'mst': f'{host}(config-mst)#', 'svi': f'{host}(config-if)#',
-                'line': f'{host}(config-line)#', 'router': f'{host}(config-router)#', 'user': f'{host}>'}[self.mode]
+                'line': f'{host}(config-line)#', 'router': f'{host}(config-router)#', 'route-map': f'{host}(config-route-map)#', 'user': f'{host}>'}[self.mode]
 
     def execute(self, line):
         # Ciscoと同じく「show ... | include 正規表現」等で出力を絞る（include / exclude / begin / section）

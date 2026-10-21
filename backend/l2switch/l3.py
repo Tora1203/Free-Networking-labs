@@ -55,6 +55,7 @@ def parse_net(ip, mask, mask_to_prefix, is_ipv4):
 
 KEEP_PREFIXES = ('router ', 'interface ', 'route-map ', 'ip prefix-list ', 'ipv6 prefix-list ', 'access-list ', 'ip as-path ', 'ip community-list ', 'bfd')
 ROUTER_PROTOCOLS = ('ospf', 'bgp', 'rip')
+SINGLE_LINE_PREFIXES = ('ip prefix-list ', 'ip as-path ', 'ip community-list ', 'access-list ')
 
 
 def wildcard_to_prefix(wildcard, is_ipv4, mask_to_prefix):
@@ -259,13 +260,23 @@ class L3Plugin:
         out = out + ['!'] if out else []
         # interface vlan N と ルーテッドポートの塊は、swcliの interface の下に出すので、ここでは出さない
         shown = {f'vlan{v}' for v in self.sw.svi_ids(cfg)} | self.routed_ports(cfg)
+        run_kind = None  # 1行だけの設定（ip prefix-list …）は、Ciscoと同じく続けて出す
         for stanza in split_stanzas(cfg.get('frr', [])):
             if stanza[0].startswith('interface ') and stanza[0].split(None, 1)[1] in shown:
+                continue
+            kind = next((k for k in SINGLE_LINE_PREFIXES if stanza[0].startswith(k)), None) if len(stanza) == 1 else None
+            if run_kind and kind != run_kind:
+                out.append('!')
+            run_kind = kind
+            if kind:
+                out.append(stanza[0])
                 continue
             head = 'router ospf 1' if stanza[0] == 'router ospf' else stanza[0]
             words = stanza[0].split()
             proto = words[1] if words[0] == 'router' and len(words) > 1 else None
             out += [head] + [display_line(x, proto) for x in stanza[1:]] + ['!']
+        if run_kind:
+            out.append('!')
         return out
 
     def interface_extra_lines(self, cfg, dev):
@@ -387,6 +398,10 @@ class L3Plugin:
             (['show', 'ip', 'bgp', '<line>'], frr_show('show ip bgp'), 'BGP information'),
             (['show', 'ip', 'rip'], frr_show('show ip rip'), 'IP RIP information'),
             (['show', 'ip', 'protocols'], frr_show('show ip protocols'), 'IP routing protocol process parameters and statistics'),
+            (['show', 'ip', 'prefix-list'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
+            (['show', 'ip', 'prefix-list', '<line>'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
+            (['show', 'route-map'], frr_show('show route-map'), 'route-map information'),
+            (['show', 'route-map', '<line>'], frr_show('show route-map'), 'route-map information'),
         ]
 
         def enter_router(proto):
@@ -416,7 +431,8 @@ class L3Plugin:
                 cli.mode = 'config'
                 node.func(args)
                 return
-            proto = cli.frr_router.split()[1]
+            words = cli.frr_router.split()
+            proto = words[1] if words[0] == 'router' else None  # route-map の中は翻訳しない（Ciscoと同じ書き方）
             command, err = translate_router_command(proto, tokens, sw.is_ipv4, sw.mask_to_prefix)
             if err:
                 print(err)
@@ -439,6 +455,20 @@ class L3Plugin:
                 cli.frr_af = None  # address-family から router に戻る
             else:
                 cli.do_exit(a)
+
+        def enter_route_map(a):
+            # route-map NAME permit|deny [SEQ]（SEQ省略は10）
+            head = f'route-map {a[0]} {a[1].lower()} {a[2] if len(a) > 2 else 10}'
+            if self.run_config(cli, [], head):
+                cli.mode = 'route-map'
+                cli.frr_router = head
+                cli.frr_af = None
+
+        def frr_global(prefix, negate=False):
+            def fn(a):
+                self.run_config(cli, [], ('no ' if negate else '') + prefix + ' ' + a[0])
+
+            return fn
 
         def iface_device():
             if cli.mode == 'svi':
@@ -473,9 +503,26 @@ class L3Plugin:
                           (['no', 'router', 'bgp', '<word>'], leave_router('bgp'), 'Remove BGP'),
                           (['router', 'rip'], enter_router('rip'), 'Routing Information Protocol (RIP)'),
                           (['no', 'router', 'rip'], leave_router('rip'), 'Remove RIP')]
+        policy_entries = [
+            (['route-map', '<word>', '<rmaction>'], enter_route_map, 'Create route-map or enter route-map command mode'),
+            (['route-map', '<word>', '<rmaction>', '<word>'], enter_route_map, 'Sequence to insert to/delete from existing route-map entry'),
+            (['no', 'route-map', '<line>'], frr_global('route-map', True), 'Delete route-map'),
+            (['ip', 'prefix-list', '<line>'], frr_global('ip prefix-list'), 'Build a prefix list'),
+            (['no', 'ip', 'prefix-list', '<line>'], frr_global('ip prefix-list', True), 'Delete a prefix list'),
+            (['ip', 'as-path', '<line>'], frr_global('ip as-path'), 'BGP autonomous system path filter'),
+            (['no', 'ip', 'as-path', '<line>'], frr_global('ip as-path', True), 'BGP autonomous system path filter'),
+            (['ip', 'community-list', '<line>'], frr_global('ip community-list'), 'Add a community list entry'),
+            (['no', 'ip', 'community-list', '<line>'], frr_global('ip community-list', True), 'Add a community list entry'),
+        ]
         return {
             'exec': [show_route] + shows,
             'user': [show_route] + shows,
+            'route-map': [
+                (['end'], cli.do_end, 'Exit from configure mode'),
+                (['exit'], cli.do_exit, 'Exit from the current mode'),
+                (['do', '<line>'], cli.do_do, 'To run exec commands in config mode'),
+                (['<line>'], router_line, 'Route-map command'),
+            ],
             'router': [
                 (['end'], cli.do_end, 'Exit from configure mode'),
                 (['exit'], router_exit, 'Exit from the current mode'),
@@ -484,7 +531,7 @@ class L3Plugin:
                 (['<line>'], router_line, 'Routing protocol command'),
             ],
             'svi': iface_entries,
-            'config': router_entries + [
+            'config': router_entries + policy_entries + [
                 (['ip', 'routing'], set_routing(True), 'Enable IP routing'),
                 (['no', 'ip', 'routing'], set_routing(False), 'Disable IP routing'),
                 (['ip', 'route', '<ip>', '<mask>', '<ip>'], add_route, 'Establish static routes'),
