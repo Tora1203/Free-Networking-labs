@@ -103,3 +103,9 @@ wipe（PR #26）の部品（`exec`での書き込み、`apply`の差分、再同
   エクスポート・インポート、他のユーザーへの共有、共有リンク（他人のラボ）からの利用。
 - 確認が要る：`write memory`の代行がスイッチで本当にswcliの保存と同じ内容になるか（running.jsonの形式）、
   戻した後にOSPFなどが再収束するか、annotationsのPUTの大きさの上限。手順は`test-manual.md`の6d。
+- **書き出し・取り込み・別のラボとして開く（2026-10-21）**：書き出しは`{format:'fnl-snapshot', version:1, yaml, annotations}`のJSON（annotationsは`snapshot`キー入り）。
+  取り込みは形式・大きさ・ノード名（`isValidNodeName`）を確かめ、開いているラボの新しいスナップショットとして保存する（名前・メモ・設定は元のまま、日時は取り込んだ時刻、上限は同じ）。
+  ユーザー間のアクセス制御は作らず、ファイルの受け渡しで共有する。「別のラボとして開く」は`createLabFromSnapshot`：`<表示名>のコピー`（重なれば`(2)`…）の
+  新しいラボのYAML・annotationsを書き、設定があれば`startSavedLab`で起動→`restoreNodeConfigs`で書き戻して再起動→アドレス・リンクの品質を流し直す。
+  設定の置き場所はノードの中なので、ホスト側のfrr-config/switch-configに任意の内容を置くための特権ラッパーの変更は要らない。
+
