@@ -2268,7 +2268,7 @@ def walk(root, tokens):
     return node, args
 
 
-SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line', 'router', 'route-map')  # router＝router ospf等（プラグイン l3.py、FRRに渡す）
+SUB_MODES = ('interface', 'vlan', 'mst', 'svi', 'line', 'router', 'route-map', 'acl-std', 'acl-ext')  # router＝router ospf等（プラグイン l3.py、FRRに渡す）
 
 
 def filter_output(lines, kind, pattern):
@@ -3161,7 +3161,7 @@ class Cli:
         host = self.cfg()['hostname']
         return {'exec': f'{host}#', 'config': f'{host}(config)#', 'interface': f'{host}(config-if)#',
                 'vlan': f'{host}(config-vlan)#', 'mst': f'{host}(config-mst)#', 'svi': f'{host}(config-if)#',
-                'line': f'{host}(config-line)#', 'router': f'{host}(config-router)#', 'route-map': f'{host}(config-route-map)#', 'user': f'{host}>'}[self.mode]
+                'line': f'{host}(config-line)#', 'router': f'{host}(config-router)#', 'route-map': f'{host}(config-route-map)#', 'acl-std': f'{host}(config-std-nacl)#', 'acl-ext': f'{host}(config-ext-nacl)#', 'user': f'{host}>'}[self.mode]
 
     def execute(self, line):
         # Ciscoと同じく「show ... | include 正規表現」等で出力を絞る（include / exclude / begin / section）

@@ -49,10 +49,10 @@ jobs:
       - name: 静的チェック（pyflakes）
         run: |
           pip install pyflakes
-          python -m pyflakes backend/l2switch/swcli.py backend/l2switch/l3.py backend/l2switch/test_swcli.py backend/l2switch/test_l3.py
+          python -m pyflakes backend/l2switch/swcli.py backend/l2switch/l3.py backend/l2switch/acl.py backend/l2switch/test_swcli.py backend/l2switch/test_l3.py backend/l2switch/test_acl.py
       - name: テスト
         working-directory: backend/l2switch
-        run: python -m unittest -v test_swcli test_l3
+        run: python -m unittest -v test_swcli test_l3 test_acl
 
   backend-js:
     name: backend（Nodeのプロキシの構文）

@@ -28,6 +28,8 @@ import re
 import subprocess
 import time
 
+import acl
+
 FRR_DAEMONS = '/etc/frr/daemons'
 FRR_CONF = '/etc/frr/frr.conf'
 FRR_VTYSH_CONF = '/etc/frr/vtysh.conf'
@@ -54,9 +56,9 @@ def parse_net(ip, mask, mask_to_prefix, is_ipv4):
 
 # ---- Cisco風の書き方 ⇄ FRRの書き方（コンテナの外でもテストできる純粋な関数） ----
 
-KEEP_PREFIXES = ('router ', 'interface ', 'route-map ', 'ip prefix-list ', 'ipv6 prefix-list ', 'access-list ', 'ip as-path ', 'ip community-list ', 'bfd')
+KEEP_PREFIXES = ('router ', 'interface ', 'route-map ', 'ip prefix-list ', 'ipv6 prefix-list ', 'ip as-path ', 'ip community-list ', 'bfd')  # access-list はACL（acl.py）の写しなので除く
 ROUTER_PROTOCOLS = ('ospf', 'bgp', 'rip')
-SINGLE_LINE_PREFIXES = ('ip prefix-list ', 'ip as-path ', 'ip community-list ', 'access-list ')
+SINGLE_LINE_PREFIXES = ('ip prefix-list ', 'ip as-path ', 'ip community-list ')
 
 
 def wildcard_to_prefix(wildcard, is_ipv4, mask_to_prefix):
@@ -232,6 +234,7 @@ class L3Plugin:
         self.routed_prev = set()
         self.forward_state = None
         self.dhcp_state = None
+        self.acl_state = None
         self.last_route_check = 0.0
         self.frr_started = 0.0
 
@@ -276,6 +279,7 @@ class L3Plugin:
             net = ipaddress.ip_network(r['net'])
             out.append(f'ip route {net.network_address} {net.netmask} {r["nh"]}')
         out = out + ['!'] if out else []
+        out += self.acl_lines(cfg)
         # interface vlan N と ルーテッドポートの塊は、swcliの interface の下に出すので、ここでは出さない
         shown = {f'vlan{v}' for v in self.sw.svi_ids(cfg)} | self.routed_ports(cfg)
         run_kind = None  # 1行だけの設定（ip prefix-list …）は、Ciscoと同じく続けて出す
@@ -298,14 +302,55 @@ class L3Plugin:
         return out
 
     @staticmethod
-    def helpers_of(cfg, dev):
+    def holder_of(cfg, dev):
+        """SVI・ルーテッドポートの設定の辞書（helpers・acl_in・acl_out を持つ）"""
         m = re.fullmatch(r'vlan(\d+)', dev)
-        holder = cfg.get('svi', {}).get(m.group(1), {}) if m else cfg.get('interfaces', {}).get(dev, {})
-        return list(holder.get('helpers', []))
+        return cfg.get('svi', {}).get(m.group(1), {}) if m else cfg.get('interfaces', {}).get(dev, {})
+
+    def helpers_of(self, cfg, dev):
+        return list(self.holder_of(cfg, dev).get('helpers', []))
+
+    @staticmethod
+    def acl_lines(cfg):
+        """running-configのACL。番号付きは access-list N …、名前付きは ip access-list standard|extended NAME の下に番号付きで"""
+        out = []
+        for name in sorted(cfg.get('acls', {}), key=lambda n: (not n.isdigit(), int(n) if n.isdigit() else 0, n)):
+            a = cfg['acls'][name]
+            entries = sorted(a['entries'], key=lambda e: e['seq'])
+            if acl.acl_kind_of_number(name):
+                out += [f'access-list {name} {e["text"]}' for e in entries]
+            else:
+                out.append(f'ip access-list {a["type"]} {name}')
+                out += [f' {e["seq"]} {e["text"]}' for e in entries]
+                out.append('!')
+        if out and out[-1] != '!':
+            out.append('!')
+        return out
+
+    def show_acls(self, cfg, only=None):
+        counters = {}
+        dump = self.sw.sh('nft', 'list', 'table', 'ip', 'fnl_acl')
+        if dump.returncode == 0:
+            counters = acl.parse_counters(dump.stdout)
+        out = []
+        for name in sorted(cfg.get('acls', {}), key=lambda n: (not n.isdigit(), int(n) if n.isdigit() else 0, n)):
+            if only and name != only:
+                continue
+            a = cfg['acls'][name]
+            out.append(f'{a["type"].capitalize()} IP access list {name}')
+            for e in sorted(a['entries'], key=lambda e: e['seq']):
+                hits = counters.get((name, e['seq']), 0)
+                out.append(f'    {e["seq"]} {e["text"]}' + (f' ({hits} matches)' if hits else ''))
+        return '\n'.join(out)
 
     def interface_extra_lines(self, cfg, dev):
         """interface <dev> の下に出す設定：ip helper-address（swcliの設定）と、FRRの設定（ip ospf cost、vrrp 等）"""
-        lines = [f' ip helper-address {h}' for h in self.helpers_of(cfg, dev)]
+        lines = []
+        for direction in ('in', 'out'):
+            name = self.holder_of(cfg, dev).get('acl_' + direction)
+            if name:
+                lines.append(f' ip access-group {name} {direction}')
+        lines += [f' ip helper-address {h}' for h in self.helpers_of(cfg, dev)]
         for stanza in split_stanzas(cfg.get('frr', [])):
             if stanza[0] == f'interface {dev}':
                 return lines + [display_line(x) for x in stanza[1:]]
@@ -448,16 +493,21 @@ class L3Plugin:
 
             return fn
 
-        def router_line(a):
-            tokens = a[0].split()
-            # Ciscoと同じく、router モードの中でも設定モードのコマンド（interface …、別の router …、ip route …）はそのまま通る
+        def config_fallthrough(tokens):
+            """Ciscoと同じく、router・route-map・ACLのモードの中でも、設定モードのコマンド（interface …、別の router …、ip route …）はそのまま通る"""
             try:
                 node, args = sw.walk(cli.trees['config'], tokens)
             except sw.ParseError:
-                node = None
-            if node is not None and node.func is not None:
-                cli.mode = 'config'
-                node.func(args)
+                return False
+            if node is None or node.func is None:
+                return False
+            cli.mode = 'config'
+            node.func(args)
+            return True
+
+        def router_line(a):
+            tokens = a[0].split()
+            if config_fallthrough(tokens):
                 return
             words = cli.frr_router.split()
             proto = words[1] if words[0] == 'router' else None  # route-map の中は翻訳しない（Ciscoと同じ書き方）
@@ -565,6 +615,137 @@ class L3Plugin:
 
             cli.modify(change)
 
+        # ---- ACL（パケットフィルタ、acl.py。nftablesに変換する） ----
+        def acl_error(e):
+            text = str(e)
+            print(text if text.startswith('%') else (text if text.startswith('Incomplete') or text.startswith('Invalid') else '% ' + text))
+
+        def enter_acl(kind):
+            def fn(a):
+                name = a[0]
+                existing = cli.cfg().get('acls', {}).get(name)
+                if existing and existing['type'] != kind:
+                    print(f'% Access-list {name} is {existing["type"]}; cannot change its type.')
+                    return
+                if not existing:
+                    cli.modify(lambda cfg: cfg.setdefault('acls', {}).setdefault(name, {'type': kind, 'entries': []}))
+                cli.mode = 'acl-std' if kind == 'standard' else 'acl-ext'
+                cli.acl_name, cli.acl_kind = name, kind
+
+            return fn
+
+        def add_acl_entry(name, kind, tokens):
+            seq = None
+            if tokens and tokens[0].isdigit():
+                seq, tokens = int(tokens[0]), tokens[1:]
+            try:
+                text = acl.entry_text(kind, tokens)
+            except acl.AclError as e:
+                acl_error(e)
+                return
+            entries = cli.cfg()['acls'][name]['entries']
+            if seq is None:
+                if any(e['text'] == text for e in entries):
+                    print('% Duplicate sequence number')  # 同じ行はもう有る
+                    return
+                seq = (max((e['seq'] for e in entries), default=0) // acl.SEQ_STEP + 1) * acl.SEQ_STEP
+            elif any(e['seq'] == seq for e in entries):
+                print('% Duplicate sequence number')
+                return
+
+            def change(cfg):
+                cfg['acls'][name]['entries'] = sorted(cfg['acls'][name]['entries'] + [{'seq': seq, 'text': text}], key=lambda e: e['seq'])
+
+            cli.modify(change)
+
+        def del_acl_entry(name, kind, tokens):
+            if len(tokens) == 1 and tokens[0].isdigit():
+                match = lambda e: e['seq'] == int(tokens[0])  # noqa: E731
+            else:
+                try:
+                    text = acl.entry_text(kind, tokens)
+                except acl.AclError as e:
+                    acl_error(e)
+                    return
+                match = lambda e: e['text'] == text  # noqa: E731
+
+            def change(cfg):
+                cfg['acls'][name]['entries'] = [e for e in cfg['acls'][name]['entries'] if not match(e)]
+
+            cli.modify(change)
+
+        def acl_line(a):
+            tokens = a[0].split()
+            if config_fallthrough(tokens):
+                return
+            if tokens[0].lower() == 'remark':
+                return
+            if tokens[0].lower() == 'no':
+                del_acl_entry(cli.acl_name, cli.acl_kind, tokens[1:])
+            else:
+                add_acl_entry(cli.acl_name, cli.acl_kind, tokens)
+
+        def numbered_acl(a):
+            kind = acl.acl_kind_of_number(a[0])
+            if kind is None:
+                print("% Invalid input detected at '^' marker.")
+                return
+            cli.modify(lambda cfg: cfg.setdefault('acls', {}).setdefault(a[0], {'type': kind, 'entries': []}))
+            add_acl_entry(a[0], kind, a[1].split())
+
+        def delete_acl(name):
+            def change(cfg):
+                cfg.get('acls', {}).pop(name, None)
+                if not cfg.get('acls'):
+                    cfg.pop('acls', None)
+
+            cli.modify(change)
+
+        def set_access_group(a):
+            if a[1].lower() not in ('in', 'out'):
+                print("% Invalid input detected at '^' marker.")
+                return
+
+            def change(cfg):
+                holder = helper_holder(cfg)
+                if holder is not None:
+                    holder['acl_' + a[1].lower()] = a[0]
+
+            cli.modify(change)
+
+        def unset_access_group(a):
+            direction = a[-1].lower()
+            if direction not in ('in', 'out'):
+                print("% Invalid input detected at '^' marker.")
+                return
+
+            def change(cfg):
+                holder = helper_holder(cfg)
+                if holder is not None and (len(a) == 1 or holder.get('acl_' + direction) == a[0]):
+                    holder.pop('acl_' + direction, None)
+
+            cli.modify(change)
+
+        def show_access_lists(a):
+            print(self.show_acls(cli.cfg(), a[0] if a else None))
+
+        acl_shows = [(['show', 'access-lists'], show_access_lists, 'List access lists'),
+                     (['show', 'access-lists', '<word>'], show_access_lists, 'List access lists'),
+                     (['show', 'ip', 'access-lists'], show_access_lists, 'List IP access lists'),
+                     (['show', 'ip', 'access-lists', '<word>'], show_access_lists, 'List IP access lists')]
+        acl_entries = [
+            (['ip', 'access-list', 'standard', '<word>'], enter_acl('standard'), 'Standard Access List'),
+            (['ip', 'access-list', 'extended', '<word>'], enter_acl('extended'), 'Extended Access List'),
+            (['no', 'ip', 'access-list', '<word>', '<word>'], lambda a: delete_acl(a[1]), 'Delete an access list'),
+            (['access-list', '<word>', '<line>'], numbered_acl, 'Add an access list entry'),
+            (['no', 'access-list', '<word>'], lambda a: delete_acl(a[0]), 'Delete an access list'),
+        ]
+        acl_mode_entries = [
+            (['end'], cli.do_end, 'Exit from configure mode'),
+            (['exit'], cli.do_exit, 'Exit from the current mode'),
+            (['do', '<line>'], cli.do_do, 'To run exec commands in config mode'),
+            (['<line>'], acl_line, 'Access list entry'),
+        ]
         iface_entries = [
             (['ip', 'ospf', '<line>'], iface_ospf(False), 'OSPF interface commands'),
             (['no', 'ip', 'ospf', '<line>'], iface_ospf(True), 'OSPF interface commands'),
@@ -573,6 +754,9 @@ class L3Plugin:
             (['ip', 'helper-address', '<ip>'], helper_add, 'Specify a destination address for UDP broadcasts (DHCP relay)'),
             (['no', 'ip', 'helper-address'], helper_del, 'Remove all helper addresses'),
             (['no', 'ip', 'helper-address', '<ip>'], helper_del, 'Remove a helper address'),
+            (['ip', 'access-group', '<word>', '<word>'], set_access_group, 'Specify access control for packets (in|out)'),
+            (['no', 'ip', 'access-group', '<word>'], unset_access_group, 'Remove the access group (in|out)'),
+            (['no', 'ip', 'access-group', '<word>', '<word>'], unset_access_group, 'Remove the access group'),
         ]
         router_entries = [(['router', 'ospf'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
                           (['router', 'ospf', '<word>'], enter_router('ospf'), 'Open Shortest Path First (OSPF)'),
@@ -594,8 +778,10 @@ class L3Plugin:
             (['no', 'ip', 'community-list', '<line>'], frr_global('ip community-list', True), 'Add a community list entry'),
         ]
         return {
-            'exec': [show_route] + shows,
-            'user': [show_route] + shows,
+            'exec': [show_route] + shows + acl_shows,
+            'user': [show_route] + shows + acl_shows,
+            'acl-std': acl_mode_entries,
+            'acl-ext': acl_mode_entries,
             'route-map': [
                 (['end'], cli.do_end, 'Exit from configure mode'),
                 (['exit'], cli.do_exit, 'Exit from the current mode'),
@@ -610,7 +796,7 @@ class L3Plugin:
                 (['<line>'], router_line, 'Routing protocol command'),
             ],
             'svi': iface_entries,
-            'config': router_entries + policy_entries + [
+            'config': router_entries + policy_entries + acl_entries + [
                 (['ip', 'routing'], set_routing(True), 'Enable IP routing'),
                 (['no', 'ip', 'routing'], set_routing(False), 'Disable IP routing'),
                 (['ip', 'route', '<ip>', '<mask>', '<ip>'], add_route, 'Establish static routes'),
@@ -698,6 +884,7 @@ class L3Plugin:
         self.sync_frr(cfg, routing)
         self.sync_vrrp(cfg, routing)
         self.sync_dhcp_helper(cfg)
+        self.sync_acl(cfg)
 
     def sync_routed_ports(self, cfg, routed):
         sw = self.sw
@@ -771,6 +958,34 @@ class L3Plugin:
         for name in have:
             if name not in want:
                 sw.sh('ip', 'link', 'del', name)
+
+    def acl_applications(self, cfg):
+        apps = []
+        for vid, v in cfg.get('svi', {}).items():
+            for direction in ('in', 'out'):
+                if v.get('acl_' + direction):
+                    apps.append((f'vlan{vid}', direction, v['acl_' + direction]))
+        for name in self.routed_ports(cfg):
+            for direction in ('in', 'out'):
+                if cfg['interfaces'][name].get('acl_' + direction):
+                    apps.append((name, direction, cfg['interfaces'][name]['acl_' + direction]))
+        return apps
+
+    def sync_acl(self, cfg):
+        """ACLをnftablesの表(ip fnl_acl)にする。設定が変わった時だけ作り直す。存在しないACLを指す ip access-group は無視（Ciscoと同じく全部通す）"""
+        try:
+            script = acl.compile_nft(cfg.get('acls', {}), self.acl_applications(cfg))
+        except acl.AclError as e:
+            print(f'l3: ACLを変換できません: {e}', flush=True)
+            return
+        if script == self.acl_state:
+            return
+        self.sw.sh('nft', 'delete', 'table', 'ip', 'fnl_acl')
+        if script:
+            result = self._nft(script)
+            if result is not None and result.returncode != 0:
+                print(f'l3: nftables(ACL): {result.stderr.strip()}', flush=True)
+        self.acl_state = script
 
     def sync_dhcp_helper(self, cfg):
         """ip helper-address のあるSVI・ルーテッドポートで受けたDHCP要求を、サーバーへ中継する（dhcp-helper）。
@@ -889,6 +1104,29 @@ class L3Plugin:
         self.last_route_check = time.time()
         self.sync_routes(cfg)
 
+    def sync_frr_acls(self, cfg, running):
+        """標準ACLを、FRRの access-list にも入れる（route-map の match ip address N や distribute-list で使うため）。
+        FRRの設定（frrキー）には写さない。ここが持ち主"""
+        want = set()
+        for name, rows in acl.frr_access_list_lines(cfg.get('acls', {})).items():
+            for seq, action, target in rows:
+                want.add((name, seq, action, target))
+        have = set()
+        for line in running.splitlines():
+            m = re.fullmatch(r'access-list (\S+) seq (\d+) (permit|deny) (\S+)', line.strip())
+            if m:
+                have.add((m.group(1), int(m.group(2)), m.group(3), m.group(4)))
+        if have == want:
+            return
+        cmds = ['-c', 'configure terminal']
+        for name, seq, action, target in sorted(have - want):
+            cmds += ['-c', f'no access-list {name} seq {seq} {action} {target}']
+        for name, seq, action, target in sorted(want - have):
+            cmds += ['-c', f'access-list {name} seq {seq} {action} {target}']
+        result = self.sw.sh('vtysh', *cmds, timeout=10)
+        if result.returncode != 0:
+            print(f'l3: FRRのaccess-listを入れられません: {(result.stderr or result.stdout).strip()}', flush=True)
+
     def sync_routes(self, cfg):
         """FRRの静的経路を、設定（routes）にそろえる（FRRが再起動して経路を失っていても戻る）"""
         sw = self.sw
@@ -900,6 +1138,7 @@ class L3Plugin:
             m = re.fullmatch(r'ip route (\S+) (\S+)', line.strip())
             if m:
                 have.add((m.group(1), m.group(2)))
+        self.sync_frr_acls(cfg, out.stdout)
         want = {(r['net'], r['nh']) for r in self.routes(cfg)}
         if have == want:
             return

@@ -361,6 +361,10 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] `no bgp ebgp-requires-policy` を入れないと、eBGPで経路が交換されない（FRRの仕様。ルーターと同じ）
 - [ ] `show running-config` に `router bgp 65001` が、`network … mask …` の形で出る。`write memory` → 停止→起動で戻る
 - [ ] **RIP**：`router rip` → `version 2` → `network 10.0.0.0` → `no auto-summary`（エラーにならない）で、`show ip route` に `R` が出る
+- [ ] **ACL**：VLAN10・20のPCをつなぎ、`ip routing` を入れる。`ip access-list extended BLOCK` → `deny icmp host <PC1> host <PC2> echo` → `deny tcp any any eq 8080` → `permit ip any any`、`interface vlan 10` の中で `ip access-group BLOCK in`
+- [ ] PC1→PC2のpingが通らなくなる（PC2→PC1は通る）。PC1→ゲートウェイ（SVI）のpingは通る。`show access-lists` に `(N matches)` が出る。`no ip access-group BLOCK in` で元に戻る
+- [ ] `show running-config` に `ip access-list extended BLOCK`（番号付き）と、`interface Vlan10` の `ip access-group BLOCK in` が出る。`access-list 101 permit ip any any`（番号付き）も使える。誤った行（`permit ip any`、未知のプロトコル）は断られる
+- [ ] 標準ACL（`access-list 10 permit 10.10.0.0 0.0.0.255`）を作り、route-mapの `match ip address 10` に使える（BGPのポリシーで確認）
 - [ ] **VRRP**：L3スイッチ2台を同じVLAN（例：VLAN10）のアクセスポートでつなぎ、両方で `ip routing`、`interface vlan 10` にアドレス（`10.10.0.2`・`10.10.0.3`）を付けてから、`vrrp 1 ip 10.10.0.1`。片方に `vrrp 1 priority 120`
 - [ ] `show vrrp` で、優先度の高い方が `Master`、もう一方が `Backup` になる。PCのゲートウェイを `10.10.0.1` にしてpingが通る。Masterを停止すると数秒でBackupが `Master` になり、pingが続く
 - [ ] `show running-config` の `interface Vlan10` に `vrrp 1 ip …` が出る。`write memory` → 停止→起動で戻る

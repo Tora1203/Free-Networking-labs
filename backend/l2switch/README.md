@@ -145,13 +145,13 @@ running-configを流し込み直すと同じ設定になるか、`write memory`�
 
 ## L3スイッチ（fnl/l3switch、2026-10-21〜、段階1）
 
-L2スイッチのイメージ（`fnl/l2switch:9`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
+L2スイッチのイメージ（`fnl/l2switch:10`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
 （`Dockerfile.l3`）。`swcli`は起動時に同じディレクトリの`l3.py`を読み込むので、L2スイッチのイメージ（`l3.py`なし）の動きは変わらない。
 設計は`docs/l3-switch-design.md`。
 
 ```
-docker build -t fnl/l2switch:9 backend/l2switch
-docker build -t fnl/l3switch:5 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l2switch:10 backend/l2switch
+docker build -t fnl/l3switch:6 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -240,4 +240,26 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
   （サーバーは全インターフェースの分をまとめる。インターフェースごとに別のサーバーに振り分けることはしない）。設定が変われば作り直し、無くなれば止める。
 - **`ip routing`直後のコマンド**：FRRの起動を最大10秒待ってから渡す（打ってすぐ「起動中」で失敗しない）。ただし`vrrp 1 ip`はSVIにアドレスが付いてからでないと受け付けられない
   （アドレスはエージェントが1秒ごとに反映するので、続けて貼り付けると失敗することがある）。
+
+### ACL（`fnl/l3switch:6`、段階4の残り）
+
+パケットフィルタ。入力の解釈とnftablesへの変換は`acl.py`（コンテナの外でもテストできる純粋な関数）、コマンドと適用は`l3.py`。
+
+| コマンド | 内容 |
+| --- | --- |
+| `ip access-list standard|extended NAME` | 名前付きACLのモード（`config-std-nacl`／`config-ext-nacl`）。`no ip access-list standard|extended NAME`で削除 |
+| `[SEQ] permit|deny …` | エントリ。SEQ省略は10刻みで末尾に。`no SEQ`または`no permit …`で削除。`remark`は無視 |
+| `access-list N permit|deny …` | 番号付き（標準1-99・1300-1999、拡張100-199・2000-2699）。`no access-list N`で削除 |
+| `ip access-group NAME in|out` | `interface vlan N`・ルーテッドポートの中。`no ip access-group [NAME] in|out`で外す |
+| `show access-lists [NAME]`、`show ip access-lists [NAME]` | エントリと一致回数（`(N matches)`） |
+
+- **標準**：`permit|deny any|host A|A WILDCARD`（単独のアドレスはhost）。**拡張**：`permit|deny ip|icmp|tcp|udp 送信元 [ポート] 宛先 [ポート] [icmpの種類|established]`。
+  アドレスは`any`・`host A`・`A WILDCARD`（連続しないワイルドカードも可）。ポートは`eq|neq|gt|lt|range`（`www`・`domain`・`ssh`等の名前も可）。icmpの種類は`echo`・`echo-reply`・`unreachable`・`ttl-exceeded`。
+- **nftablesへの変換**：ACLごとにチェーン（`acl_<名前>`）を作り、`permit`は`return`、`deny`は`drop`、最後に暗黙の拒否（`drop`）。適用は`forward`（`in`＝入るインターフェース、`out`＝出るインターフェース）と、`in`だけ`input`（スイッチ宛、SVIへのping等）。
+  IPv4だけ（`table ip fnl_acl`）。ブリッジの中のL2転送には効かない（`iifname`がSVI・ルーテッドポートなので）。設定が変わった時だけ表を作り直す。存在しないACLを指す`ip access-group`は無視（Ciscoと同じく全部通す）。
+- **経路用との両立**：標準ACLは、FRRの`access-list`（`seq N permit|deny 10.0.0.0/24`）にも写す（`route-map`の`match ip address N`や`distribute-list`で使うため）。FRRの設定（`frr`キー）には保存せず、ACL側が持ち主。
+  連続しないワイルドカードはFRRに写せないので飛ばす。
+- **`show running-config`**：名前付きは`ip access-list …`の下に番号付きで、番号付きは`access-list N …`で出る。`ip access-group`はインターフェースの下に出る。
+- **ルーティングを使っていなくても効く**（`no ip routing`の間はVLAN間の転送自体が止まっているので、効果が見えるのは`ip routing`の間）。
+- **未対応**：`log`（無視する）、`ip access-class`（VTY）、時間指定、`object-group`、IPv6のACL、`fragments`・`dscp`等のオプション。
 
