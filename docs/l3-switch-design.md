@@ -194,3 +194,15 @@ except ImportError:
 - **未確認・未対応**：BGPの翻訳（`network A mask M`→`network A/L`、`ebgp-requires-policy`の扱い）、RIP、`?`ヘルプ・Tab補完、Ciscoの`passive-interface`での表示、
   複数インスタンスの`router ospf 2`、VRF。containerlabのラボとして起動した場合。
 
+## 12. 段階3の実装メモ（2026-10-21、be/l3-bgp）
+
+- **BGP・RIP**：段階2のパススルーに、翻訳を足しただけ（`network A mask M`→`A/L`、`aggregate-address`、`address-family ipv4`→`ipv4 unicast`、RIPのクラスフルの`network`、`no auto-summary`は無視）。
+  表示は`running-config`で元の形（`network … mask …`、クラスフルの`network`）に戻す（再入力して同じ設定になる形のときだけ）。
+- **`address-family`の入れ子**：vtyshは1コマンドずつ起動し直すので、`address-family`の中にいることは`cli.frr_af`に覚え、以降のコマンドを`router bgp N` → `address-family ipv4 unicast`の文脈で渡す。`exit`／`exit-address-family`で抜ける。
+- **`ebgp-requires-policy`**（設計メモ6章で「先に決める」とした点）：**FRRの既定のまま**にした。ルーターのノードと挙動をそろえ、`direction.md`（2026-10-09）の方針（FRRの仕様として周知）に従う。
+  eBGPの経路交換には`no bgp ebgp-requires-policy`が要る。Ciscoと違う点なのでマニュアルに書く。
+- **確かめたこと**（コンテナ2台、`eth1`同士）：eBGP（AS65001⇔65002）がEstablished、相手の末端を`B>*`で学習、pingが通る。`write memory`→再起動で復元。
+  RIP（`router rip`、`version 2`、`network 10.0.0.0`）で`R>*`を学習、pingが通る。
+- **未対応**：route-map・prefix-list・access-listの設定コマンド（設定モードのトップレベル。`frr`キーには保存できる形だが入力の文法が無い）、iBGP・ルートリフレクタの確認、
+  BGPの`show`の翻訳、VRRP・DHCPリレー・ACL（段階4）。
+

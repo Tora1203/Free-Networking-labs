@@ -151,7 +151,7 @@ L2スイッチのイメージ（`fnl/l2switch:8`〜）に、FRR（zebra・static
 
 ```
 docker build -t fnl/l2switch:8 backend/l2switch
-docker build -t fnl/l3switch:2 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l3switch:3 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -189,4 +189,22 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
 - routerモードの中でも、`interface …`・別の`router …`・`ip route …`などの設定モードのコマンドは、そのまま通る（Ciscoと同じ）。
 - `show running-config`では、FRRの`interface`の設定をswcliの`interface`の下に混ぜて出し、`network`はワイルドカード形式、`router ospf 1`で出す。FRRの`ip ospf passive`は、Ciscoの`passive-interface`ではなくFRRの書き方のまま出る。
 - 起動後、OSPFの隣接（Full）まで約40秒（hello 10秒・dead 40秒）。
+
+### 段階3：BGP・RIP（`fnl/l3switch:3`）
+
+段階2と同じパススルー。Ciscoの書き方の翻訳を足した。
+
+| コマンド | 内容 |
+| --- | --- |
+| `router bgp <AS>` | BGPのモード |
+| `bgp router-id`, `neighbor A remote-as N`, `neighbor A activate` ほか | そのままFRRへ |
+| `network 10.10.1.0 mask 255.255.255.0` | → `network 10.10.1.0/24`（`mask`なしのクラスフルは断る） |
+| `aggregate-address A M [summary-only]` | → `aggregate-address A/L …` |
+| `address-family ipv4` … `exit-address-family` | → `address-family ipv4 unicast`。入れ子の中にいることはswcliが覚える（vtyshは1コマンドずつ起動し直すため）。`exit`でrouterに戻る |
+| `router rip` / `version 2` / `network 10.0.0.0` | クラスフルの`network`はクラスに合う長さのプレフィックスにして渡す（10.0.0.0→/8）。表示は元のクラスフルの形 |
+| `no auto-summary` | FRRのRIPには無いので、何もしない（エラーにしない） |
+| `show ip bgp summary` / `show ip bgp` / `show ip rip` / `show ip route bgp|rip|ospf` | vtyshの出力のまま |
+
+- **`ebgp-requires-policy`はFRRの既定のまま**（ルーターのノードと同じ。`docs/direction.md` 2026-10-09の「FRRの仕様として周知する」）。eBGPで経路を交換するには、`router bgp` の中で `no bgp ebgp-requires-policy` を入れる（またはroute-mapを使う。route-mapの設定コマンドは未対応）。
+- `neighbor` の `activate` は、`address-family` の中でも外でも通る（FRRの既定でIPv4 unicastは有効）。
 

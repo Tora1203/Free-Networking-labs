@@ -65,6 +65,16 @@ def wildcard_to_prefix(wildcard, is_ipv4, mask_to_prefix):
     return mask_to_prefix(inverse)
 
 
+def classful_prefix(ip):
+    first = int(ip.split('.')[0])
+    return 8 if first < 128 else 16 if first < 192 else 24
+
+
+def prefix_to_mask(prefix):
+    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF if prefix else 0
+    return '.'.join(str((mask >> shift) & 255) for shift in (24, 16, 8, 0))
+
+
 def prefix_to_wildcard(prefix):
     mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF if prefix else 0
     inv = mask ^ 0xFFFFFFFF
@@ -105,6 +115,27 @@ def translate_router_command(proto, tokens, is_ipv4, mask_to_prefix):
             body = ['ospf', 'router-id'] + body[1:]
         elif head == 'redistribute':
             body = [t for t in body if t.lower() != 'subnets']
+    elif proto == 'bgp':
+        if head == 'network' and len(body) >= 2 and '/' not in body[1]:
+            # network 10.10.1.0 mask 255.255.255.0 → network 10.10.1.0/24（maskを省くとクラスフルだが、FRRにはその形が無いので断る）
+            if len(body) < 4 or body[2].lower() != 'mask':
+                return None, '% Incomplete command. Use "network A.B.C.D mask M.M.M.M".'
+            prefix = mask_to_prefix(body[3])
+            if not is_ipv4(body[1]) or prefix is None:
+                return None, "% Invalid input detected at '^' marker."
+            body = ['network', f'{body[1]}/{prefix}'] + body[4:]
+        elif head == 'aggregate-address' and len(body) >= 3 and '/' not in body[1]:
+            prefix = mask_to_prefix(body[2])
+            if not is_ipv4(body[1]) or prefix is None:
+                return None, "% Invalid input detected at '^' marker."
+            body = ['aggregate-address', f'{body[1]}/{prefix}'] + body[3:]
+        elif head == 'address-family' and len(body) == 2:
+            body = body + ['unicast']  # Ciscoの address-family ipv4 は、FRRでは ipv4 unicast
+    elif proto == 'rip':
+        if head in ('auto-summary',):
+            return '', None  # FRRのRIPには無い（常にクラスレス）。Ciscoの no auto-summary は何もしない
+        if head == 'network' and len(body) == 2 and '/' not in body[1] and is_ipv4(body[1]):
+            body = ['network', f'{body[1]}/{classful_prefix(body[1])}']  # クラスフルの network
     return ('no ' if negate else '') + ' '.join(body), None
 
 
@@ -149,8 +180,17 @@ def split_stanzas(lines):
     return stanzas
 
 
-def display_line(line):
-    """FRRの行をCiscoの書き方にして見せる（running-config用）"""
+def display_line(line, proto=None):
+    """FRRの行をCiscoの書き方にして見せる（running-config用）。proto：router の種類（ospf/bgp/rip）"""
+    if proto in ('bgp', 'rip'):
+        m = re.fullmatch(r'(\s*)network (\d+\.\d+\.\d+\.\d+)/(\d+)', line)
+        if m and proto == 'bgp':
+            return f'{m.group(1)}network {m.group(2)} mask {prefix_to_mask(int(m.group(3)))}'
+        if m and proto == 'rip' and int(m.group(3)) == classful_prefix(m.group(2)):
+            return f'{m.group(1)}network {m.group(2)}'  # クラスフルの network（入れ直すと同じ長さに戻る形だけ）
+        m = re.fullmatch(r'(\s*)aggregate-address (\d+\.\d+\.\d+\.\d+)/(\d+)(.*)', line)
+        if m and proto == 'bgp':
+            return f'{m.group(1)}aggregate-address {m.group(2)} {prefix_to_mask(int(m.group(3)))}{m.group(4)}'
     m = re.fullmatch(r'(\s*)network (\d+\.\d+\.\d+\.\d+)/(\d+) area (\S+)', line)
     if m:
         return f'{m.group(1)}network {m.group(2)} {prefix_to_wildcard(int(m.group(3)))} area {m.group(4)}'
@@ -223,7 +263,9 @@ class L3Plugin:
             if stanza[0].startswith('interface ') and stanza[0].split(None, 1)[1] in shown:
                 continue
             head = 'router ospf 1' if stanza[0] == 'router ospf' else stanza[0]
-            out += [head] + [display_line(x) for x in stanza[1:]] + ['!']
+            words = stanza[0].split()
+            proto = words[1] if words[0] == 'router' and len(words) > 1 else None
+            out += [head] + [display_line(x, proto) for x in stanza[1:]] + ['!']
         return out
 
     def interface_extra_lines(self, cfg, dev):
@@ -353,6 +395,7 @@ class L3Plugin:
                 if self.run_config(cli, [], head):
                     cli.mode = 'router'
                     cli.frr_router = head
+                    cli.frr_af = None
 
             return fn
 
@@ -378,7 +421,24 @@ class L3Plugin:
             if err:
                 print(err)
                 return
-            self.run_config(cli, [cli.frr_router], command)
+            if command == '':
+                return
+            af = getattr(cli, 'frr_af', None)
+            if command.startswith('address-family ') and not command.startswith('no '):
+                # vtyshは1コマンドずつ起動し直すので、address-family の中にいることはこちらで覚える
+                if self.run_config(cli, [cli.frr_router], command):
+                    cli.frr_af = command
+                return
+            if command == 'exit-address-family':
+                cli.frr_af = None
+                return
+            self.run_config(cli, [cli.frr_router] + ([af] if af else []), command)
+
+        def router_exit(a):
+            if getattr(cli, 'frr_af', None):
+                cli.frr_af = None  # address-family から router に戻る
+            else:
+                cli.do_exit(a)
 
         def iface_device():
             if cli.mode == 'svi':
@@ -418,7 +478,8 @@ class L3Plugin:
             'user': [show_route] + shows,
             'router': [
                 (['end'], cli.do_end, 'Exit from configure mode'),
-                (['exit'], cli.do_exit, 'Exit from the current mode'),
+                (['exit'], router_exit, 'Exit from the current mode'),
+                (['exit-address-family'], lambda a: setattr(cli, 'frr_af', None), 'Exit from Address Family configuration mode'),
                 (['do', '<line>'], cli.do_do, 'To run exec commands in config mode'),
                 (['<line>'], router_line, 'Routing protocol command'),
             ],

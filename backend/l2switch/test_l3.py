@@ -121,6 +121,34 @@ class TranslationTest(unittest.TestCase):
         self.assertEqual(self.tr('ospf', 'default-information originate always'), ('default-information originate always', None))
         self.assertEqual(self.tr('bgp', 'neighbor 10.0.0.2 remote-as 65002'), ('neighbor 10.0.0.2 remote-as 65002', None))
 
+    def test_bgp_network_aggregate_and_address_family(self):
+        self.assertEqual(self.tr('bgp', 'network 10.10.1.0 mask 255.255.255.0'), ('network 10.10.1.0/24', None))
+        self.assertEqual(self.tr('bgp', 'no network 10.10.1.0 mask 255.255.255.0'), ('no network 10.10.1.0/24', None))
+        self.assertEqual(self.tr('bgp', 'network 10.10.1.0/24'), ('network 10.10.1.0/24', None))
+        self.assertIn('Incomplete', self.tr('bgp', 'network 10.10.1.0')[1])
+        self.assertIsNotNone(self.tr('bgp', 'network 10.10.1.0 mask 255.0.255.0')[1])
+        self.assertEqual(self.tr('bgp', 'aggregate-address 10.10.0.0 255.255.0.0 summary-only'), ('aggregate-address 10.10.0.0/16 summary-only', None))
+        self.assertEqual(self.tr('bgp', 'address-family ipv4'), ('address-family ipv4 unicast', None))
+        self.assertEqual(self.tr('bgp', 'address-family ipv4 unicast'), ('address-family ipv4 unicast', None))
+        self.assertEqual(self.tr('bgp', 'neighbor 10.0.0.2 remote-as 65002'), ('neighbor 10.0.0.2 remote-as 65002', None))
+        self.assertEqual(self.tr('bgp', 'bgp router-id 1.1.1.1'), ('bgp router-id 1.1.1.1', None))
+
+    def test_rip(self):
+        self.assertEqual(self.tr('rip', 'network 10.0.0.0'), ('network 10.0.0.0/8', None))
+        self.assertEqual(self.tr('rip', 'network 172.16.0.0'), ('network 172.16.0.0/16', None))
+        self.assertEqual(self.tr('rip', 'network 192.168.1.0'), ('network 192.168.1.0/24', None))
+        self.assertEqual(self.tr('rip', 'network 10.0.0.0/24'), ('network 10.0.0.0/24', None))
+        self.assertEqual(self.tr('rip', 'version 2'), ('version 2', None))
+        self.assertEqual(self.tr('rip', 'no auto-summary'), ('', None))  # FRRに無い。何もしない
+
+    def test_display_bgp_and_rip(self):
+        self.assertEqual(l3.display_line(' network 10.10.1.0/24', 'bgp'), ' network 10.10.1.0 mask 255.255.255.0')
+        self.assertEqual(l3.display_line('  network 10.10.1.0/24', 'bgp'), '  network 10.10.1.0 mask 255.255.255.0')
+        self.assertEqual(l3.display_line(' aggregate-address 10.10.0.0/16 summary-only', 'bgp'), ' aggregate-address 10.10.0.0 255.255.0.0 summary-only')
+        self.assertEqual(l3.display_line(' network 10.0.0.0/8', 'rip'), ' network 10.0.0.0')
+        self.assertEqual(l3.display_line(' network 10.0.0.0/24', 'rip'), ' network 10.0.0.0/24')  # クラスフルでない形はそのまま
+        self.assertEqual(l3.display_line(' neighbor 10.0.0.2 remote-as 65002', 'bgp'), ' neighbor 10.0.0.2 remote-as 65002')
+
     def test_interface_command(self):
         self.assertEqual(l3.translate_interface_command(['ip', 'ospf', 'cost', '10']), 'ip ospf cost 10')
         self.assertEqual(l3.translate_interface_command(['ip', 'ospf', '1', 'area', '0']), 'ip ospf area 0')
@@ -170,6 +198,13 @@ end
 
 
 class FrrConfigDisplayTest(CliTestCase):
+    def test_bgp_block_in_running_config(self):
+        self.store(['router bgp 65001', ' bgp router-id 1.1.1.1', ' neighbor 10.0.0.2 remote-as 65002', ' !', ' address-family ipv4 unicast',
+                    '  network 10.10.1.0/24', ' exit-address-family'])
+        config = self.running_config()
+        self.assertIn('router bgp 65001\n bgp router-id 1.1.1.1', config)
+        self.assertIn('  network 10.10.1.0 mask 255.255.255.0\n exit-address-family', config)
+
     def store(self, lines):
         cfg = sw.load(sw.RUNNING)
         cfg['frr'] = lines
