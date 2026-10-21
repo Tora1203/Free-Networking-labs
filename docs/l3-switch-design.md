@@ -229,3 +229,14 @@ ACLは別に設計する（次のPR）。
   DHCPリレー＝VLAN10のクライアントが、リレー経由でdnsmasqからアドレスを取得（DISCOVER→OFFER→REQUEST→ACK）。
 - **未対応**：VRRPの認証・トラッキング、`show vrrp brief`の1行表示、HSRP、DHCPのオプション82、インターフェースごとのDHCPサーバーの振り分け。ACL（次）。
 
+## 15. ACLの実装メモ（2026-10-21、be/l3-acl）
+
+- **構成**：`acl.py`（入力の解釈・nftablesへの変換・FRRへの写し。副作用なしの純粋な関数）と、`l3.py`（コマンド・適用）に分けた。
+- **経路用の`access-list`との両立**（13章で「ACLと一緒に設計」とした点）：入力は一つ（Ciscoの`access-list`／`ip access-list`）。パケット用はnftablesに、**標準ACLだけ**FRRの`access-list`にも写す（`route-map`の`match ip address N`用）。
+  FRRの設定（`frr`キー）は`access-list`を保存しない（`KEEP_PREFIXES`から外した）。ACL側（`acls`）が唯一の持ち主で、エージェントが5秒ごとにFRRと突き合わせる。
+- **nftablesの形**：`permit`は`return`（呼び出し元に戻る）にした。`accept`にすると、同じ`forward`チェーンの後ろにある`out`のACLが評価されない。最後は`counter drop`（暗黙の拒否）。
+  一致回数は規則のコメント（`"<ACL> <seq>"`）をキーに`nft list`から読む。
+- **確かめたこと**（コンテナ、ネットワーク名前空間で2台のホストをVLAN10・20に）：拡張ACLの`in`で、ホストAからBへのicmp echoが止まる（逆向きは通る）／tcp 8080は止まりtcp 9090は通る／
+  `show access-lists`に一致回数が出る／`no ip access-group`でnftablesの表が消えて通る／標準ACLがFRRの`access-list`に写る。
+- **未確認**：`out`の向き、ルーテッドポートでの適用、`established`・`range`・`neq`の実機の挙動（nftの規則の文字列はテスト済み）、`write memory`→再起動での復元（設定は他と同じ経路で保存される）。
+

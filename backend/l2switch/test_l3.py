@@ -282,5 +282,76 @@ class FrrConfigDisplayTest(CliTestCase):
         self.assertIn('switchport', out)
 
 
+class AclCommandTest(CliTestCase):
+    def test_named_extended_acl_and_running_config(self):
+        out = self.configure(['ip access-list extended WEB', 'permit tcp 10.10.0.0 0.0.0.255 any eq www', 'deny icmp any any echo', '30 permit ip any any'])
+        self.assertNotIn('%', out)
+        self.assertIn('ip access-list extended WEB\n 10 permit tcp 10.10.0.0 0.0.0.255 any eq 80\n 20 deny icmp any any echo\n 30 permit ip any any\n!', self.running_config())
+
+    def test_entries_get_sequence_numbers_in_steps_of_10(self):
+        self.configure(['ip access-list standard 5N', 'permit 10.0.0.0 0.0.0.255', 'deny host 10.0.0.9'])
+        config = self.running_config()
+        self.assertIn('ip access-list standard 5N\n 10 permit 10.0.0.0 0.0.0.255\n 20 deny host 10.0.0.9\n!', config)
+        self.configure(['ip access-list standard 5N', '15 permit any'])
+        self.assertIn(' 10 permit 10.0.0.0 0.0.0.255\n 15 permit any\n 20 deny host 10.0.0.9', self.running_config())
+
+    def test_numbered_acl(self):
+        self.configure(['access-list 101 deny icmp any any echo', 'access-list 101 permit ip any any', 'access-list 10 permit 10.0.0.0 0.0.0.255'])
+        config = self.running_config()
+        self.assertIn('access-list 10 permit 10.0.0.0 0.0.0.255\naccess-list 101 deny icmp any any echo\naccess-list 101 permit ip any any\n!', config)
+        self.assertIn('Invalid', self.configure(['access-list 200 permit ip any any']))
+        self.configure(['no access-list 101'])
+        self.assertNotIn('access-list 101', self.running_config())
+
+    def test_mistakes_are_refused(self):
+        self.configure(['ip access-list extended E'])
+        for line in ('permit ip any', 'permit tcp any any eq nosuch', 'allow ip any any', 'permit gre any any'):
+            out = self.configure(['ip access-list extended E', line])
+            self.assertTrue('Invalid' in out or 'Incomplete' in out, line)
+        self.assertNotIn('permit', self.running_config())
+        self.assertIn('Duplicate', self.configure(['ip access-list extended E', 'permit ip any any', 'permit ip any any']))
+        self.assertIn('Duplicate', self.configure(['ip access-list extended E', '10 deny ip any any']))
+        self.assertIn('cannot change its type', self.configure(['ip access-list standard E']))
+
+    def test_delete_entries(self):
+        self.configure(['ip access-list extended E', 'permit ip any any', 'deny icmp any any echo', 'remark ignored'])
+        self.configure(['ip access-list extended E', 'no 10'])
+        self.assertNotIn('permit ip any any', self.running_config())
+        self.configure(['ip access-list extended E', 'no deny icmp any any echo'])
+        self.assertNotIn('deny icmp', self.running_config())
+        self.configure(['no ip access-list extended E'])
+        self.assertNotIn('access-list', self.running_config())
+
+    def test_config_commands_pass_through_inside_an_acl(self):
+        self.configure(['ip access-list extended E', 'permit ip any any', 'vlan 10', 'interface vlan 10', 'ip address 10.10.0.1 255.255.255.0'])
+        config = self.running_config()
+        self.assertIn('interface Vlan10\n ip address 10.10.0.1 255.255.255.0', config)
+        self.assertIn(' 10 permit ip any any', config)
+
+    def test_access_group_on_svi_and_routed_port(self):
+        self.configure(['ip access-list extended E', 'permit ip any any', 'exit', 'vlan 10', 'interface vlan 10', 'ip address 10.10.0.1 255.255.255.0',
+                        'ip access-group E in', 'ip access-group E out', 'exit', 'interface eth2', 'no switchport', 'ip address 10.0.1.1 255.255.255.0', 'ip access-group E in'])
+        config = self.running_config()
+        self.assertIn('interface Vlan10\n ip address 10.10.0.1 255.255.255.0\n ip access-group E in\n ip access-group E out\n', config)
+        self.assertIn('interface eth2\n no switchport\n ip address 10.0.1.1 255.255.255.0\n ip access-group E in\n', config)
+        plugin = sw.PLUGINS[0]
+        self.assertEqual(sorted(plugin.acl_applications(sw.load(sw.RUNNING))), [('eth2', 'in', 'E'), ('vlan10', 'in', 'E'), ('vlan10', 'out', 'E')])
+        self.configure(['interface vlan 10', 'no ip access-group out'])
+        self.assertNotIn('access-group E out', self.running_config())
+        self.configure(['interface vlan 10', 'no ip access-group E in'])
+        self.assertNotIn('interface Vlan10\n ip address 10.10.0.1 255.255.255.0\n ip access-group', self.running_config())
+
+    def test_access_group_needs_in_or_out_and_a_routed_port(self):
+        self.assertIn('Invalid', self.configure(['interface vlan 10', 'ip access-group E sideways']))
+        self.assertIn('switchport', self.configure(['interface eth2', 'ip access-group E in']))
+
+    def test_show_access_lists(self):
+        self.configure(['ip access-list extended E', 'permit tcp any any eq 22', 'deny ip any any'])
+        out = self.run_lines(['show access-lists'])
+        self.assertIn('Extended IP access list E\n    10 permit tcp any any eq 22\n    20 deny ip any any', out)
+        self.assertEqual(self.run_lines(['show ip access-lists E']).strip().splitlines()[0].split('#')[-1], 'Extended IP access list E')
+        self.assertNotIn('Extended', self.run_lines(['show access-lists NOSUCH']))
+
+
 if __name__ == '__main__':
     unittest.main()

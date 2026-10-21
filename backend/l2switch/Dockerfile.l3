@@ -6,11 +6,12 @@
 #   fnl/l3switch:3（2026-10-21）：BGP・RIPのCisco風の翻訳（network … mask、address-family ipv4、クラスフルのnetwork）（段階3）
 #   fnl/l3switch:4（2026-10-21）：route-map・ip prefix-list・ip as-path・ip community-list（ポリシー）
 #   fnl/l3switch:5（2026-10-21）：VRRP（vrrpd）、DHCPリレー（ip helper-address、dhcp-helper）
+#   fnl/l3switch:6（2026-10-21）：ACL（ip access-list、ip access-group。nftablesに変換）
 #
-#   docker build -t fnl/l2switch:9 backend/l2switch
-#   docker build -t fnl/l3switch:5 -f backend/l2switch/Dockerfile.l3 backend/l2switch
-ARG BASE=fnl/l2switch:9
+#   docker build -t fnl/l2switch:10 backend/l2switch
+#   docker build -t fnl/l3switch:6 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+ARG BASE=fnl/l2switch:10
 FROM ${BASE}
 RUN apk add --no-cache frr nftables dhcp-helper \
  && sed -i 's/^ospfd=no/ospfd=yes/; s/^bgpd=no/bgpd=yes/; s/^ripd=no/ripd=yes/; s/^vrrpd=no/vrrpd=yes/' /etc/frr/daemons
-COPY l3.py /usr/local/bin/l3.py
+COPY l3.py acl.py /usr/local/bin/
