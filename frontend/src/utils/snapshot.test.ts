@@ -3,12 +3,15 @@ import { load as loadYaml } from 'js-yaml'
 import {
   SNAPSHOT_MAX_CHARS,
   buildReadConfigCommand,
+  buildSnapshotExport,
   buildSnapshotFiles,
   buildWriteConfigCommand,
   decodeConfigOutput,
   isSnapshotLabName,
+  parseSnapshotExport,
   parseSnapshotLabName,
   readSnapshotMeta,
+  snapshotExportFileName,
   snapshotLabName,
   stripSnapshotMeta,
 } from './snapshot'
@@ -105,5 +108,37 @@ describe('スナップショットの読み出し', () => {
   })
   it('戻す時はsnapshotキーを除く', () => {
     expect(JSON.parse(stripSnapshotMeta('{"version":2,"snapshot":{"a":1},"positions":{}}'))).toEqual({ version: 2, positions: {} })
+  })
+})
+
+describe('ファイルへの書き出し・取り込み', () => {
+  const files = buildSnapshotFiles('lab1-snap-20261018140509', YAML, '{"version":2,"positions":{"R1":{"x":1,"y":2}}}', {
+    title: '課題の初期状態',
+    note: 'OSPF設定前',
+    configs: { R1: { kind: 'router', text: 'hostname R1\n! 説明\n' } },
+    skipped: [],
+  })
+
+  it('書き出して取り込むと、名前・設定・座標が戻る', () => {
+    const parsed = parseSnapshotExport(buildSnapshotExport(files.yaml, files.annotations))
+    expect(parsed.meta.title).toBe('課題の初期状態')
+    expect(parsed.meta.configs.R1.text).toBe('hostname R1\n! 説明\n')
+    expect(JSON.parse(parsed.annotations).positions.R1).toEqual({ x: 1, y: 2 })
+    expect(JSON.parse(parsed.annotations).snapshot).toBeUndefined()
+  })
+  it('スナップショットでないファイルは断る', () => {
+    expect(() => parseSnapshotExport('not json')).toThrow('JSON')
+    expect(() => parseSnapshotExport('{"format":"other","version":1}')).toThrow('スナップショットのファイルではありません')
+    expect(() => parseSnapshotExport('{"format":"fnl-snapshot","version":2,"yaml":"","annotations":""}')).toThrow('版')
+    expect(() => parseSnapshotExport('{"format":"fnl-snapshot","version":1,"yaml":"a","annotations":"{}"}')).toThrow('情報')
+  })
+  it('使えないノード名・ノードの無いトポロジは断る', () => {
+    const bad = buildSnapshotExport(files.yaml.replace('R1:', '"../x":'), files.annotations)
+    expect(() => parseSnapshotExport(bad)).toThrow('ノード名')
+    expect(() => parseSnapshotExport(buildSnapshotExport('name: x\ntopology:\n  links: []\n', files.annotations))).toThrow('ノードがありません')
+  })
+  it('書き出しのファイル名に使えない文字を含めない', () => {
+    expect(snapshotExportFileName('課題: OSPF/1 <初期>', '2026-10-21T05:00:00.000Z')).toBe('課題_OSPF_1_初期_20261021.json')
+    expect(snapshotExportFileName('', 'x')).toBe('snapshot.json')
   })
 })

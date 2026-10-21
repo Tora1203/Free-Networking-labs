@@ -199,3 +199,56 @@ export function formatSnapshotTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+
+// ---- ファイルへの書き出し・取り込み（2026-10-21。課題の初期状態を配る、別のユーザーに渡す用途） ----
+//
+// 1つのスナップショット＝1つのJSONファイル。YAMLとannotations（`snapshot`キー入り）の文字列をそのまま入れる。
+// 取り込みは、開いているラボの新しいスナップショットとして保存する（そこから「戻す」で使う）。
+// ユーザー間のアクセス制御は作らず、ファイルの受け渡しだけで共有する
+
+const EXPORT_FORMAT = 'fnl-snapshot'
+
+export function buildSnapshotExport(yamlText: string, annotationsText: string): string {
+  return JSON.stringify({ format: EXPORT_FORMAT, version: 1, yaml: yamlText, annotations: annotationsText }, null, 2)
+}
+
+export interface ParsedSnapshotExport {
+  yaml: string
+  // snapshotキーを除いたannotations
+  annotations: string
+  meta: SnapshotMeta
+}
+
+// 書き出したファイルの中身を検証して読む。他のユーザーのファイルなので、形式・大きさ・ノード名を確かめる
+export function parseSnapshotExport(text: string): ParsedSnapshotExport {
+  if (text.length > SNAPSHOT_MAX_CHARS * 2) throw new Error('ファイルが大きすぎます')
+  let raw: { format?: unknown; version?: unknown; yaml?: unknown; annotations?: unknown }
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    throw new Error('スナップショットのファイルではありません（JSONを読めません）')
+  }
+  if (!raw || raw.format !== EXPORT_FORMAT) throw new Error('スナップショットのファイルではありません')
+  if (raw.version !== 1) throw new Error('このファイルの版には対応していません')
+  if (typeof raw.yaml !== 'string' || typeof raw.annotations !== 'string') throw new Error('ファイルの中身が足りません')
+  const meta = readSnapshotMeta(raw.annotations)
+  if (!meta) throw new Error('スナップショットの情報を読めません')
+  let doc: { topology?: { nodes?: unknown } } | null
+  try {
+    doc = loadYaml(raw.yaml) as typeof doc
+  } catch {
+    throw new Error('トポロジのYAMLを読めません')
+  }
+  const nodes = doc?.topology?.nodes
+  if (!nodes || typeof nodes !== 'object') throw new Error('トポロジにノードがありません')
+  if (Object.keys(nodes).some((name) => !isValidNodeName(name))) throw new Error('使えない文字を含むノード名があります')
+  return { yaml: raw.yaml, annotations: stripSnapshotMeta(raw.annotations), meta }
+}
+
+// 書き出しのファイル名（例：OSPFの課題_20261021.json）
+export function snapshotExportFileName(title: string, createdAt: string): string {
+  const d = new Date(createdAt)
+  const stamp = Number.isNaN(d.getTime()) ? '' : `_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
+  const base = title.replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'snapshot'
+  return `${base}${stamp}.json`
+}

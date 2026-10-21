@@ -21,7 +21,7 @@ import TopologyNode, { type TopoNodeData } from './TopologyNode'
 import LabelNode, { type LabelNodeData } from './LabelNode'
 import AreaNode, { type AreaNodeData } from './AreaNode'
 import FloatingEdge, { type FloatingEdgeData } from './FloatingEdge'
-import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
+import { PALETTE_NODE_CONFIGS, isSwitchKind, type PaletteNodeKind } from '../types/lab'
 import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
@@ -44,6 +44,7 @@ import SnapshotDialog from './SnapshotDialog'
 import { NodeRuntimeContext, type NodeRunStatus } from './nodeRuntimeContext'
 import {
   applyLinkConditions,
+  createLabFromSnapshot,
   createLabSnapshot,
   errorMessage,
   listLabNames,
@@ -160,7 +161,7 @@ const SWITCH_CONSOLE_AUTO_COMMAND = 'while true; do swcli; done'
 
 function consoleAutoCommand(kind: PaletteNodeKind | undefined): string | undefined {
   if (kind === 'router') return ROUTER_CONSOLE_AUTO_COMMAND
-  if (kind === 'l2-switch') return SWITCH_CONSOLE_AUTO_COMMAND
+  if (isSwitchKind(kind)) return SWITCH_CONSOLE_AUTO_COMMAND
   return undefined
 }
 
@@ -200,7 +201,7 @@ const OLD_FORMAT_MESSAGE =
 function needsUpgrade(node: Node): boolean {
   if (node.type !== 'topoNode') return false
   const data = node.data as Partial<TopoNodeData>
-  if (data.kind === 'l2-switch') return data.image !== PALETTE_NODE_CONFIGS['l2-switch'].image
+  if (isSwitchKind(data.kind)) return data.image !== PALETTE_NODE_CONFIGS[data.kind].image
   if (data.kind === 'router') return data.image !== PALETTE_NODE_CONFIGS.router.image
   return false
 }
@@ -985,6 +986,39 @@ function TopologyEditorInner() {
     [enqueue, syncOnce, startWholeLab, refreshRunState],
   )
 
+  // スナップショットから新しいラボを作って開く。元のラボには触れないので、編集キューには載せず、
+  // 作り終わったらそのラボをエディタで開き直す（今のラボの編集内容は自動保存済み）
+  const onSnapshotOpenAsNew = useCallback(
+    (entry: SnapshotEntry) => {
+      const hasConfigs = Object.keys(entry.meta.configs).length > 0
+      const lines = [
+        `スナップショット「${entry.meta.title}」から、新しいラボを作って開きます。`,
+        '・今のラボはそのまま残ります',
+        ...(hasConfigs ? ['・新しいラボを起動し、ルーター・スイッチの設定を書き戻して再起動します（少し時間がかかります）'] : []),
+        '',
+        'よろしいですか？',
+      ]
+      if (!window.confirm(lines.join('\n'))) return
+      setSnapshotOpen(false)
+      void (async () => {
+        try {
+          await syncOnce()
+          const result = await createLabFromSnapshot(
+            entry,
+            useAuthStore.getState().username,
+            labName.trim() || '無題',
+            (message) => setSyncStatus({ kind: 'busy', message }),
+          )
+          if (result.failures.length > 0) window.alert(`「${result.title}」を作りました。一部できなかったこと：\n${result.failures.join('\n')}`)
+          useUiStore.getState().openEditor({ mode: 'edit', labName: result.labName })
+        } catch (e) {
+          setSyncStatus({ kind: 'error', message: errorMessage(e, '新しいラボを作れませんでした') })
+        }
+      })()
+    },
+    [syncOnce, labName],
+  )
+
   // キャンバスのノードに出す起動状態（2026-10-14、「on/offが見た目で分からない」指摘対応）
   const nodeRunStatus = useCallback(
     (nodeId: string): NodeRunStatus => {
@@ -1374,8 +1408,8 @@ function TopologyEditorInner() {
     : false
 
   const nodeKind = (id: string) => (nodes.find((n) => n.id === id)?.data as Partial<TopoNodeData> | undefined)?.kind
-  const sourceIsSwitch = pendingConnection ? nodeKind(pendingConnection.source) === 'l2-switch' : false
-  const targetIsSwitch = pendingConnection ? nodeKind(pendingConnection.target) === 'l2-switch' : false
+  const sourceIsSwitch = pendingConnection ? isSwitchKind(nodeKind(pendingConnection.source)) : false
+  const targetIsSwitch = pendingConnection ? isSwitchKind(nodeKind(pendingConnection.target)) : false
   // ルーターはIPアドレス設定をvtyshのCLIで行う方針にしたため、GUIのプレーンなアドレス/
   // ゲートウェイ入力欄はPCにしか出さない（2026-10-07方針変更：「ルーターはCLIで設定しないと
   // 意味がない」指摘対応。docs/direction.md参照）
@@ -1924,6 +1958,7 @@ function TopologyEditorInner() {
               running={runState.kind === 'running'}
               onTake={onSnapshotTake}
               onRestore={onSnapshotRestore}
+          onOpenAsNew={onSnapshotOpenAsNew}
               onClose={() => setSnapshotOpen(false)}
             />
           )}

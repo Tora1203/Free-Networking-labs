@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import { deleteLabSnapshot, errorMessage, listLabSnapshots, type SnapshotEntry } from '../utils/labRuntime'
-import { SNAPSHOT_LIMIT, formatSnapshotTime } from '../utils/snapshot'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { deleteLabSnapshot, errorMessage, exportLabSnapshot, importLabSnapshot, listLabSnapshots, type SnapshotEntry } from '../utils/labRuntime'
+import { SNAPSHOT_LIMIT, formatSnapshotTime, snapshotExportFileName } from '../utils/snapshot'
 import './SnapshotDialog.css'
 
 // ラボのスナップショットの一覧・保存・戻す・削除のダイアログ（2026-10-18、utils/snapshot.ts）。
@@ -12,19 +12,33 @@ interface Props {
   running: boolean
   onTake: (title: string, note: string) => Promise<void>
   onRestore: (entry: SnapshotEntry) => void
+  // スナップショットから新しいラボを作って開く（元のラボには触れない）
+  onOpenAsNew: (entry: SnapshotEntry) => void
   onClose: () => void
+}
+
+// ファイルとして保存させる（エクスポートと同じ、a要素のダウンロード）
+function downloadText(fileName: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function defaultTitle() {
   return `${formatSnapshotTime(new Date().toISOString())} の状態`
 }
 
-export default function SnapshotDialog({ labName, running, onTake, onRestore, onClose }: Props) {
+export default function SnapshotDialog({ labName, running, onTake, onRestore, onOpenAsNew, onClose }: Props) {
   const [entries, setEntries] = useState<SnapshotEntry[] | null>(null)
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(() => {
     listLabSnapshots(labName)
@@ -62,6 +76,36 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
     }
   }
 
+  const exportEntry = async (entry: SnapshotEntry) => {
+    setWorking(true)
+    setError(null)
+    setMessage(null)
+    try {
+      downloadText(snapshotExportFileName(entry.meta.title, entry.meta.createdAt), await exportLabSnapshot(entry))
+    } catch (e) {
+      setError(errorMessage(e, '書き出せませんでした'))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const importFile = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    setWorking(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const entry = await importLabSnapshot(labName, await file.text())
+      setMessage(`「${entry.meta.title}」を取り込みました。「戻す」でこのラボに反映できます。`)
+    } catch (e) {
+      setError(errorMessage(e, '取り込めませんでした'))
+    } finally {
+      setWorking(false)
+      refresh()
+    }
+  }
+
   const full = (entries?.length ?? 0) >= SNAPSHOT_LIMIT
 
   return (
@@ -83,6 +127,7 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
         {!running && <div className="topology-editor__modal-warn">ラボが停止中のため、ルーター・スイッチの設定は保存されません（トポロジだけを保存します）。</div>}
         {full && <div className="topology-editor__modal-warn">上限（{SNAPSHOT_LIMIT}個）です。不要なものを削除してください。</div>}
         {error && <div className="topology-editor__modal-warn">{error}</div>}
+        {message && <div className="snapshot-dialog__message">{message}</div>}
 
         <div className="snapshot-dialog__list">
           {entries === null && !error && <p className="snapshot-dialog__empty">読み込み中...</p>}
@@ -107,6 +152,12 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
                   <button onClick={() => onRestore(entry)} disabled={working} title="この状態に戻します（戻す前の状態は自動で残します）">
                     戻す
                   </button>
+                  <button onClick={() => onOpenAsNew(entry)} disabled={working} title="元のラボはそのままに、この状態から新しいラボを作って開きます">
+                    別のラボとして開く
+                  </button>
+                  <button onClick={() => exportEntry(entry)} disabled={working} title="JSONファイルに書き出します（別のユーザーに渡す、課題の初期状態を配る）">
+                    書き出し
+                  </button>
                   <button className="btn-danger" onClick={() => remove(entry)} disabled={working}>
                     削除
                   </button>
@@ -117,6 +168,23 @@ export default function SnapshotDialog({ labName, running, onTake, onRestore, on
         </div>
 
         <div className="topology-editor__modal-actions">
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => {
+              void importFile(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={working || full}
+            title="書き出したスナップショットのファイルを、このラボのスナップショットとして取り込みます"
+          >
+            ファイルから取り込む
+          </button>
           <button onClick={onClose} disabled={working}>
             閉じる
           </button>
