@@ -26,6 +26,7 @@ import { startPacketCapture } from '../api/captureClient'
 import { getLabDisplayName, isSafeLabName, labTitleKey, rememberLabDisplayName, toSafeLabName } from '../utils/labName'
 import { readLabTitle, serializeAnnotations } from '../utils/annotations'
 import { fetchRemoteState, type RemoteState } from '../utils/remoteSync'
+import { mergeTopology } from '../utils/topologyMerge'
 import ShareButton from './ShareButton'
 import { getLabVersion, watchLab, type VersionEvent } from '../api/collabClient'
 import {
@@ -317,6 +318,8 @@ function TopologyEditorInner() {
   // 保存済みの表示名（表示名を変えた時に、自分の他のラボと重ならないかを見るため）
   const savedTitleRef = useRef<string | null>(null)
   // 10秒ごとの確認（別の画面の変更を取り込む。実体は下のcheckRemoteChange）
+  // 別の画面の変更を、自分の未保存の編集と統合する（定義はreloadFromRemoteの近く。syncOnceから呼ぶためrefで渡す）
+  const mergeRemoteRef = useRef<(name: string, remote: RemoteState, version: string | null) => Promise<boolean>>(async () => false)
   const checkRemoteChangeRef = useRef<(labName: string, knownVersion?: string | null, knownRemote?: RemoteState) => Promise<void>>(async () => undefined)
   // 通知で届いた最新の版と中身（順番が来たら使う）
   const latestEventRef = useRef<VersionEvent | null>(null)
@@ -468,7 +471,10 @@ function TopologyEditorInner() {
       const willWrite = yamlText !== lastSavedYaml.current || annotationsText !== lastSavedAnnotations.current
       if (willWrite && loadedRef.current && !overwriteRemoteRef.current) {
         // 保存の前に、別の画面が先に変更していないか確かめる（黙って上書きしない）。通常は軽い版の確認1本で済む
-        if ((await detectRemoteChange(name)).changed) {
+        const detected = await detectRemoteChange(name)
+        if (detected.changed) {
+          // ノード単位で統合できれば、統合した内容を次の保存で書く。決められない時だけ、保存を止めて選んでもらう
+          if (detected.remote && (await mergeRemoteRef.current(name, detected.remote, detected.version))) return
           dirtyRef.current = true
           setRemoteConflict(true)
           setSyncStatus({ kind: 'error', message: '別の画面でこのラボが変更されたため、保存を止めました' })
@@ -1098,12 +1104,91 @@ function TopologyEditorInner() {
     [refreshRunState, syncHistoryCounts],
   )
 
+  // 別の画面の変更を、自分の未保存の編集と統合する（ノード単位、utils/topologyMerge.ts）。
+  // 共通の元＝最後に保存・読み込みした内容。統合できたら、画面を統合後の内容にして、次の保存で書く
+  // （サーバーにある内容は別の画面のものなので、「保存済み」の基準はそちらにそろえる）。
+  // 自動では決められない時（同じインターフェースに別々のリンク、同名のノードを別々に追加）は false を返し、
+  // 呼び出し側は従来の「最新を読み込む／自分の内容で上書き」を出す。元に戻す履歴は、統合の前後で連続しないので空にする
+  const mergeRemote = useCallback(
+    async (name: string, remote: RemoteState, version: string | null): Promise<boolean> => {
+      if (lastSavedYaml.current === null || lastSavedAnnotations.current === null) return false
+      try {
+        const { nodes: localNodes, edges: localEdges, labName } = latestRef.current
+        const localBuilt = buildTopologyContent(localNodes, localEdges, name)
+        const localTitle = labName.trim() || name
+        const remoteTitle = readLabTitle(remote.annotations) ?? getLabDisplayName(name)
+        // 3つとも「保存形式を読み込んだ形」にそろえてから比べる
+        const base = parseImportedTopology(lastSavedYaml.current, lastSavedAnnotations.current)
+        const local = parseImportedTopology(
+          topologyToYaml(localBuilt.topologyContent),
+          serializeAnnotations(localNodes, localBuilt.portAnnotations, localBuilt.switchOriginalIds, localTitle),
+        )
+        const theirs = parseImportedTopology(remote.yaml, remote.annotations)
+        const result = mergeTopology(
+          { nodes: base.nodes, edges: base.edges, title: savedTitleRef.current ?? name },
+          { nodes: local.nodes, edges: local.edges, title: localTitle },
+          { nodes: theirs.nodes, edges: theirs.edges, title: remoteTitle },
+        )
+        if (result.hardConflict) return false
+
+        const merged = result.nodes.map((n) => {
+          const kind = (n.data as Partial<TopoNodeData>).kind
+          if (!needsUpgrade(n) || !kind) return n
+          const config = PALETTE_NODE_CONFIGS[kind]
+          return { ...n, data: { ...n.data, clabKind: config.clabKind, image: config.image } }
+        })
+        buildTopologyContent(merged, result.edges, name) // 組み立てられるか（インターフェースの重なり等）を先に確かめる
+
+        // サーバーにある内容（別の画面のもの）を「保存済み・反映済み」の基準にする
+        const theirsBuilt = buildTopologyContent(theirs.nodes, theirs.edges, name)
+        const theirsYaml = topologyToYaml(theirsBuilt.topologyContent)
+        lastSavedYaml.current = theirsYaml
+        lastAppliedYaml.current = theirsYaml
+        lastSavedAnnotations.current = serializeAnnotations(theirs.nodes, theirsBuilt.portAnnotations, theirsBuilt.switchOriginalIds, remoteTitle)
+        baselineVersionRef.current = version
+        savedTitleRef.current = remoteTitle
+
+        latestRef.current = { nodes: merged, edges: result.edges, labName: result.title }
+        for (const kind of Object.keys(counters.current) as PaletteNodeKind[]) {
+          counters.current[kind] = Math.max(counters.current[kind], theirs.counters[kind] ?? 0, local.counters[kind] ?? 0)
+        }
+        setNodes(merged)
+        setEdges(result.edges)
+        setLabName(result.title)
+        historyRef.current = { past: [], future: [], current: takeSnapshot(merged, result.edges) }
+        syncHistoryCounts()
+        setRemoteConflict(false)
+        setSyncStatus({
+          kind: result.conflicts.length > 0 ? 'error' : 'ok',
+          message:
+            result.conflicts.length > 0
+              ? `別の画面の変更を取り込みました。同じ所を両方が変えた所は自分の内容を残しました：${result.conflicts.join('、')}`
+              : result.tookRemote
+                ? '別の画面の変更を、自分の編集と合わせて取り込みました'
+                : '保存します...',
+        })
+        // 統合後の内容を保存・反映する（編集の列の最後に並べる）
+        dirtyRef.current = true
+        void enqueue(syncOnce)
+        return true
+      } catch {
+        return false
+      }
+    },
+    [enqueue, syncOnce, syncHistoryCounts],
+  )
+  useEffect(() => {
+    mergeRemoteRef.current = mergeRemote
+  }, [mergeRemote])
+
   const checkRemoteChange = useCallback(
     async (name: string, knownVersion?: string | null, knownRemote?: RemoteState) => {
       if (!loadedRef.current) return
       const { changed, version, remote } = await detectRemoteChange(name, knownVersion, knownRemote)
       if (!changed || !remote) return
       if (hasLocalChanges(name)) {
+        // 未保存の編集があっても、ノード単位で統合できれば取り込む。決められない時だけ、選んでもらう
+        if (await mergeRemote(name, remote, version)) return
         setRemoteConflict(true)
         setSyncStatus({ kind: 'error', message: '別の画面でこのラボが変更されています' })
         return
@@ -1114,7 +1199,7 @@ function TopologyEditorInner() {
         setSyncStatus({ kind: 'error', message: errorMessage(e, '別の画面の変更を読み込めませんでした') })
       }
     },
-    [hasLocalChanges, reloadFromRemote, detectRemoteChange],
+    [hasLocalChanges, reloadFromRemote, detectRemoteChange, mergeRemote],
   )
   useEffect(() => {
     checkRemoteChangeRef.current = checkRemoteChange
