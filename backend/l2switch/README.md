@@ -142,3 +142,30 @@ running-configを流し込み直すと同じ設定になるか、`write memory`�
 - 2026-10-14（:2）：CLIでaccess/trunkを設定し、`fnl/frr:1`のルーターのサブインターフェース経由で
   VLAN10↔20の疎通を確認。`wr`→ノード停止/起動で保存した設定だけが戻る（保存していない変更は消える）。
   `?`ヘルプ・Tab補完・省略形（`sw mo acc`、`sh vl br`）を端末で確認
+
+## L3スイッチ（fnl/l3switch、2026-10-21〜、段階1）
+
+L2スイッチのイメージ（`fnl/l2switch:7`〜）に、FRR（zebra・staticd）とnftablesと`l3.py`（swcliのプラグイン）を足したもの
+（`Dockerfile.l3`）。`swcli`は起動時に同じディレクトリの`l3.py`を読み込むので、L2スイッチのイメージ（`l3.py`なし）の動きは変わらない。
+設計は`docs/l3-switch-design.md`。
+
+```
+docker build -t fnl/l2switch:7 backend/l2switch
+docker build -t fnl/l3switch:1 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+```
+
+| コマンド | 内容 |
+| --- | --- |
+| `ip routing` / `no ip routing` | 経路制御を動かす／止める。既定は`no ip routing`（実機のCatalystと同じく、入れるまでL3として動かない） |
+| `interface vlan N` ＋ `ip address` | SVI。`ip routing`の間、SVI同士のあいだでルーティングされる |
+| `ip route <宛先> <マスク> <次のホップ>` / `no ip route …` | 静的経路（FRRのstaticdに入れる） |
+| `interface ethN` → `no switchport` ＋ `ip address` | ルーテッドポート（ブリッジから外れる）。`switchport`で戻すとアドレスは消える |
+| `show ip route` | FRRの経路表（`vtysh`の出力のまま。管理用のeth0の経路も出る＝ルーターと同じ） |
+
+実装の注意（実機で確かめた）：
+- **`SYS_ADMIN`が要る**：zebraが`CAP_SYS_ADMIN`を要求する（無いと`privs_init: initial cap_set_proc failed`で起動しない）。ルーターと同じ`NET_ADMIN`・`NET_RAW`・`SYS_ADMIN`。
+- **`no ip routing`の止め方**：コンテナの`net.ipv4.ip_forward`は非特権では書き換えられず、既定で1。そこでnftables（`inet fnl_l3`）で、SVI（`vlan*`）とルーテッドポートから入るパケットの転送だけを落とす。ブリッジの中のL2転送には触れない。
+- **FRRの起動はパイプで待たない**：`frrinit.sh start`が起動したデーモンが出力の口を握り続け、パイプで受けると30秒固まる（エージェント全体が止まる）。出力はファイル（`/run/fnl-switch/frr-init.log`）に逃がす。
+- **静的経路の入れ方**：経路は設定（running-config）に持ち、エージェントが5秒ごとにFRRと突き合わせる（FRRが再起動して経路を失っても戻る）。FRRの設定ファイルは起動のたびに作り直す。
+- **ラボを起動した直後**は、STP（rapid-stp）がポートを転送状態にするまで数秒かかる。ping等はその後に確かめる。
+

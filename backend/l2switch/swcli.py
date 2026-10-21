@@ -44,6 +44,9 @@ ALL_VLANS = list(range(1, 4095))
 # 設定の読み書き
 # ---------------------------------------------------------------------------
 
+PLUGINS = []  # 機能の追加（l3.py）。下のmainの手前で読み込む
+
+
 def default_config():
     return {'hostname': socket.gethostname(), 'vlans': {'1': 'default'}, 'interfaces': {}}
 
@@ -177,6 +180,8 @@ def member_of(cfg, name):
 def bridge_ports(cfg):
     """ブリッジに入るポート（channel-groupに入っていないeth＋port-channel）。VLAN・STPの対象"""
     members = {m for g in channel_groups(cfg).values() for m in g['members']}
+    for plugin in PLUGINS:
+        members |= plugin.routed_ports(cfg)  # ルーテッドポート（no switchport）はブリッジに入れない
     pos = [f'po{n}' for n in channel_groups(cfg)]
     return sorted([n for n in system_ports() if n not in members] + pos, key=iface_key)
 
@@ -1066,6 +1071,8 @@ class Agent:
         self.stp.tick(cfg, ports, changed)
         self.sync_mac(cfg)
         self.sync_svi(cfg)
+        for plugin in PLUGINS:
+            plugin.tick(cfg)
         self.lldp.tick(cfg, system_ports())
         self.psec.tick(cfg, load_errdisabled())
         self.sample_rates(system_ports() + [n for n in ports if n.startswith('po')])
@@ -1723,8 +1730,14 @@ def show_running(cfg):
         lines.append('!')
     lines += running_stp_lines(cfg)
     lines += running_global_lines(cfg)
+    for plugin in PLUGINS:
+        lines += plugin.global_lines(cfg)  # ip routing
     for name in all_ports(cfg):
         p = port_view(cfg, name)
+        routed = [x for plugin in PLUGINS for x in [plugin.routed_interface_lines(cfg, name)] if x is not None]
+        if routed:  # ルーテッドポートは、スイッチポートの設定を持たない
+            lines += [f'interface {name}'] + routed[0] + ['!']
+            continue
         lines.append(f'interface {"Port-channel" + name[2:] if name.startswith("po") else name}')
         cg = cfg['interfaces'].get(name, {}).get('channel_group')
         if p['description']:
@@ -1774,6 +1787,8 @@ def show_running(cfg):
             lines.append(' shutdown')
         lines.append('!')
     lines += running_svi_lines(cfg)
+    for plugin in PLUGINS:
+        lines += plugin.route_lines(cfg)  # ip route …
     lines += running_line_lines(cfg)
     lines.append('end')
     return '\n'.join(lines)
@@ -2329,7 +2344,7 @@ class Cli:
             (['exit'], self.do_exit, 'Exit from the current mode'),
             (['do', '<line>'], self.do_do, 'To run exec commands in config mode'),
         ]
-        return {
+        grammar = {
             'exec': show + [
                 (['configure'], self.do_conf, 'Enter configuration mode'),
                 (['configure', 'terminal'], self.do_conf, 'Configure from the terminal'),
@@ -2525,6 +2540,10 @@ class Cli:
                 (['no', 'spanning-tree', 'guard'], lambda a: self.set_port(guard_root=None), 'Set guard mode to none'),
             ],
         }
+        for plugin in PLUGINS:  # L3スイッチのコマンド（l3.py）を足す。L2スイッチのイメージにはプラグインが無い
+            for mode, entries in plugin.grammar(self).items():
+                grammar[mode] = grammar[mode] + entries
+        return grammar
 
     def parse(self, tokens):
         """今のモードで解釈する。interface/vlanモードで通らなければ、Ciscoと同じく設定モードの
@@ -3318,6 +3337,25 @@ class Cli:
         finally:
             self.waiting_input = False
             readline.set_startup_hook()
+
+
+class _Self:
+    """swcli自身の名前空間（プラグインから関数を呼ぶ。テストで差し替えた値にも追随する）"""
+
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+# L3スイッチの機能（l3.py、fnl/l3switchのイメージにだけ入る）。無ければL2スイッチのまま動く
+try:
+    import l3
+
+    PLUGINS.append(l3.L3Plugin(_Self()))
+except ImportError:
+    pass
 
 
 def main():
