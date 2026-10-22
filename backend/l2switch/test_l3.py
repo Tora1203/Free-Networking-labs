@@ -6,6 +6,7 @@ test_swcliと同じく、コンテナの外でCLIの解釈と設定の保存・�
     python3 -m unittest -v test_l3    （backend/l2switch/で）
 """
 import unittest
+import unittest.mock
 
 import l3
 from test_swcli import CliTestCase, sw
@@ -207,7 +208,44 @@ end
         self.assertEqual(l3.display_line(' ip ospf cost 5'), ' ip ospf cost 5')
 
 
+class TrackPureTest(unittest.TestCase):
+    def test_effective_priority(self):
+        self.assertEqual(l3.effective_priority(100, {1: 20, 2: 30}, set()), 100)
+        self.assertEqual(l3.effective_priority(100, {1: 20, 2: 30}, {1}), 80)
+        self.assertEqual(l3.effective_priority(100, {1: 20, 2: 30}, {1, 2}), 50)
+        self.assertEqual(l3.effective_priority(100, {1: 200}, {1}), 1)  # 下限は1
+        self.assertEqual(l3.effective_priority(100, {1: 20}, {9}), 100)  # 無関係な対象
+
+    def test_parse_vrrp_track(self):
+        self.assertEqual(l3.parse_vrrp_track(['1', 'track', '2']), (1, 2, 10))
+        self.assertEqual(l3.parse_vrrp_track(['1', 'track', '2', 'decrement', '25']), (1, 2, 25))
+        for bad in (['1', 'track'], ['x', 'track', '1'], ['1', 'track', '1', 'decrement', '0'], ['1', 'track', '1', 'foo', '5'], ['1', 'track', '1', 'decrement', '255']):
+            self.assertIsNone(l3.parse_vrrp_track(bad), bad)
+
+    def test_live_vrrp_priorities(self):
+        text = 'frr version 9\ninterface vlan10\n vrrp 1 priority 80\n vrrp 1 ip 10.0.0.1\n vrrp 2\n vrrp 3 advertisement-interval 1000\n!\nrouter ospf\n vrrp 9\n'
+        self.assertEqual(l3.live_vrrp_priorities(text), {('vlan10', 1): 80, ('vlan10', 2): 100, ('vlan10', 3): 100})
+
+    def test_normalize_priority_lines(self):
+        lines = ['interface vlan10', ' vrrp 1 priority 80', ' vrrp 1 ip 10.0.0.1', ' vrrp 2 priority 70', 'router ospf', ' vrrp 1 priority 5']
+        # 設定した値に戻す。他のインスタンス・interface以外は触らない
+        self.assertEqual(l3.normalize_priority_lines(lines, {('vlan10', 1): 120}),
+                         ['interface vlan10', ' vrrp 1 priority 120', ' vrrp 1 ip 10.0.0.1', ' vrrp 2 priority 70', 'router ospf', ' vrrp 1 priority 5'])
+        # 設定した値が既定（行なし）なら、優先度の行を消す
+        self.assertEqual(l3.normalize_priority_lines(lines, {('vlan10', 1): None})[:3], ['interface vlan10', ' vrrp 1 ip 10.0.0.1', ' vrrp 2 priority 70'])
+        # 下げた結果が既定の100で行が無い時も、設定した値の行を入れる
+        self.assertEqual(l3.normalize_priority_lines(['interface vlan10', ' vrrp 1 ip 10.0.0.1'], {('vlan10', 1): 120}),
+                         ['interface vlan10', ' vrrp 1 ip 10.0.0.1', ' vrrp 1 priority 120'])
+
+
 class FrrConfigDisplayTest(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        # 開発機でFRRが動いていても（pidof zebra が通っても）、vtyshを呼ばない
+        patcher = unittest.mock.patch.object(sw.PLUGINS[0], 'frr_running', return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_policy_blocks_in_running_config(self):
         self.store(['ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24', '!', 'ip prefix-list ONLY10 seq 10 deny 0.0.0.0/0 le 32', '!',
                     'route-map IN permit 10', ' match ip address prefix-list ONLY10', ' set local-preference 200'])
@@ -239,6 +277,68 @@ class FrrConfigDisplayTest(CliTestCase):
         self.configure(['vlan 10', 'interface vlan 10', 'ip address 10.10.0.2 255.255.255.0', 'no shutdown'])
         self.store(['interface vlan10', ' vrrp 1 ip 10.10.0.1', ' vrrp 1 priority 120'])
         self.assertIn('interface Vlan10\n ip address 10.10.0.2 255.255.255.0\n vrrp 1 ip 10.10.0.1\n vrrp 1 priority 120\n', self.running_config())
+
+    def svi10(self):
+        self.configure(['vlan 10', 'interface vlan 10', 'ip address 10.10.0.2 255.255.255.0', 'no shutdown'])
+
+    def test_track_objects_in_running_config(self):
+        self.configure(['track 1 interface eth1 line-protocol', 'track 2 interface vlan 10 line-protocol',
+                        'track 3 ip route 10.9.0.0 255.255.0.0 reachability', 'track 4 ip route 10.8.0.0/16 reachability'])
+        config = self.running_config()
+        self.assertIn('track 1 interface eth1 line-protocol\ntrack 2 interface vlan10 line-protocol\n'
+                      'track 3 ip route 10.9.0.0 255.255.0.0 reachability\ntrack 4 ip route 10.8.0.0 255.255.0.0 reachability\n!', config)
+        self.configure(['no track 2'])
+        self.assertNotIn('track 2', self.running_config())
+
+    def test_track_rejects_bad_objects(self):
+        for line in ('track 1 interface eth0 line-protocol', 'track 1 interface eth1', 'track x interface eth1 line-protocol',
+                     'track 1 ip route 10.0.0.1 255.0.0.0 reachability', 'track 1 ip route 10.0.0.0 255.0.255.0 reachability'):
+            self.assertIn('%', self.configure([line]), line)
+        self.assertNotIn('track', self.running_config())
+
+    def test_vrrp_track_in_interface_block(self):
+        self.svi10()
+        self.configure(['track 1 interface eth1 line-protocol', 'interface vlan 10', 'vrrp 1 track 1 decrement 20', 'vrrp 2 track 1'])
+        config = self.running_config()
+        self.assertIn(' ip address 10.10.0.2 255.255.255.0\n vrrp 1 track 1 decrement 20\n vrrp 2 track 1 decrement 10\n', config)
+        self.assertEqual(sw.load(sw.RUNNING)['vrrp_tracks']['vlan10']['1'], {'base': None, 'tracks': {'1': 20}})
+        self.configure(['interface vlan 10', 'no vrrp 1 track 1'])
+        self.assertNotIn('vrrp 1 track', self.running_config())
+        self.assertIn('vrrp 2 track 1', self.running_config())
+
+    def test_vrrp_track_needs_a_defined_object_and_valid_decrement(self):
+        self.svi10()
+        self.assertIn('not defined', self.configure(['interface vlan 10', 'vrrp 1 track 7']))
+        self.configure(['track 1 interface eth1 line-protocol'])
+        self.assertIn('Invalid', self.configure(['interface vlan 10', 'vrrp 1 track 1 decrement 300']))
+        self.assertIn('Invalid', self.configure(['interface vlan 10', 'vrrp 1 track 1 decrement']))
+        self.assertNotIn('vrrp_tracks', sw.load(sw.RUNNING))
+
+    def test_no_track_object_removes_references(self):
+        self.svi10()
+        self.configure(['track 1 interface eth1 line-protocol', 'track 2 interface eth2 line-protocol', 'interface vlan 10',
+                        'vrrp 1 track 1', 'vrrp 1 track 2 decrement 5', 'vrrp 2 track 1', 'exit', 'no track 1'])
+        tracks = sw.load(sw.RUNNING)['vrrp_tracks']['vlan10']
+        self.assertEqual(tracks, {'1': {'base': None, 'tracks': {'2': 5}}})
+        self.configure(['no track 2'])
+        self.assertNotIn('vrrp_tracks', sw.load(sw.RUNNING))
+
+    def test_vrrp_priority_is_remembered_as_the_base_while_tracked(self):
+        self.svi10()
+        self.store(['interface vlan10', ' vrrp 1 ip 10.10.0.1', ' vrrp 1 priority 120'])
+        self.configure(['track 1 interface eth1 line-protocol', 'interface vlan 10', 'vrrp 1 track 1 decrement 30'])
+        self.assertEqual(sw.load(sw.RUNNING)['vrrp_tracks']['vlan10']['1']['base'], 120)
+        self.configure(['interface vlan 10', 'vrrp 1 priority 90'])  # FRRが動いていないテストでも、設定した値は覚える
+        self.assertEqual(sw.load(sw.RUNNING)['vrrp_tracks']['vlan10']['1']['base'], 90)
+        self.configure(['interface vlan 10', 'no vrrp 1'])
+        self.assertNotIn('vrrp_tracks', sw.load(sw.RUNNING))
+
+    def test_show_track(self):
+        self.svi10()
+        self.configure(['track 1 interface eth1 line-protocol', 'interface vlan 10', 'vrrp 1 track 1 decrement 20'])
+        out = self.run_lines(['show track'])
+        self.assertIn('Track 1\n  Interface eth1 line-protocol\n  Line protocol is ', out)
+        self.assertIn('Tracked by:\n    VRRP vlan10 1 decrement 20', out)
 
     def test_route_map_needs_ip_routing(self):
         out = self.configure(['route-map IN permit 10'])
