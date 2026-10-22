@@ -7,9 +7,10 @@
 #   fnl/l3switch:4（2026-10-21）：route-map・ip prefix-list・ip as-path・ip community-list（ポリシー）
 #   fnl/l3switch:5（2026-10-21）：VRRP（vrrpd）、DHCPリレー（ip helper-address、dhcp-helper）
 #   fnl/l3switch:6（2026-10-21）：ACL（ip access-list、ip access-group。nftablesに変換）
+#   fnl/l3switch:7（2026-10-22）：VRRPのtrack（track N interface|ip route、vrrp N track）
 #
 #   docker build -t fnl/l2switch:10 backend/l2switch
-#   docker build -t fnl/l3switch:6 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+#   docker build -t fnl/l3switch:7 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ARG BASE=fnl/l2switch:10
 FROM ${BASE}
 RUN apk add --no-cache frr nftables dhcp-helper \

@@ -151,7 +151,7 @@ L2スイッチのイメージ（`fnl/l2switch:10`〜）に、FRR（zebra・stati
 
 ```
 docker build -t fnl/l2switch:10 backend/l2switch
-docker build -t fnl/l3switch:6 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+docker build -t fnl/l3switch:7 -f backend/l2switch/Dockerfile.l3 backend/l2switch
 ```
 
 | コマンド | 内容 |
@@ -229,18 +229,26 @@ Ciscoの書き方は翻訳して渡す。FRRの設定は`write memory`で`startu
 | --- | --- |
 | `vrrp 1 ip 10.10.0.1` / `vrrp 1 priority 120` / `vrrp 1 preempt` ほか | `interface vlan N`・ルーテッドポートの中。FRRのvrrpdに渡す（`no vrrp …`で削除） |
 | `vrrp 1 timers advertise 3` | → `vrrp 1 advertisement-interval 3000`（Ciscoは秒、FRRはミリ秒） |
-| `show vrrp` / `show vrrp brief` | vtyshの出力のまま（`brief`も同じ詳細表示） |
+| `show vrrp` / `show vrrp brief` | vtyshの出力のまま（`brief`も同じ詳細表示）。track中は最後に`Tracking: …`の行（今の優先度・落ちている対象）を足す |
+| `track N interface <ethN\|poN\|vlan N> line-protocol` / `track N ip route <網> <マスク> reachability` / `no track N` | trackの対象（グローバル）。設定の`tracks`に持つ。`show track [N]`で状態 |
+| `vrrp 1 track N [decrement D]` / `no vrrp 1 track N` | 対象Nが落ちたら優先度をD（既定10）下げる。複数は合計、下限1。設定の`vrrp_tracks`に持つ |
 | `ip helper-address A.B.C.D` / `no ip helper-address [A.B.C.D]` | DHCPリレー。`interface vlan N`・ルーテッドポートの中。何個でも。`show running-config`では`ip address`の次に出る |
 
 - **VRRPの仕組み**：FRRのvrrpdは、仮想ルーター用のmacvlan（`vrrp4-<ifindex>-<VRID>`、MAC `00:00:5e:00:01:<VRID>`）を**作らない**。設定（`frr`キー）に合わせてエージェントが作り、
   仮想アドレス（`vrrp N ip`のアドレス、プレフィックス長はSVIと同じ）を付ける。Backupの間はvrrpdがmacvlanをprotodownにして無効にする。`no ip routing`の間はmacvlanを消す。
+- **trackの仕組み（`fnl/l3switch:7`）**：FRRのvrrpdにtrackは無いので、エージェントが1秒ごとに対象を見て、`vtysh`で`vrrp N priority`を付け替える。
+  対象の状態は、インターフェースが`/sys/class/net/<dev>/operstate`の`up`か、経路が`ip route show exact <網>`にあるか。**設定した優先度**は`vrrp_tracks[dev][VRID].base`に持ち、
+  `store_frr`が保存用の`frr`の行をその値に戻す（下げている最中の値を`write memory`や再起動で持ち越さない）。track中に`vrrp N priority`を変えると、`base`が変わる。
+  trackをすべて外す（`no vrrp N track`・`no track N`）と、設定した優先度に戻す。存在しない対象を指す`vrrp N track`は断る（`no track`で対象を消すと参照も消える）。
 - **VRRPの制約（2026-10-21、コンテナ2台で実測）**
   - **版**：既定は版3（FRR）。インスタンスごとに`vrrp N version 2`で版2にできる（グローバルの`vrrp version`というコマンドは無い）。**版が食い違うと広告を読み合えず、両方がMasterになる**（実測：片方を版2にすると、数秒で両方`Master`）。両端で版をそろえる。Ciscoの旧VRRP（版2）と組むなら両端を版2にする（実機との相互接続は未確認）。
   - **切り替え**：Masterを止めてからBackupがMasterになるまで**約3.8秒**（広告間隔1秒×3＋α。`vrrp N timers advertise`で短縮できる）。優先度の高い側は、戻るとプリエンプトしてMasterを取り戻す（実測）。
   - **SVIを`shutdown`した側の表示**：そのスイッチの`show vrrp`は`Master`のままになる（実測。SVIは`DOWN`、macvlanは`LOWERLAYERDOWN`なのにvrrpdが`Initialize`に移らない。macvlanを管理上落としても変わらない＝FRRのvrrpdの動作）。もう一方は引き継ぐので通信には影響せず、`no shutdown`で正しい状態に戻る。表示だけの問題。
   - **IPv4だけ**：エージェントが作るのは`vrrp4-…`のmacvlanだけ。IPv6のVRRPは使えない。
   - **ルーティングが前提**：`no ip routing`の間はmacvlanを消す（VRRPは止まる）。設定は残り、`ip routing`で戻る。再起動後は`startup-config`だけから復元される（実測：sw1を再起動し、約9秒でMasterに戻った）。
-  - **足りない機能**：認証、トラッキング（`vrrp N track`）、`show vrrp brief`の1行表示（`brief`も詳細表示になる）、プリエンプトの遅延（FRRの対応は未確認）。`running-config`には、FRRの書き方で`vrrp 1`の行が単独で出る（Ciscoには無い行）。
+  - **足りない機能**：認証、`show vrrp brief`の1行表示（`brief`も詳細表示になる）、プリエンプトの遅延（FRRの対応は未確認）。`running-config`には、FRRの書き方で`vrrp 1`の行が単独で出る（Ciscoには無い行）。
+  - **Backupを再起動した後に、両方Masterのままになることがある（未解決、2026-10-22に発見）**：間にdockerのブリッジを挟んだテスト構成（コンテナ2台を同じdockerネットワークにつないだ）で、Backup側を`docker restart`すると、約4分の1の起動で相手の広告を受け取れず（`Advertisements Rx`が0のまま）両方がMasterになった（優先度90・trackなしの対照でも8回中2回）。
+    Master側を再起動した場合（対照6回）は起きていない。原因は特定できていない（vrrpdのグループ参加は正常な起動と同じ。両側とも、相手の広告がL2で届いていない）。containerlabの直結リンクで起きるかは未確認。
   - **入力のタイミング**：`vrrp N ip`はSVIにアドレスが付いてから（エージェントが1秒ごとに反映）でないと受け付けられない。続けて貼り付けると失敗することがある。
 - **DHCPリレーの仕組み**：`ip helper-address`はswcliの設定（SVIは`svi`、ルーテッドポートは`interfaces`の`helpers`）に持つ。エージェントが`dhcp-helper -s <サーバー> -i <インターフェース>`を動かす
   （サーバーは全インターフェースの分をまとめる。インターフェースごとに別のサーバーに振り分けることはしない）。設定が変われば作り直し、無くなれば止める。

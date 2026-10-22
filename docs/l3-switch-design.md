@@ -227,7 +227,10 @@ ACLは別に設計する（次のPR）。
 - **DHCPリレー**：Alpineの`dhcp-helper`（Simon Kelley製の小さなリレー）を、エージェントが管理する。`ip helper-address`はswcliの設定に持つ（FRRの設定ではない）。
 - **確かめたこと**（コンテナ）：VRRP＝2台でMaster（優先度120）／Backupに分かれ、仮想アドレスはMasterのmacvlanだけがUP、Backupに宛てたpingがMasterに届き、Masterを落とすとBackupがMasterになる。
   DHCPリレー＝VLAN10のクライアントが、リレー経由でdnsmasqからアドレスを取得（DISCOVER→OFFER→REQUEST→ACK）。
-- **未対応**：VRRPの認証・トラッキング、`show vrrp brief`の1行表示、HSRP、DHCPのオプション82、インターフェースごとのDHCPサーバーの振り分け。
+- **VRRPのtrack（2026-10-22）**：FRRのvrrpdには無いので、swcliの設定（`tracks`・`vrrp_tracks`）に持ち、エージェントが1秒ごとに対象を見て`vrrp N priority`を付け替える。
+  Ciscoの書き方（`track N interface … line-protocol`、`track N ip route … reachability`、`vrrp N track N [decrement D]`）。設定した優先度は`base`に持ち、FRRの設定（`frr`キー）には下げた値を保存しない
+  （`store_frr`が戻す）。コンテナ2台で、`shutdown`で120→90・約4秒でBackupが引き継ぎ、`no shutdown`でプリエンプトして戻ることを確認。`fnl/l3switch:7`。
+- **未対応**：VRRPの認証、`show vrrp brief`の1行表示、HSRP、DHCPのオプション82、インターフェースごとのDHCPサーバーの振り分け。
 - **VRRPの制約の実測（2026-10-21）**：切り替え約3.8秒／版の食い違い（版3と版2）で両方Master／SVIを`shutdown`した側の`show vrrp`がMasterのまま（macvlanを管理上落としても変わらない）／再起動後は約9秒で復元。詳細は`backend/l2switch/README.md`。
 
 ## 15. ACLの実装メモ（2026-10-21、be/l3-acl）
