@@ -43,6 +43,7 @@
   align-self: center;
   flex-direction: column;
   gap: 10px;
+  margin-bottom: 10px; /* 下の入力欄との間（見出し・説明を消したので、少し空ける） */
   /* 記号の線の色は文字色に従う（ライト/ダークで切り替わる） */
   color: var(--ink);
 }
