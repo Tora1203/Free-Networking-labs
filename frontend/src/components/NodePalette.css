@@ -1,12 +1,20 @@
 .node-palette {
   flex: none;
-  width: 160px;
+  width: 184px;
   padding: 12px;
   background: var(--surface-2);
   border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
+  /* 2列のタイル（アイコンの下に文字）。見出し・ヒント・区切り線は全幅 */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
+  align-content: start;
+}
+
+.node-palette__title,
+.node-palette__hint,
+.node-palette__divider {
+  grid-column: 1 / -1;
 }
 
 .node-palette__title {
@@ -23,13 +31,19 @@
 
 .node-palette__item {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  justify-content: center;
+  gap: 6px;
+  min-height: 78px;
+  padding: 10px 4px 8px;
+  border-radius: 8px;
   border: 1px solid var(--border);
+  border-top: 3px solid var(--tile, var(--ink-faint));
   background: var(--surface);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
   color: var(--ink);
   cursor: grab;
   user-select: none;
@@ -40,19 +54,19 @@
 }
 
 .node-palette__item--router {
-  border-left: 4px solid var(--node-router);
+  --tile: var(--node-router);
 }
 
 .node-palette__item--l2-switch {
-  border-left: 4px solid var(--node-switch);
+  --tile: var(--node-switch);
 }
 
 .node-palette__item--l3-switch {
-  border-left: 4px solid var(--node-switch);
+  --tile: var(--node-l3switch);
 }
 
 .node-palette__item--pc {
-  border-left: 4px solid var(--node-pc);
+  --tile: var(--node-pc);
 }
 
 .node-palette__divider {
@@ -62,13 +76,38 @@
 }
 
 .node-palette__item--label {
-  border-left: 4px dashed var(--ink-faint);
+  border-style: dashed;
+  border-top-style: dashed;
 }
 
 .node-palette__item--area {
-  border: 1px dashed var(--border);
-  border-left: 4px dashed var(--ink-faint);
+  border-style: dashed;
+  border-top-style: dashed;
   background: transparent;
+}
+
+/* 記号：アイコンの上・文字の下のタイル。色はキャンバス上のノードの色と同じ
+   （ルーター＝青、L2スイッチ＝オレンジ、L3スイッチ＝紫、PC＝灰）。ラベル・エリアは控えめな色 */
+.node-palette__item .icon {
+  width: 34px;
+  height: 34px;
+  color: var(--ink-soft);
+}
+
+.node-palette__item--router .icon {
+  color: var(--node-router);
+}
+
+.node-palette__item--l2-switch .icon {
+  color: var(--node-switch);
+}
+
+.node-palette__item--l3-switch .icon {
+  color: var(--node-l3switch);
+}
+
+.node-palette__item--pc .icon {
+  color: var(--node-pc);
 }
 
 /* 狭い幅では、パレットを左の縦並びから、上の横並び（横スクロール）に変える。
@@ -76,6 +115,7 @@
 @media (max-width: 900px) {
   .node-palette {
     width: auto;
+    display: flex;
     flex-direction: row;
     align-items: center;
     gap: 8px;
@@ -92,33 +132,14 @@
 
   .node-palette__item {
     flex: none;
-    white-space: nowrap;
+    width: 76px;
+    min-height: 70px;
   }
 
   .node-palette__divider {
     flex: none;
     width: 1px;
-    height: 24px;
+    height: 40px;
     margin: 0 4px;
   }
-}
-
-/* 記号の色はキャンバス上のノードの色と同じ。ラベル・エリアは控えめな色 */
-.node-palette__item .icon {
-  width: 20px;
-  height: 20px;
-  color: var(--ink-soft);
-}
-
-.node-palette__item--router .icon {
-  color: var(--node-router);
-}
-
-.node-palette__item--l2-switch .icon,
-.node-palette__item--l3-switch .icon {
-  color: var(--node-switch);
-}
-
-.node-palette__item--pc .icon {
-  color: var(--node-pc);
 }
