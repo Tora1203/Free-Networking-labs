@@ -32,7 +32,7 @@ export default function Brand({ size = 'nav', onClick }: BrandProps) {
       }
       title={onClick ? 'ホームに戻る' : undefined}
     >
-      {size === 'login' && <LogoMark className="brand__mark" size={76} />}
+      {size === 'login' && <LogoMark variant="compact" className="brand__mark" size={76} />}
       <img className="brand__wordmark brand__wordmark--light" src="/logo-wordmark-text-light.png" alt="FreeNetworkLab" />
       <img className="brand__wordmark brand__wordmark--dark" src="/logo-wordmark-text-dark.png" alt="FreeNetworkLab" />
     </div>
