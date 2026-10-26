@@ -2,6 +2,7 @@ import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
 import ConsoleSession from './ConsoleSession'
 import './Console.css'
+import { Icon } from './Icon'
 
 // 統合コンソールのタブ管理。セッション自体（ConsoleSession）は開いている間ずっとマウントし続け、
 // 非アクティブなタブはCSSで隠すだけにする（タブを切り替えてもWebSocket接続を保ったままにするため）。
@@ -24,8 +25,8 @@ export default function ConsolePane() {
   if (sessions.length === 0) {
     return (
       <div className="console-pane console-pane--empty">
-        <button className="console-pane__panel-close" title="パネルを閉じる" onClick={closePanel}>
-          ✕ パネルを閉じる
+        <button className="console-pane__panel-close" title="パネルを閉じる" aria-label="パネルを閉じる" onClick={closePanel}>
+          <Icon name="close" size={14} />
         </button>
         <p className="console-pane__hint">
           開いているコンソールはありません。ホームのノードの<strong>🖥ボタン</strong>、または
@@ -63,8 +64,8 @@ export default function ConsolePane() {
             </button>
           </div>
         ))}
-        <button className="console-tabs__close-all" title="パネルを閉じる（全コンソールを終了）" onClick={closePanel}>
-          ✕ パネルを閉じる
+        <button className="console-tabs__close-all" title="パネルを閉じる（全コンソールを終了）" aria-label="パネルを閉じる" onClick={closePanel}>
+          <Icon name="close" size={14} />
         </button>
       </div>
       <div className="console-manager__body">

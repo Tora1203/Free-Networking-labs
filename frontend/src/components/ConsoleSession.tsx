@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { ApiError, createTerminalSession, getAuthToken, shareConsoleUrl } from '../api/client'
+import { Icon } from './Icon'
 
 // clab-api-server の統合コンソール用WebSocket（/api/v1/terminal-sessions/{id}/stream）は
 // Authorizationヘッダーでしか認証できないが、ブラウザのWebSocket APIはヘッダーを設定できない
@@ -191,8 +192,8 @@ export default function ConsoleSession({ labName, nodeName, visible, autoCommand
         </span>
         {statusMessage && <span className="console-pane__status">{statusMessage}</span>}
         {canReconnect && (
-          <button className="console-pane__reconnect" onClick={connect}>
-            🔄 再接続
+          <button className="console-pane__reconnect" onClick={connect} title="再接続" aria-label="再接続">
+            <Icon name="rebuild" size={14} />
           </button>
         )}
       </div>

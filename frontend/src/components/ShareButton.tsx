@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createShare, deleteShare, listShares, shareUrl, type ShareInfo, type ShareRole } from '../api/collabClient'
 import './ShareButton.css'
+import { Icon } from './Icon'
 
 // ラボの「閲覧のみの共有リンク」を作る・取り消す（2026-10-16、docs/collab-design.md 段階2の試作）
 export default function ShareButton({ labName }: { labName: string }) {
@@ -61,8 +62,14 @@ export default function ShareButton({ labName }: { labName: string }) {
 
   return (
     <div className="share-button" ref={boxRef}>
-      <button onClick={() => setOpen((v) => !v)} title="このラボを、リンクを知っている人と共有します（閲覧のみ／編集も可）">
-        共有
+      <button
+        className="btn-icon"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label="共有"
+        title="共有：このラボを、リンクを知っている人と共有します（閲覧のみ／編集も可）"
+      >
+        <Icon name="share" />
       </button>
       {open && (
         <div className="share-button__panel">

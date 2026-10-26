@@ -108,3 +108,18 @@ button:disabled {
     width: 36px;
   }
 }
+
+/* アイコン（components/Icon.tsx）。ボタンの文字色に従う */
+.icon {
+  flex: none;
+  display: block;
+}
+
+/* 開いている／入っている状態のボタン（コンソールパネルの表示など）：水色の枠と薄い水色の面 */
+.btn-icon[aria-pressed='true'] {
+  --btn-bg: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+  --btn-bg-hover: color-mix(in srgb, var(--accent) 24%, var(--surface-2));
+  --btn-bg-active: color-mix(in srgb, var(--accent) 32%, var(--surface-2));
+  --btn-fg: var(--accent);
+  --btn-border: var(--accent);
+}
