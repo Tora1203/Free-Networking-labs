@@ -1,9 +1,9 @@
+import { LogoMark } from './LogoMark'
 import './Brand.css'
 
-// ワードマーク画像（logo-wordmark-*.png）を使用。元はプレゼン資料用でドット模様の
-// 背景があったため、透過処理＋コンテンツ部分のみにトリミング済み（frontend/public/参照）。
-// ライト/ダーク2種類あり、どちらを出すかはCSS側で `:root[data-theme]` を見て切り替える
-// （テーマ状態をpropsで渡さなくても自動追従するように）。
+// ロゴ（2026-10-26〜）：記号（LogoMark、SVG）＋文字「FreeNetworkLab」＋「F N L」。画像ではなくSVGと文字なので、
+// ライト/ダークの切り替えは色の変数（文字色）に自動で追従する（以前はlight/darkの2枚のPNGをCSSで切り替えていた）。
+
 interface BrandProps {
   size?: 'nav' | 'login'
   // ナビのロゴはクリックでホームに戻れるようにする（2026-10-05追加）
@@ -28,9 +28,13 @@ export default function Brand({ size = 'nav', onClick }: BrandProps) {
           : undefined
       }
       title={onClick ? 'ホームに戻る' : undefined}
+      aria-label={onClick ? 'ホームに戻る（FreeNetworkLab）' : undefined}
     >
-      <img className="brand__wordmark brand__wordmark--light" src="/logo-wordmark-light.png" alt="FreeNetworkLab" />
-      <img className="brand__wordmark brand__wordmark--dark" src="/logo-wordmark-dark.png" alt="FreeNetworkLab" />
+      <LogoMark className="brand__mark" size={size === 'login' ? 72 : 38} />
+      <span className="brand__text">
+        <span className="brand__name">FreeNetworkLab</span>
+        <span className="brand__tag">F N L</span>
+      </span>
     </div>
   )
 }

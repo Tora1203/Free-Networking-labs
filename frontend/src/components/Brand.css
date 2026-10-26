@@ -1,11 +1,13 @@
 .brand {
   display: flex;
   align-items: center;
+  gap: 10px;
+  color: var(--ink);
 }
 
 .brand--clickable {
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .brand--clickable:hover {
@@ -13,43 +15,65 @@
 }
 
 .brand--clickable:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
-.brand__wordmark {
-  display: block;
-  height: auto;
+.brand__mark {
+  flex: none;
 }
 
-/* デフォルト（ライトテーマ）はlightを表示、darkは隠す */
-.brand__wordmark--dark {
-  display: none;
+.brand__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
 }
 
-/* ダークテーマの時だけ入れ替える */
-:root[data-theme='dark'] .brand__wordmark--light {
-  display: none;
-}
-:root[data-theme='dark'] .brand__wordmark--dark {
-  display: block;
+.brand__name {
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
 }
 
-.brand--nav .brand__wordmark {
-  width: 190px;
+/* 「F N L」：橙の小さな字間の広い文字 */
+.brand__tag {
+  margin-top: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: var(--brand-orange, #f28c4b);
 }
 
+.brand--nav .brand__name {
+  font-size: 19px;
+}
+
+/* ログイン画面：記号を上、文字を下に中央ぞろえで大きく */
 .brand--login {
   align-self: center;
-  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
 }
 
-.brand--login .brand__wordmark {
-  width: 100%;
+.brand--login .brand__text {
+  align-items: center;
+}
+
+.brand--login .brand__name {
+  font-size: 28px;
+}
+
+.brand--login .brand__tag {
+  font-size: 11px;
 }
 
 @media (max-width: 640px) {
-  .brand--nav .brand__wordmark {
-    width: 140px;
+  .brand--nav .brand__name {
+    font-size: 16px;
+  }
+
+  .brand--nav .brand__tag {
+    display: none;
   }
 }
