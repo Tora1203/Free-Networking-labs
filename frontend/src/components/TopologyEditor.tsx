@@ -1793,6 +1793,15 @@ function TopologyEditorInner() {
     !labBusy &&
     contextMenu.nodeId in runState.nodeStates
 
+  // 起動状態の表示（記号だけで出すので、文字は読み上げとツールチップに持つ）
+  const powerLabel = labBusy
+    ? '処理中'
+    : runState.kind === 'running'
+      ? `起動中${runningSummary(runState)}`
+      : runState.kind === 'stopped'
+        ? '停止中'
+        : '未起動'
+
   return (
     <div className="topology-editor">
       <NodePalette />
@@ -1842,15 +1851,8 @@ function TopologyEditorInner() {
               状態が分からない／未保存の時は、ボタンだけを出す */}
           <div className={`lab-power${savedLabName && runState.kind !== 'unknown' ? ` lab-power--${labBusy ? 'busy' : runState.kind}` : ''}`}>
             {savedLabName && runState.kind !== 'unknown' && (
-              <span className="lab-power__state" title={runStateTitle(runState)}>
+              <span className="lab-power__state" role="img" aria-label={powerLabel} title={`${powerLabel}\n${runStateTitle(runState)}`}>
                 <span className="lab-power__dot" aria-hidden="true" />
-                {labBusy
-                  ? '処理中...'
-                  : runState.kind === 'running'
-                    ? `起動中${runningSummary(runState)}`
-                    : runState.kind === 'stopped'
-                      ? '停止中'
-                      : '未起動'}
               </span>
             )}
             {runState.kind === 'running' ? (

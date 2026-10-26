@@ -64,20 +64,17 @@
 .lab-power__state {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  font-size: 14px;
-  font-weight: 600;
-  white-space: nowrap;
+  justify-content: center;
+  width: 44px;
   color: var(--ink-soft);
   cursor: default;
 }
 
-/* 状態の記号（色だけに頼らない）：起動中＝丸、停止中＝四角、処理中＝点滅する丸、未起動＝白抜きの丸 */
+/* 状態は記号だけで示す（文字はtitleとaria-labelに持つ）。色だけに頼らず形も変える：起動中＝丸、停止中＝四角、処理中＝点滅する丸、未起動＝白抜きの丸 */
 .lab-power__dot {
   flex: none;
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: currentColor;
 }
