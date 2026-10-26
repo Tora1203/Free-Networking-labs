@@ -679,7 +679,7 @@ class LldpAgent:
             # -ccc：CDPv2を常に送る、-l：LLDPを常に送る、-H 0：同じ相手からのLLDPとCDPを両方残す
             self.proc = subprocess.Popen(
                 ['lldpd', '-d', '-ccc', '-l', '-H', '0', '-k', '-I', 'eth*,!eth0', '-P', LLDP_PLATFORM,
-                 '-S', 'Free-Networking-labs L2 switch'],
+                 '-S', f'FreeNetworkLab {"L3" if PLUGINS else "L2"} switch'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             self.hostname = None
             self.last_tx, self.tx_at = None, time.time()
