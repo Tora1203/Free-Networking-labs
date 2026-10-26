@@ -22,6 +22,12 @@ export type IconName =
   | 'terminal'
   | 'rebuild'
   | 'close'
+  | 'router'
+  | 'switch'
+  | 'l3switch'
+  | 'pc'
+  | 'label'
+  | 'area'
 
 const STROKE: Record<Exclude<IconName, 'play' | 'stop'>, ReactNode> = {
   // 棒グラフ（サーバーの使用状況）
@@ -111,6 +117,48 @@ const STROKE: Record<Exclude<IconName, 'play' | 'stop'>, ReactNode> = {
     </>
   ),
   close: <path d="M18 6 6 18M6 6l12 12" />,
+  // ---- ノードパレットの記号（キャンバス上の形と同じ：ルーター＝円、スイッチ＝角丸の四角、PC＝四角）----
+  // ルーター：円と、外に向かう4本の矢印（ネットワーク図の慣例）
+  router: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 5v14M5 12h14" />
+      <path d="m9.5 7.5 2.5-2.5 2.5 2.5M9.5 16.5l2.5 2.5 2.5-2.5M7.5 9.5 5 12l2.5 2.5M16.5 9.5 19 12l-2.5 2.5" />
+    </>
+  ),
+  // L2スイッチ：角丸の四角と、左右の矢印
+  switch: (
+    <>
+      <rect x="3" y="6" width="18" height="12" rx="3" />
+      <path d="M7 10h10m-2-2 2 2-2 2" />
+      <path d="M17 14H7m2-2-2 2 2 2" />
+    </>
+  ),
+  // L3スイッチ：L2スイッチに、上位（ルーティング）を表す円を重ねる
+  l3switch: (
+    <>
+      <rect x="3" y="9" width="18" height="11" rx="3" />
+      <path d="M7 14.5h10m-2-2 2 2-2 2" />
+      <circle cx="12" cy="4.5" r="2.5" />
+      <path d="M12 7v2" />
+    </>
+  ),
+  // PC：モニターとスタンド
+  pc: (
+    <>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+    </>
+  ),
+  // ラベル：タグ
+  label: (
+    <>
+      <path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z" />
+      <circle cx="8" cy="8" r="1.4" />
+    </>
+  ),
+  // エリア：ノードを囲む点線の枠
+  area: <rect x="3" y="4" width="18" height="16" rx="3" strokeDasharray="3 3" />,
 }
 
 // 再生（▶）と停止（■）は、塗りつぶしの方が小さくても見分けやすい
