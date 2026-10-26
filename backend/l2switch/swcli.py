@@ -3226,7 +3226,7 @@ class Cli:
         except (termios.error, OSError, ValueError):
             saved_tty = None
         signal.signal(signal.SIGTSTP, signal.SIG_IGN)
-        print('\nFree-Networking-labs L2 switch  (type ? for help, Tab to complete)\n')
+        print(f'\nFreeNetworkLab {"L3" if PLUGINS else "L2"} switch  (type ? for help, Tab to complete)\n')
         try:
             self.login()
         except EOFError:

@@ -8,10 +8,11 @@
 #   fnl/l3switch:5（2026-10-21）：VRRP（vrrpd）、DHCPリレー（ip helper-address、dhcp-helper）
 #   fnl/l3switch:6（2026-10-21）：ACL（ip access-list、ip access-group。nftablesに変換）
 #   fnl/l3switch:7（2026-10-22）：VRRPのtrack（track N interface|ip route、vrrp N track）
+#   fnl/l3switch:8（2026-10-26）：起動時の表示を「FreeNetworkLab L3 switch」に
 #
-#   docker build -t fnl/l2switch:10 backend/l2switch
-#   docker build -t fnl/l3switch:7 -f backend/l2switch/Dockerfile.l3 backend/l2switch
-ARG BASE=fnl/l2switch:10
+#   docker build -t fnl/l2switch:11 backend/l2switch
+#   docker build -t fnl/l3switch:8 -f backend/l2switch/Dockerfile.l3 backend/l2switch
+ARG BASE=fnl/l2switch:11
 FROM ${BASE}
 RUN apk add --no-cache frr nftables dhcp-helper \
  && sed -i 's/^ospfd=no/ospfd=yes/; s/^bgpd=no/bgpd=yes/; s/^ripd=no/ripd=yes/; s/^vrrpd=no/vrrpd=yes/' /etc/frr/daemons
