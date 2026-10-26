@@ -18,8 +18,8 @@
   display: flex;
   flex-wrap: wrap; /* 幅が足りない時は折り返す（長い警告文が細い縦書きのようにつぶれていた、2026-10-19） */
   align-items: center;
-  gap: 6px 8px;
-  padding: 8px 12px;
+  gap: 8px 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -28,11 +28,12 @@
 }
 
 .topology-editor__lab-name {
-  font-size: 13px;
-  padding: 5px 8px;
+  font-size: 14px;
+  height: 40px;
+  padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  width: 160px;
+  border-radius: 8px;
+  width: 180px;
   background: var(--surface);
   color: var(--ink);
 }
@@ -49,36 +50,81 @@
   color: var(--warn);
 }
 
-/* ラボの実行状態（起動中/停止中/未起動、2026-10-14） */
-.topology-editor__run-state {
-  font-size: 12px;
+/* ラボの起動状態＋起動/停止ボタンをひとつにまとめた部品（2026-10-26。以前は状態のチップとボタンが別だった）。
+   左：状態（色は、ノードの状態ランプと同じ。緑＝起動中、灰＝停止中、黄＝処理中）、右：操作ボタン */
+.lab-power {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.lab-power__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
-  padding: 3px 10px;
-  border-radius: 999px;
   color: var(--ink-soft);
-  background: var(--bg);
-  border: 1px solid var(--border);
   cursor: default;
 }
 
-/* ノードの状態ランプと同じ色（TopologyNode.css）：緑＝起動中、灰＝停止中、黄＝処理中 */
-.topology-editor__run-state--running {
+/* 状態の記号（色だけに頼らない）：起動中＝丸、停止中＝四角、処理中＝点滅する丸、未起動＝白抜きの丸 */
+.lab-power__dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.lab-power--running .lab-power__state {
   color: var(--status-running-ink);
   background: var(--status-running);
-  border-color: var(--status-running);
 }
 
-.topology-editor__run-state--stopped {
+.lab-power--stopped .lab-power__state {
   color: var(--status-stopped-ink);
   background: var(--status-stopped);
-  border-color: var(--status-stopped);
 }
 
-.topology-editor__run-state--busy {
+.lab-power--stopped .lab-power__dot {
+  border-radius: 2px;
+}
+
+.lab-power--busy .lab-power__state {
   color: var(--status-busy-ink);
   background: var(--status-busy);
-  border-color: var(--status-busy);
+}
+
+.lab-power--busy .lab-power__dot {
+  animation: topo-node-status-blink 0.8s ease-in-out infinite alternate;
+}
+
+.lab-power--none .lab-power__dot {
+  background: transparent;
+  border: 2px solid currentColor;
+}
+
+/* 右の操作ボタンは、枠の中にはめ込む（角丸・外枠は部品の外側に任せる） */
+.lab-power > button {
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.lab-power > button:only-child {
+  border-left: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lab-power--busy .lab-power__dot {
+    animation: none;
+  }
 }
 
 .topology-editor__context-menu-status {

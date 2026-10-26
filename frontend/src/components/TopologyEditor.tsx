@@ -1838,41 +1838,43 @@ function TopologyEditorInner() {
               実際の名前: {toSafeLabName(labName, useAuthStore.getState().username)}
             </span>
           )}
-          {savedLabName && runState.kind !== 'unknown' && (
-            <span
-              className={`topology-editor__run-state topology-editor__run-state--${labBusy ? 'busy' : runState.kind}`}
-              title={runStateTitle(runState)}
-            >
-              {labBusy
-                ? '● 処理中...'
-                : runState.kind === 'running'
-                  ? `● 起動中${runningSummary(runState)}`
-                  : runState.kind === 'stopped'
-                    ? '● 停止中'
-                    : '● 未起動'}
-            </span>
-          )}
-          {runState.kind === 'running' ? (
-            <button
-              className="btn-danger btn-icon"
-              onClick={onStopLab}
-              disabled={labBusy}
-              title="停止：ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
-              aria-label="ラボを停止"
-            >
-              <Icon name="stop" />
-            </button>
-          ) : (
-            <button
-              className="btn-primary btn-icon"
-              onClick={onStartLab}
-              disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
-              title="起動：ラボを起動します。起動中の編集は自動で反映されます"
-              aria-label="ラボを起動"
-            >
-              <Icon name="play" />
-            </button>
-          )}
+          {/* 起動の状態表示と起動/停止ボタンをひとつにまとめた部品（2026-10-26）：左が状態（色と文字）、右が操作。
+              状態が分からない／未保存の時は、ボタンだけを出す */}
+          <div className={`lab-power${savedLabName && runState.kind !== 'unknown' ? ` lab-power--${labBusy ? 'busy' : runState.kind}` : ''}`}>
+            {savedLabName && runState.kind !== 'unknown' && (
+              <span className="lab-power__state" title={runStateTitle(runState)}>
+                <span className="lab-power__dot" aria-hidden="true" />
+                {labBusy
+                  ? '処理中...'
+                  : runState.kind === 'running'
+                    ? `起動中${runningSummary(runState)}`
+                    : runState.kind === 'stopped'
+                      ? '停止中'
+                      : '未起動'}
+              </span>
+            )}
+            {runState.kind === 'running' ? (
+              <button
+                className="btn-danger btn-icon"
+                onClick={onStopLab}
+                disabled={labBusy}
+                title="停止：ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
+                aria-label="ラボを停止"
+              >
+                <Icon name="stop" />
+              </button>
+            ) : (
+              <button
+                className="btn-primary btn-icon"
+                onClick={onStartLab}
+                disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
+                title="起動：ラボを起動します。起動中の編集は自動で反映されます"
+                aria-label="ラボを起動"
+              >
+                <Icon name="play" />
+              </button>
+            )}
+          </div>
           {syncStatus.kind !== 'idle' && (
             <span
               className={`topology-editor__status${syncStatus.kind === 'ok' ? ' topology-editor__status--ok' : syncStatus.kind === 'error' ? ' topology-editor__status--error' : ''}`}
