@@ -368,6 +368,10 @@ L3スイッチ1台に、PC2台をそれぞれVLAN10・VLAN20のアクセスポ�
 - [ ] **VRRP**：L3スイッチ2台を同じVLAN（例：VLAN10）のアクセスポートでつなぎ、両方で `ip routing`、`interface vlan 10` にアドレス（`10.10.0.2`・`10.10.0.3`）を付けてから、`vrrp 1 ip 10.10.0.1`。片方に `vrrp 1 priority 120`
 - [ ] `show vrrp` で、優先度の高い方が `Master`、もう一方が `Backup` になる。PCのゲートウェイを `10.10.0.1` にしてpingが通る。Masterを停止すると数秒でBackupが `Master` になり、pingが続く
 - [ ] `show running-config` の `interface Vlan10` に `vrrp 1 ip …` が出る。`write memory` → 停止→起動で戻る
+- [ ] **VRRPのtrack**：Master側に、上流のルーテッドポート（例：eth2）を `no switchport` ＋アドレスで作り、`track 1 interface eth2 line-protocol`、`interface vlan 10` の中で `vrrp 1 track 1 decrement 30`。`show track` が `Line protocol is Up`、`show vrrp` の最後が `Tracking: … priority 120 (configured 120)`
+- [ ] eth2 を `shutdown` する（または相手とのリンクを消す）と、数秒でBackup側が `Master` になり、`Tracking:` の行が `priority 90 … track 1 down`。`no shutdown` で優先度が戻り、プリエンプトで元のMasterに戻る
+- [ ] `show running-config` に `track 1 interface eth2 line-protocol` と、`interface Vlan10` の中の `vrrp 1 track 1 decrement 30` が出る。**優先度は設定した値のまま**（下がっている最中に `write memory` しても、`vrrp 1 priority` は下がった値にならない）
+- [ ] `no vrrp 1 track 1`・`no track 1` で優先度が元に戻る。存在しない対象（`vrrp 1 track 9`）は断られる。`track 2 ip route 10.0.0.0 255.0.0.0 reachability` は、その経路が経路表から消えると `Down`
 - [ ] **DHCPリレー**：`interface vlan 10` に `ip helper-address <DHCPサーバー>`（サーバーはルーテッドポートの先）。VLAN10のPCがDHCPでアドレスを取れる。`show running-config` の `ip address` の次に出る。`no ip helper-address` で止まる
 - [ ] **ポリシー**：L3スイッチ2台のeBGPで、片方が2つのネットワークを `network` で広告する。もう片方で `ip prefix-list ONLY10 seq 5 permit 10.10.0.0/16 le 24`、`route-map IN permit 10`（中で `match ip address prefix-list ONLY10`、`set local-preference 200`）、`router bgp` の `address-family ipv4` の中で `neighbor … route-map IN in`
 - [ ] `show ip bgp` に許可したネットワークだけが LocPrf 200 で出て、許可していないものは出ない。`show ip prefix-list`・`show route-map` が出る。`show running-config` に `ip prefix-list` が続けて、`route-map IN permit 10` が出る

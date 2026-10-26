@@ -159,6 +159,122 @@ def translate_vrrp_command(tokens):
     return ' '.join(['vrrp'] + body)
 
 
+# ---- track（VRRPの優先度を、インターフェース・経路の状態で下げる。FRRのvrrpdには無いので、エージェントが優先度を付け替える） ----
+
+DEFAULT_VRRP_PRIORITY = 100
+DEFAULT_TRACK_DECREMENT = 10
+
+
+def parse_track_object(tokens, norm_iface, is_ipv4, mask_to_prefix):
+    """`track N` に続く部分から対象を読む。(対象, エラー文)。
+    interface <ethN|poN|vlan N> line-protocol → {'type': 'interface', 'dev': 'eth1'}
+    ip route <網> <マスク|/長さ> reachability → {'type': 'route', 'net': '10.0.0.0/8'}"""
+    bad = "% Invalid input detected at '^' marker."
+    words = [t.lower() for t in tokens]
+    if len(words) >= 3 and words[0] == 'interface' and words[-1] == 'line-protocol':
+        name = ''.join(tokens[1:-1])
+        m = re.fullmatch(r'vlan(\d+)', name, re.I)
+        dev = f'vlan{int(m.group(1))}' if m and 1 <= int(m.group(1)) <= 4094 else norm_iface(name)
+        return ({'type': 'interface', 'dev': dev}, None) if dev else (None, bad)
+    if len(words) >= 4 and words[:2] == ['ip', 'route'] and words[-1] == 'reachability':
+        spec = tokens[2:-1]
+        try:
+            if len(spec) == 1 and '/' in spec[0]:
+                net = ipaddress.ip_network(spec[0], strict=False)
+            elif len(spec) == 2:
+                prefix = mask_to_prefix(spec[1])
+                if not is_ipv4(spec[0]) or prefix is None:
+                    return None, bad
+                net = ipaddress.ip_network(f'{spec[0]}/{prefix}', strict=False)
+                if str(net.network_address) != spec[0]:
+                    return None, '% Inconsistent address and mask'
+            else:
+                return None, bad
+        except ValueError:
+            return None, bad
+        if net.version != 4:
+            return None, bad
+        return {'type': 'route', 'net': str(net)}, None
+    return None, bad
+
+
+def describe_track(obj):
+    if obj.get('type') == 'interface':
+        return f'Interface {obj["dev"]} line-protocol'
+    return f'IP route {obj["net"]} reachability'
+
+
+def track_running_line(tid, obj):
+    if obj.get('type') == 'interface':
+        return f'track {tid} interface {obj["dev"]} line-protocol'
+    net = ipaddress.ip_network(obj['net'])
+    return f'track {tid} ip route {net.network_address} {net.netmask} reachability'
+
+
+def parse_vrrp_track(tokens):
+    """`vrrp N track M [decrement D]` の N 以降（['1', 'track', '1', 'decrement', '20']）→ (VRID, track番号, 減らす値)。違えば None"""
+    if len(tokens) < 3 or tokens[1].lower() != 'track' or not tokens[0].isdigit() or not tokens[2].isdigit():
+        return None
+    dec = DEFAULT_TRACK_DECREMENT
+    rest = [t.lower() for t in tokens[3:]]
+    if rest:
+        if len(rest) != 2 or rest[0] != 'decrement' or not rest[1].isdigit() or not 1 <= int(rest[1]) <= 254:
+            return None
+        dec = int(rest[1])
+    return int(tokens[0]), int(tokens[2]), dec
+
+
+def effective_priority(base, decrements, down):
+    """設定した優先度から、落ちている対象の分を引く（下限1。Ciscoと同じ）。decrements：{track番号: 減らす値}、down：落ちている番号の集合"""
+    return max(1, base - sum(dec for tid, dec in decrements.items() if tid in down))
+
+
+def live_vrrp_priorities(running):
+    """FRRの show running-config から {(デバイス, VRID): 今の優先度}。優先度の行が無い（既定の100）インスタンスも含める"""
+    found = {}
+    dev = None
+    for raw in running.splitlines():
+        line = raw.strip()
+        if raw.startswith('interface '):
+            dev = raw.split(None, 1)[1].strip()
+            continue
+        if not raw.startswith(' '):
+            dev = None
+            continue
+        m = re.fullmatch(r'vrrp (\d+)(?: priority (\d+))?(?: .*)?', line)
+        if dev and m:
+            key = (dev, int(m.group(1)))
+            found.setdefault(key, DEFAULT_VRRP_PRIORITY)
+            if m.group(2):
+                found[key] = int(m.group(2))
+    return found
+
+
+def normalize_priority_lines(lines, bases):
+    """保存用のFRRの行で、track中のインスタンスの優先度を、設定した値（bases：{(デバイス, VRID): 値か None}）に戻す。
+    トラッキングで下げた今の値は、保存しない（再起動でも、設定した値から始める）"""
+    out = []
+    dev = None
+    seen = set()
+    for line in lines:
+        if line.startswith('interface '):
+            dev = line.split(None, 1)[1].strip()
+        elif not line.startswith(' '):
+            dev = None
+        m = re.match(r' vrrp (\d+)\b', line)
+        key = (dev, int(m.group(1))) if dev and m else None
+        if key not in bases:
+            out.append(line)
+            continue
+        if not re.fullmatch(r' vrrp \d+ priority \d+', line):
+            out.append(line)
+        if key not in seen:
+            seen.add(key)
+            if bases[key] is not None:
+                out.append(f' vrrp {key[1]} priority {bases[key]}')
+    return out
+
+
 def parse_frr_config(text):
     """vtyshの show running-config から、保存する塊（router … / interface … 等）の行を取り出す。
     ヘッダー・ip route（swcliの設定が持つ）・end・exit は含めない"""
@@ -253,7 +369,11 @@ class L3Plugin:
 
     # ---- running-config ----
     def global_lines(self, cfg):
-        return ['ip routing', '!'] if self.routing(cfg) else []
+        out = ['ip routing', '!'] if self.routing(cfg) else []
+        tracks = cfg.get('tracks', {})
+        for tid in sorted(tracks, key=int):
+            out.append(track_running_line(tid, tracks[tid]))
+        return out + ['!'] if tracks else out
 
     def routed_interface_lines(self, cfg, name):
         """ルーテッドポートなら、interface の下の行（スイッチポートの設定は出さない）。違えば None"""
@@ -351,6 +471,9 @@ class L3Plugin:
             if name:
                 lines.append(f' ip access-group {name} {direction}')
         lines += [f' ip helper-address {h}' for h in self.helpers_of(cfg, dev)]
+        for vrid, ent in sorted(cfg.get('vrrp_tracks', {}).get(dev, {}).items(), key=lambda kv: int(kv[0])):
+            for tid, dec in sorted(ent.get('tracks', {}).items(), key=lambda kv: int(kv[0])):
+                lines.append(f' vrrp {vrid} track {tid} decrement {dec}')
         for stanza in split_stanzas(cfg.get('frr', [])):
             if stanza[0] == f'interface {dev}':
                 return lines + [display_line(x) for x in stanza[1:]]
@@ -460,6 +583,15 @@ class L3Plugin:
         def frr_show(prefix):
             return lambda a: self.run_show(cli, prefix + (' ' + a[0] if a else ''))
 
+        def show_track(a):
+            print(self.show_tracks(cli.cfg(), int(a[0]) if a and a[0].isdigit() else None))
+
+        def show_vrrp(a):
+            self.run_show(cli, 'show vrrp' + (' ' + a[0] if a else ''))
+            note = self.track_summary(cli.cfg())
+            if note and self.routing(cli.cfg()):
+                print(note)
+
         shows = [
             (['show', 'ip', 'route', '<line>'], frr_show('show ip route'), 'IP routing table'),
             (['show', 'ip', 'ospf'], frr_show('show ip ospf'), 'OSPF information'),
@@ -470,9 +602,11 @@ class L3Plugin:
             (['show', 'ip', 'protocols'], frr_show('show ip protocols'), 'IP routing protocol process parameters and statistics'),
             (['show', 'ip', 'prefix-list'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
             (['show', 'ip', 'prefix-list', '<line>'], frr_show('show ip prefix-list'), 'List IP prefix lists'),
-            (['show', 'vrrp'], frr_show('show vrrp'), 'VRRP information'),
-            (['show', 'vrrp', 'brief'], frr_show('show vrrp'), 'VRRP information'),
-            (['show', 'vrrp', '<line>'], frr_show('show vrrp'), 'VRRP information'),
+            (['show', 'vrrp'], show_vrrp, 'VRRP information'),
+            (['show', 'vrrp', 'brief'], show_vrrp, 'VRRP information'),
+            (['show', 'vrrp', '<line>'], show_vrrp, 'VRRP information'),
+            (['show', 'track'], show_track, 'Tracking information'),
+            (['show', 'track', '<word>'], show_track, 'Tracking information'),
             (['show', 'route-map'], frr_show('show route-map'), 'route-map information'),
             (['show', 'route-map', '<line>'], frr_show('show route-map'), 'route-map information'),
         ]
@@ -569,14 +703,124 @@ class L3Plugin:
 
             return fn
 
+        def stored_priority(cfg, dev, vrid):
+            """保存してあるFRRの設定にある、そのインスタンスの優先度（無ければ None＝既定）"""
+            for stanza in split_stanzas(cfg.get('frr', [])):
+                if stanza[0] == f'interface {dev}':
+                    for line in stanza[1:]:
+                        m = re.fullmatch(rf'\s*vrrp {vrid} priority (\d+)', line)
+                        if m:
+                            return int(m.group(1))
+            return None
+
+        def restore_priority(dev, vrid, base):
+            """trackをやめたインスタンスの優先度を、設定した値に戻す（FRRが動いていれば）"""
+            if not self.frr_running():
+                return
+            command = f'vrrp {vrid} priority {base}' if base is not None else f'no vrrp {vrid} priority'
+            sw.sh('vtysh', '-c', 'configure terminal', '-c', f'interface {dev}', '-c', command, timeout=10)
+            self.store_frr(cli)
+
+        def drop_vrrp_tracks(cfg, dev, vrid, only=None):
+            """cfg から track の参照を外す。そのインスタンスの track が無くなったら (設定した優先度) を返す"""
+            groups = cfg.get('vrrp_tracks', {}).get(dev, {})
+            ent = groups.get(str(vrid))
+            if ent is None:
+                return None
+            if only is None:
+                ent['tracks'] = {}
+            else:
+                ent['tracks'].pop(str(only), None)
+            if ent['tracks']:
+                return None
+            base = ent.get('base')
+            groups.pop(str(vrid), None)
+            if not groups:
+                cfg['vrrp_tracks'].pop(dev, None)
+            if not cfg['vrrp_tracks']:
+                cfg.pop('vrrp_tracks', None)
+            return (base,)
+
+        def vrrp_track(dev, tokens, negate):
+            parsed = parse_vrrp_track(tokens)
+            if parsed is None:
+                print("% Invalid input detected at '^' marker.")
+                return
+            vrid, tid, dec = parsed
+            restored = []
+
+            def change(cfg):
+                if negate:
+                    gone = drop_vrrp_tracks(cfg, dev, vrid, tid)
+                    if gone:
+                        restored.append(gone[0])
+                    return
+                if str(tid) not in cfg.get('tracks', {}):
+                    print(f'% Track object {tid} is not defined. Use "track {tid} interface … line-protocol" first.')
+                    return
+                ent = cfg.setdefault('vrrp_tracks', {}).setdefault(dev, {}).setdefault(str(vrid), {'base': stored_priority(cfg, dev, vrid), 'tracks': {}})
+                ent['tracks'][str(tid)] = dec
+
+            cli.modify(change)
+            if restored:
+                restore_priority(dev, vrid, restored[0])
+
         def iface_vrrp(negate):
             def fn(a):
                 dev = iface_device()
                 if dev is None:
                     return
-                self.run_config(cli, [f'interface {dev}'], ('no ' if negate else '') + translate_vrrp_command(a[0].split()))
+                tokens = a[0].split()
+                if len(tokens) >= 2 and tokens[1].lower() == 'track':
+                    vrrp_track(dev, tokens, negate)
+                    return
+                if tokens and tokens[0].isdigit() and str(int(tokens[0])) in cli.cfg().get('vrrp_tracks', {}).get(dev, {}):
+                    vrid = int(tokens[0])
+                    if len(tokens) == 1 and negate:
+                        cli.modify(lambda cfg: drop_vrrp_tracks(cfg, dev, vrid))  # no vrrp N：インスタンスごと消えるので、trackも消す
+                    elif len(tokens) >= 2 and tokens[1].lower() == 'priority':
+                        value = int(tokens[2]) if not negate and len(tokens) > 2 and tokens[2].isdigit() else None
+                        cli.modify(lambda cfg: cfg['vrrp_tracks'][dev][str(vrid)].update({'base': value}))
+                self.run_config(cli, [f'interface {dev}'], ('no ' if negate else '') + translate_vrrp_command(tokens))
 
             return fn
+
+        def set_track(head):
+            def fn(a):
+                if not a[0].isdigit() or not 1 <= int(a[0]) <= 500:
+                    print("% Invalid input detected at '^' marker.")
+                    return
+                obj, err = parse_track_object(head + a[1].split(), sw.norm_iface, sw.is_ipv4, sw.mask_to_prefix)
+                if err:
+                    print(err)
+                    return
+                cli.modify(lambda cfg: cfg.setdefault('tracks', {}).update({str(int(a[0])): obj}))
+
+            return fn
+
+        def del_track(a):
+            if not a[0].isdigit():
+                print("% Invalid input detected at '^' marker.")
+                return
+            tid = int(a[0])
+            restored = []
+
+            def change(cfg):
+                if str(tid) not in cfg.get('tracks', {}):
+                    return
+                cfg['tracks'].pop(str(tid))
+                if not cfg['tracks']:
+                    cfg.pop('tracks')
+                for dev, groups in list(cfg.get('vrrp_tracks', {}).items()):
+                    for vrid in list(groups):
+                        gone = drop_vrrp_tracks(cfg, dev, vrid, tid)
+                        if gone:
+                            restored.append((dev, int(vrid), gone[0]))
+
+            cli.modify(change)
+            for dev, vrid, base in restored:
+                restore_priority(dev, vrid, base)
+
 
         def helper_holder(cfg):
             """ip helper-address を持つ設定の辞書（SVIか、ルーテッドポート）。持てない場所なら None"""
@@ -797,6 +1041,9 @@ class L3Plugin:
             ],
             'svi': iface_entries,
             'config': router_entries + policy_entries + acl_entries + [
+                (['track', '<word>', 'interface', '<line>'], set_track(['interface']), 'Track an interface (line-protocol)'),
+                (['track', '<word>', 'ip', 'route', '<line>'], set_track(['ip', 'route']), 'Track a route (reachability)'),
+                (['no', 'track', '<word>'], del_track, 'Remove a tracked object'),
                 (['ip', 'routing'], set_routing(True), 'Enable IP routing'),
                 (['no', 'ip', 'routing'], set_routing(False), 'Disable IP routing'),
                 (['ip', 'route', '<ip>', '<mask>', '<ip>'], add_route, 'Establish static routes'),
@@ -810,6 +1057,33 @@ class L3Plugin:
                 (['no', 'ip', 'address'], no_ip_address, 'Remove the IP address'),
             ],
         }
+
+    def track_summary(self, cfg):
+        """show vrrp の後ろに添える、track中のインスタンスの優先度"""
+        states = self.track_states(cfg)
+        want = self.track_priorities(cfg, states)
+        out = []
+        for dev, groups in sorted(cfg.get('vrrp_tracks', {}).items()):
+            for vrid, ent in sorted(groups.items(), key=lambda kv: int(kv[0])):
+                prio = want[(dev, int(vrid))]
+                base = ent.get('base') or DEFAULT_VRRP_PRIORITY
+                down = [f'track {t}' for t in sorted(ent['tracks'], key=int) if not states.get(int(t), True)]
+                out.append(f'Tracking: {dev} VRID {vrid}: priority {prio} (configured {base})' + (f', {", ".join(down)} down' if down else ''))
+        return '\n'.join(out)
+
+    def show_tracks(self, cfg, only=None):
+        tracks = cfg.get('tracks', {})
+        states = self.track_states(cfg)
+        out = []
+        for tid in sorted(tracks, key=int):
+            if only is not None and int(tid) != only:
+                continue
+            out += [f'Track {tid}', f'  {describe_track(tracks[tid])}', f'  {"Line protocol" if tracks[tid]["type"] == "interface" else "Reachability"} is {"Up" if states[int(tid)] else "Down"}']
+            users = [f'    VRRP {dev} {vrid} decrement {ent["tracks"][tid]}' for dev, groups in sorted(cfg.get('vrrp_tracks', {}).items())
+                     for vrid, ent in sorted(groups.items(), key=lambda kv: int(kv[0])) if tid in ent['tracks']]
+            if users:
+                out += ['  Tracked by:'] + users
+        return '\n'.join(out)
 
     def show_ip_route(self, cfg):
         if not self.routing(cfg):
@@ -866,6 +1140,9 @@ class L3Plugin:
         if out.returncode != 0:
             return
         lines = parse_frr_config(out.stdout)
+        bases = {(dev, int(vrid)): ent.get('base') for dev, groups in cli.cfg().get('vrrp_tracks', {}).items() for vrid, ent in groups.items()}
+        if bases:
+            lines = normalize_priority_lines(lines, bases)
 
         def change(cfg):
             if lines:
@@ -883,6 +1160,7 @@ class L3Plugin:
         self.sync_forwarding(routing, routed)
         self.sync_frr(cfg, routing)
         self.sync_vrrp(cfg, routing)
+        self.sync_vrrp_track(cfg, routing)
         self.sync_dhcp_helper(cfg)
         self.sync_acl(cfg)
 
@@ -958,6 +1236,48 @@ class L3Plugin:
         for name in have:
             if name not in want:
                 sw.sh('ip', 'link', 'del', name)
+
+    def track_is_up(self, obj):
+        if obj.get('type') == 'interface':
+            try:
+                with open(f'/sys/class/net/{obj["dev"]}/operstate') as f:
+                    return f.read().strip() in ('up', 'unknown')
+            except OSError:
+                return False
+        return bool(self.sw.sh('ip', '-4', 'route', 'show', 'exact', obj['net']).stdout.strip())
+
+    def track_states(self, cfg):
+        """{track番号(int): 上がっているか}"""
+        return {int(tid): self.track_is_up(obj) for tid, obj in cfg.get('tracks', {}).items()}
+
+    @staticmethod
+    def track_priorities(cfg, states):
+        """track中のVRRPインスタンスの、今あるべき優先度 {(デバイス, VRID): 値}。存在しない対象は上がっているものとみなす"""
+        want = {}
+        for dev, groups in cfg.get('vrrp_tracks', {}).items():
+            for vrid, ent in groups.items():
+                decs = {int(t): d for t, d in ent.get('tracks', {}).items()}
+                down = {t for t in decs if not states.get(t, True)}
+                want[(dev, int(vrid))] = effective_priority(ent.get('base') or DEFAULT_VRRP_PRIORITY, decs, down)
+        return want
+
+    def sync_vrrp_track(self, cfg, routing):
+        """track中のVRRPの優先度を、対象の状態に合わせてFRRに入れる（1秒ごと）。保存する設定には、設定した値のまま残す"""
+        if not routing or not cfg.get('vrrp_tracks') or not self.frr_running():
+            return
+        want = self.track_priorities(cfg, self.track_states(cfg))
+        out = self.sw.sh('vtysh', '-c', 'show running-config', timeout=5)
+        if out.returncode != 0:
+            return
+        live = live_vrrp_priorities(out.stdout)
+        cmds = []
+        for (dev, vrid), prio in sorted(want.items()):
+            if (dev, vrid) in live and live[(dev, vrid)] != prio:
+                cmds += ['-c', f'interface {dev}', '-c', f'vrrp {vrid} priority {prio}']
+        if cmds:
+            result = self.sw.sh('vtysh', '-c', 'configure terminal', *cmds, timeout=10)
+            if result.returncode != 0:
+                print(f'l3: VRRPの優先度を変えられません: {(result.stderr or result.stdout).strip()}', flush=True)
 
     def acl_applications(self, cfg):
         apps = []
@@ -1068,8 +1388,12 @@ class L3Plugin:
         sw = self.sw
         self.frr_started = time.time()
         # デーモンの一覧は既定のまま（zebra・staticdは常に起動）。設定ファイルは起動のたびに作り直す
+        # track中のVRRPは、下げた後の優先度で始める（起動の直後に付け替えると、まれにvrrpdが広告を受け取れなくなる：実測）
+        lines = cfg.get('frr', [])
+        if cfg.get('vrrp_tracks'):
+            lines = normalize_priority_lines(lines, self.track_priorities(cfg, self.track_states(cfg)))
         with open(FRR_CONF, 'w') as f:
-            f.write(render_frr_conf(cfg.get('hostname', 'switch'), cfg.get('frr', [])))
+            f.write(render_frr_conf(cfg.get('hostname', 'switch'), lines))
         if not os.path.exists(FRR_VTYSH_CONF):
             open(FRR_VTYSH_CONF, 'w').close()
         sw.sh('chown', 'frr:frr', FRR_CONF)
