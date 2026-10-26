@@ -41,8 +41,8 @@ export const PALETTE_NODE_CONFIGS: Record<PaletteNodeKind, PaletteNodeConfig> = 
   router: { kind: 'router', label: 'ルーター', clabKind: 'linux', image: 'fnl/frr:3' },
   // L2スイッチはコンテナ内のLinuxブリッジ（backend/l2switch/、2026-10-13にovs-bridgeから変更）。
   // :2（2026-10-14〜）はCisco風CLI（swcli）入り。VLANはCLIで設定する。:3（同日〜）はmstpdでSTP/RSTP/MSTP
-  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'linux', image: 'fnl/l2switch:6' },
-  // L3スイッチ＝L2スイッチ＋FRR（backend/l2switch/Dockerfile.l3、2026-10-21〜）。ip routing・静的経路・ルーテッドポート（段階1）、:2＝OSPF等のパススルー（段階2）、:3＝BGP・RIPの翻訳（段階3）、:4＝route-map等のポリシー、:5＝VRRP・DHCPリレー、:6＝ACL、:7＝VRRPのtrack
-  'l3-switch': { kind: 'l3-switch', label: 'L3スイッチ', clabKind: 'linux', image: 'fnl/l3switch:7' },
+  'l2-switch': { kind: 'l2-switch', label: 'L2スイッチ', clabKind: 'linux', image: 'fnl/l2switch:12' },
+  // L3スイッチ＝L2スイッチ＋FRR（backend/l2switch/Dockerfile.l3、2026-10-21〜）。ip routing・静的経路・ルーテッドポート（段階1）、:2＝OSPF等のパススルー（段階2）、:3＝BGP・RIPの翻訳（段階3）、:4＝route-map等のポリシー、:5＝VRRP・DHCPリレー、:6＝ACL、:7＝VRRPのtrack、:8＝起動時の表示、:9＝LLDPの名前
+  'l3-switch': { kind: 'l3-switch', label: 'L3スイッチ', clabKind: 'linux', image: 'fnl/l3switch:9' },
   pc: { kind: 'pc', label: 'PC', clabKind: 'linux', image: 'alpine:3.20' },
 }
