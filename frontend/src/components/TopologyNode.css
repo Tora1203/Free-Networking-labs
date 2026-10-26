@@ -34,6 +34,11 @@
   color: var(--node-switch);
 }
 
+.topo-node--l3switch .topo-node__badge {
+  border-color: var(--node-l3switch);
+  color: var(--node-l3switch);
+}
+
 .topo-node--pc .topo-node__badge {
   border-radius: 4px;
   border-color: var(--node-pc);

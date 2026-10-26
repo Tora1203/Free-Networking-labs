@@ -78,6 +78,7 @@ import { useConsoleStore } from '../store/consoleStore'
 import { useUiStore } from '../store/uiStore'
 import { useAuthStore } from '../store/authStore'
 import './TopologyEditor.css'
+import { Icon } from './Icon'
 
 // パレットの種別ごとに「R1」「SW1」「PC1」のような短い表示名を振るための接頭辞とカウンター
 const SHORT_LABEL_PREFIX: Record<PaletteNodeKind, string> = { router: 'R', 'l2-switch': 'SW', 'l3-switch': 'L3SW', pc: 'PC' }
@@ -1792,13 +1793,22 @@ function TopologyEditorInner() {
     !labBusy &&
     contextMenu.nodeId in runState.nodeStates
 
+  // 起動状態の表示（記号だけで出すので、文字は読み上げとツールチップに持つ）
+  const powerLabel = labBusy
+    ? '処理中'
+    : runState.kind === 'running'
+      ? `起動中${runningSummary(runState)}`
+      : runState.kind === 'stopped'
+        ? '停止中'
+        : '未起動'
+
   return (
     <div className="topology-editor">
       <NodePalette />
       <div className="topology-editor__main">
         <div className="topology-editor__toolbar">
-          <button className="btn-ghost" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）">
-            ← ホーム
+          <button className="btn-ghost btn-icon" onClick={goHome} title="ホームに戻る（編集内容は自動保存されています）" aria-label="ホームに戻る">
+            <Icon name="home" />
           </button>
           <button
             className="btn-icon"
@@ -1807,7 +1817,7 @@ function TopologyEditorInner() {
             disabled={historyCounts.past === 0}
             title={`元に戻す（Ctrl+Z）${historyCounts.undoHint ? `\n${historyCounts.undoHint}` : ''}`}
           >
-            ↶
+            <Icon name="undo" />
           </button>
           <button
             className="btn-icon"
@@ -1816,7 +1826,7 @@ function TopologyEditorInner() {
             disabled={historyCounts.future === 0}
             title={`やり直す（Ctrl+Shift+Z / Ctrl+Y）${historyCounts.redoHint ? `\n${historyCounts.redoHint}` : ''}`}
           >
-            ↷
+            <Icon name="redo" />
           </button>
           <input
             className="topology-editor__lab-name"
@@ -1837,39 +1847,36 @@ function TopologyEditorInner() {
               実際の名前: {toSafeLabName(labName, useAuthStore.getState().username)}
             </span>
           )}
-          {savedLabName && runState.kind !== 'unknown' && (
-            <span
-              className={`topology-editor__run-state topology-editor__run-state--${labBusy ? 'busy' : runState.kind}`}
-              title={runStateTitle(runState)}
-            >
-              {labBusy
-                ? '● 処理中...'
-                : runState.kind === 'running'
-                  ? `● 起動中${runningSummary(runState)}`
-                  : runState.kind === 'stopped'
-                    ? '● 停止中'
-                    : '● 未起動'}
-            </span>
-          )}
-          {runState.kind === 'running' ? (
-            <button
-              className="btn-danger"
-              onClick={onStopLab}
-              disabled={labBusy}
-              title="ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
-            >
-              ■ 停止
-            </button>
-          ) : (
-            <button
-              className="btn-primary"
-              onClick={onStartLab}
-              disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
-              title="ラボを起動します。起動中の編集は自動で反映されます"
-            >
-              ▶ 起動
-            </button>
-          )}
+          {/* 起動の状態表示と起動/停止ボタンをひとつにまとめた部品（2026-10-26）：左が状態（色と文字）、右が操作。
+              状態が分からない／未保存の時は、ボタンだけを出す */}
+          <div className={`lab-power${savedLabName && runState.kind !== 'unknown' ? ` lab-power--${labBusy ? 'busy' : runState.kind}` : ''}`}>
+            {savedLabName && runState.kind !== 'unknown' && (
+              <span className="lab-power__state" role="img" aria-label={powerLabel} title={`${powerLabel}\n${runStateTitle(runState)}`}>
+                <span className="lab-power__dot" aria-hidden="true" />
+              </span>
+            )}
+            {runState.kind === 'running' ? (
+              <button
+                className="btn-danger btn-icon"
+                onClick={onStopLab}
+                disabled={labBusy}
+                title="停止：ラボ全体を停止します（実機の電源断と同じく、write memoryしていないルーター設定は消えます）"
+                aria-label="ラボを停止"
+              >
+                <Icon name="stop" />
+              </button>
+            ) : (
+              <button
+                className="btn-primary btn-icon"
+                onClick={onStartLab}
+                disabled={labBusy || loadStatus.kind === 'loading' || !nodes.some((n) => n.type === 'topoNode')}
+                title="起動：ラボを起動します。起動中の編集は自動で反映されます"
+                aria-label="ラボを起動"
+              >
+                <Icon name="play" />
+              </button>
+            )}
+          </div>
           {syncStatus.kind !== 'idle' && (
             <span
               className={`topology-editor__status${syncStatus.kind === 'ok' ? ' topology-editor__status--ok' : syncStatus.kind === 'error' ? ' topology-editor__status--error' : ''}`}
@@ -1889,6 +1896,7 @@ function TopologyEditorInner() {
           )}
           {syncStatus.kind === 'error' && syncStatus.canRebuild && (
             <button className="btn-danger" onClick={onRebuildLab} disabled={labBusy} title="ラボを破棄して今の内容で起動し直します">
+              <Icon name="rebuild" />
               作り直す
             </button>
           )}
@@ -1904,36 +1912,55 @@ function TopologyEditorInner() {
             }}
           />
           <button
+            className="btn-icon"
             onClick={() => importInputRef.current?.click()}
             disabled={!!savedLabName}
+            aria-label="インポート"
             title={
               savedLabName
-                ? '保存済みのラボを上書きしないよう、インポートは新規作成の画面でだけ使えます'
-                : '他の人がエクスポートしたYAML（＋annotations）を読み込んで新規ラボとして編集を始めます'
+                ? 'インポート：保存済みのラボを上書きしないよう、新規作成の画面でだけ使えます'
+                : 'インポート：他の人がエクスポートしたYAML（＋annotations）を読み込んで新規ラボとして編集を始めます'
             }
           >
-            インポート
+            <Icon name="import" />
           </button>
           <button
+            className="btn-icon"
             onClick={onExport}
             disabled={!savedLabName || exportStatus.kind === 'exporting'}
-            title={savedLabName ? '保存済みのYAML（＋annotations）をダウンロードします' : 'ノードを置くと保存され、使えるようになります'}
+            aria-label={exportStatus.kind === 'exporting' ? 'エクスポート中' : 'エクスポート'}
+            title={
+              exportStatus.kind === 'exporting'
+                ? 'エクスポート中...'
+                : savedLabName
+                  ? 'エクスポート：保存済みのYAML（＋annotations）をダウンロードします'
+                  : 'エクスポート：ノードを置くと保存され、使えるようになります'
+            }
           >
-            {exportStatus.kind === 'exporting' ? 'エクスポート中...' : 'エクスポート'}
+            <Icon name="export" />
           </button>
           {exportStatus.kind === 'error' && <span className="topology-editor__status topology-editor__status--error">{exportStatus.message}</span>}
           {savedLabName && !getShareRoute() && (
-            <button onClick={() => setSnapshotOpen(true)} disabled={labBusy} title="今の状態を保存したり、保存した状態に戻したりします">
-              スナップショット
+            <button
+              className="btn-icon"
+              onClick={() => setSnapshotOpen(true)}
+              disabled={labBusy}
+              aria-label="スナップショット"
+              title="スナップショット：今の状態を保存したり、保存した状態に戻したりします"
+            >
+              <Icon name="snapshot" />
             </button>
           )}
           {savedLabName && !getShareRoute() && <ShareButton labName={savedLabName} />}
           <div className="topology-editor__toolbar-spacer" />
           <button
+            className="btn-icon"
             onClick={() => setConsolePanelDocked(!consolePanelDocked)}
-            title="トポロジを見ながら統合コンソールを操作できます"
+            aria-pressed={consolePanelDocked}
+            aria-label={consolePanelDocked ? 'コンソールパネルを隠す' : 'コンソールパネルを開く'}
+            title={consolePanelDocked ? 'コンソールパネルを隠す' : 'コンソールパネル：トポロジを見ながら統合コンソールを操作できます'}
           >
-            🖥 コンソール{consolePanelDocked ? 'を隠す' : 'パネル'}
+            <Icon name="terminal" />
           </button>
         </div>
         <div className="topology-editor__canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>

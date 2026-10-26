@@ -1,4 +1,5 @@
 import { PALETTE_NODE_CONFIGS, type PaletteNodeKind } from '../types/lab'
+import { Icon, type IconName } from './Icon'
 import './NodePalette.css'
 
 export const DND_MIME_TYPE = 'application/reactflow-node-kind'
@@ -9,6 +10,14 @@ export const LABEL_DND_VALUE = 'label'
 export const AREA_DND_VALUE = 'area'
 
 const paletteOrder: PaletteNodeKind[] = ['router', 'l2-switch', 'l3-switch', 'pc']
+
+// パレットの各項目の記号（絵文字をやめて、ほかのアイコンと同じ線の太さ・色の規則にそろえた）
+const PALETTE_ICON: Record<PaletteNodeKind, IconName> = {
+  router: 'router',
+  'l2-switch': 'switch',
+  'l3-switch': 'l3switch',
+  pc: 'pc',
+}
 
 export default function NodePalette() {
   const onDragStart = (event: React.DragEvent, kind: PaletteNodeKind | typeof LABEL_DND_VALUE | typeof AREA_DND_VALUE) => {
@@ -29,6 +38,7 @@ export default function NodePalette() {
             draggable
             onDragStart={(event) => onDragStart(event, kind)}
           >
+            <Icon name={PALETTE_ICON[kind]} />
             {config.label}
           </div>
         )
@@ -40,7 +50,8 @@ export default function NodePalette() {
         onDragStart={(event) => onDragStart(event, LABEL_DND_VALUE)}
         title="IPアドレスなどのメモをトポロジ上に自由に配置できます"
       >
-        🏷 ラベル
+        <Icon name="label" />
+        ラベル
       </div>
       <div
         className="node-palette__item node-palette__item--area"
@@ -48,7 +59,8 @@ export default function NodePalette() {
         onDragStart={(event) => onDragStart(event, AREA_DND_VALUE)}
         title="ノードをまとめて囲む枠を配置できます（見た目だけのグループ化）"
       >
-        ▭ エリア
+        <Icon name="area" />
+        エリア
       </div>
     </aside>
   )

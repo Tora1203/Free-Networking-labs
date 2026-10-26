@@ -43,6 +43,8 @@
 
   --node-router: #2f6fed;
   --node-switch: #b45309;
+  --brand-orange: #f28c4b; /* ロゴの橙（ハブ）。ライト/ダーク共通 */
+  --node-l3switch: #7e22ce; /* L3スイッチ（L2のオレンジと見分ける紫、2026-10-26） */
   --node-pc: #4d5a52;
   --edge: #8a988e;
   /* リンクの品質を設定した線・ケーブルを抜いた線（2026-10-14） */
@@ -92,6 +94,7 @@
 
   --node-router: #6fa2ff;
   --node-switch: #f0a94e;
+  --node-l3switch: #c084fc;
   --node-pc: #a9b5c6;
   --edge: #5d6d84;
   --edge-impaired: #a78bfa;

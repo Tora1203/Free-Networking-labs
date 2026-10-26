@@ -36,20 +36,28 @@
 }
 
 .brand--nav .brand__wordmark {
-  width: 190px;
+  width: 150px; /* 記号を外した文字だけの画像（約4:1）。高さはこれまでと同じくらい */
 }
 
 .brand--login {
   align-self: center;
-  width: 100%;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px; /* 下の入力欄との間（見出し・説明を消したので、少し空ける） */
+  /* 記号の線の色は文字色に従う（ライト/ダークで切り替わる） */
+  color: var(--ink);
+}
+
+.brand__mark {
+  flex: none;
 }
 
 .brand--login .brand__wordmark {
-  width: 100%;
+  width: 240px;
 }
 
 @media (max-width: 640px) {
   .brand--nav .brand__wordmark {
-    width: 140px;
+    width: 120px;
   }
 }

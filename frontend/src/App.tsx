@@ -16,6 +16,7 @@ import ServerStatusBar, {
 import { useAuthStore } from './store/authStore'
 import { useUiStore } from './store/uiStore'
 import './App.css'
+import { Icon } from './components/Icon'
 
 type Theme = 'light' | 'dark'
 
@@ -174,9 +175,10 @@ function App() {
             className="app-nav__btn"
             onClick={() => setStatusMenuOpen((v) => !v)}
             title="画面下部に出すサーバーの使用状況を選ぶ"
+            aria-label="サーバーの使用状況の表示設定"
             aria-expanded={statusMenuOpen}
           >
-            📊
+            <Icon name="chart" />
           </button>
           {statusMenuOpen && (
             <div className="server-status-menu__panel">
@@ -197,13 +199,14 @@ function App() {
         <button
           className="app-nav__btn"
           onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-          title="ダーク/ライト切り替え"
+          title={theme === 'light' ? 'ダークモードに切り替える' : 'ライトモードに切り替える'}
+          aria-label={theme === 'light' ? 'ダークモードに切り替える' : 'ライトモードに切り替える'}
         >
-          {theme === 'light' ? '🌙' : '☀️'}
+          <Icon name={theme === 'light' ? 'moon' : 'sun'} />
         </button>
         <span className="app-nav__user">@{username}</span>
-        <button className="app-nav__btn" onClick={logout}>
-          ログアウト
+        <button className="app-nav__btn" onClick={logout} title="ログアウト" aria-label="ログアウト">
+          <Icon name="logout" />
         </button>
       </nav>
       <div className="app-content">

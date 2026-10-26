@@ -19,12 +19,8 @@ export default function LoginForm() {
 
   return (
     <div className="login-form">
-      <form className="login-form__card" onSubmit={onSubmit}>
+      <form className="login-form__card" onSubmit={onSubmit} aria-label="ログイン">
         <Brand size="login" />
-        <h1>ログイン</h1>
-        <p className="login-form__hint">
-          Linuxアカウント（clab_api / clab_admins グループ）でログインしてください
-        </p>
         <label className="login-form__field">
           ユーザー名
           <input
