@@ -39,6 +39,10 @@ sudo chmod 440 /etc/sudoers.d/ovs-helper-frr-config-init
 sudo visudo -c
 ```
 
+新しい利用者が最初にラボを保存すると、clab-api-serverが`$CLAB_LABS_ROOT/<username>/`をroot所有で作る
+（2026-10-29確認）。ラッパーは、root所有のときだけ本人所有に直してから進む（他のユーザー所有なら拒否する）。
+ラッパーの更新は、上の`sudo cp`をもう一度行う。
+
 ## API
 
 ### `POST /switch-config`

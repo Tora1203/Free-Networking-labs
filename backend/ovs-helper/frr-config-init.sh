@@ -45,9 +45,15 @@ entry="$(getent passwd "$user")" || fail "unknown user"
 uid="$(printf '%s' "$entry" | cut -d: -f3)"
 gid="$(printf '%s' "$entry" | cut -d: -f4)"
 
-# そのユーザーのラボルートが実在し、シンボリックリンクでなく、本人所有であること
+# そのユーザーのラボルートが実在し、シンボリックリンクでなく、本人所有であること。
+# 新しい利用者が最初にラボを保存した時、clab-api-serverは`$ROOT/<ユーザー名>/`を root 所有で作る
+# （2026-10-29実機確認。保存直後に「起動」すると`user dir owner mismatch`で止まっていた）。
+# root 所有のものだけ、ここで本人所有にする。他のユーザー所有のものは今までどおり拒否する
 udir="$ROOT/$user"
 [ -d "$udir" ] && [ ! -L "$udir" ] || fail "user dir not found"
+if [ "$(stat -c %u "$udir")" = 0 ] && [ "$uid" != 0 ]; then
+  chown -h "$uid:$gid" "$udir"
+fi
 [ "$(stat -c %u "$udir")" = "$uid" ] || fail "user dir owner mismatch"
 
 # ラボ以下は存在しなければ本人所有で作る（deploy前に呼ばれるため）。
