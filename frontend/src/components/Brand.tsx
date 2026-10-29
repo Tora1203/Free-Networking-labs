@@ -1,12 +1,10 @@
 import { LogoMark } from './LogoMark'
 import './Brand.css'
 
-// ワードマーク画像（logo-wordmark-*.png）を使用。元はプレゼン資料用でドット模様の
-// 背景があったため、透過処理＋コンテンツ部分のみにトリミング済み（frontend/public/参照）。
+// ワードマークは「文字だけ」の画像（public/logo-wordmark-text-*.png、2026-10-26）を使う。
 // ライト/ダーク2種類あり、どちらを出すかはCSS側で `:root[data-theme]` を見て切り替える
 // （テーマ状態をpropsで渡さなくても自動追従するように）。
-// 横ロゴは旧型のワードマークの、記号を外した「文字だけ」の画像（logo-wordmark-text-*.png、2026-10-26）。
-// ナビはこれだけ。ログインは、その上に新しい記号（LogoMark）を置く。
+// ナビはこれだけ。ログインは、その上に記号（LogoMark）を置く。
 interface BrandProps {
   size?: 'nav' | 'login'
   // ナビのロゴはクリックでホームに戻れるようにする（2026-10-05追加）
@@ -32,7 +30,7 @@ export default function Brand({ size = 'nav', onClick }: BrandProps) {
       }
       title={onClick ? 'ホームに戻る' : undefined}
     >
-      {size === 'login' && <LogoMark variant="compact" className="brand__mark" size={76} />}
+      {size === 'login' && <LogoMark className="brand__mark" size={76} />}
       <img className="brand__wordmark brand__wordmark--light" src="/logo-wordmark-text-light.png" alt="FreeNetworkLab" />
       <img className="brand__wordmark brand__wordmark--dark" src="/logo-wordmark-text-dark.png" alt="FreeNetworkLab" />
     </div>
