@@ -167,7 +167,13 @@ const server = https.createServer(tlsOptions, (req, res) => {
       port: upstreamOrigin.port || (upstreamIsTls ? 443 : 80),
       path: upstreamPathFor(parsed),
       method: req.method,
-      headers: { ...req.headers, authorization: `Bearer ${parsed.token}`, host: upstreamOrigin.host },
+      // タイトルを書き換える時（label あり）は本文を文字列として読むので、上流に圧縮させない
+      headers: {
+        ...req.headers,
+        ...(parsed.label ? { 'accept-encoding': 'identity' } : {}),
+        authorization: `Bearer ${parsed.token}`,
+        host: upstreamOrigin.host,
+      },
       // clab-api-serverの自己署名証明書のため（api-contract.md参照、console-proxyと同じ対応）
       rejectUnauthorized: false,
     },
@@ -180,7 +186,11 @@ const server = https.createServer(tlsOptions, (req, res) => {
         proxyRes.on('data', (chunk) => (body += chunk))
         proxyRes.on('end', () => {
           const rewritten = injectTitle(body, parsed.label)
+          // 上流が chunked（transfer-encoding）で返す場合、content-length を足すと両方のヘッダーが付いてしまい、
+          // nginx が「Content-Length と Transfer-Encoding が同時にある」として 502 にする（2026-10-29実機確認）。
+          // 書き換えた本文は長さが分かっているので、transfer-encoding のほうを外す
           const headers = { ...proxyRes.headers, 'content-length': Buffer.byteLength(rewritten) }
+          delete headers['transfer-encoding']
           res.writeHead(proxyRes.statusCode ?? 502, headers)
           res.end(rewritten)
         })

@@ -106,6 +106,9 @@ openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
 npm start
 ```
 
+タブ名（`?label=`）を付ける時は、上流のHTMLを書き換えて返す。このとき上流の`transfer-encoding`を外して`content-length`だけにする
+（両方あるとnginxが502にする、2026-10-29修正）。
+
 環境変数（`.env.example`参照）:
 - `CAPTURE_PROXY_PORT`: 待受ポート（デフォルト `8084`）
 - `LISTEN_HOST`: 待ち受けるアドレス（デフォルト `127.0.0.1`。ブラウザからはnginxの`/capture/`経由で使う。2026-10-15〜）
