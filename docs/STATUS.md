@@ -27,6 +27,7 @@
 ## kawase3（バックエンド/インフラ）
 
 **Done**
+- **パケットキャプチャの 502 を修正（2026-10-29、`be/fix-capture-502`）**：nginx 越しに開くと、Wireshark のタブが 502 Bad Gateway になっていた（nginx のログ：upstream sent "Content-Length" and "Transfer-Encoding" headers at the same time）。原因は capture-proxy が、タブ名を書き換えた本文に `content-length` を足す一方で、上流の `transfer-encoding: chunked` を残していたこと。`transfer-encoding` を外し、書き換える時は上流に圧縮させない（`accept-encoding: identity`）ようにした。確認：偽の上流（chunked の HTML）で、修正前は厳しいクライアントが `Content-Length can't be present with Transfer-Encoding` で失敗、修正後は 200・タブ名が付くことを確認。本番への反映は `systemctl --user restart capture-proxy`。実際の Wireshark の表示は、反映後に確認する
 - サーバー構築（Proxmox VE / VM「lab-server」/ Ubuntu 24.04 / メモリ12GB）
 - Docker 29.8.0 導入
 - Containerlab 0.79.0 導入
