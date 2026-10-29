@@ -63,13 +63,14 @@ export default function ShareButton({ labName }: { labName: string }) {
   return (
     <div className="share-button" ref={boxRef}>
       <button
-        className="btn-icon"
+        className="btn-icon btn-icon--labeled"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-label="共有"
         title="共有：このラボを、リンクを知っている人と共有します（閲覧のみ／編集も可）"
       >
         <Icon name="share" />
+        <span className="btn-icon__label">共有</span>
       </button>
       {open && (
         <div className="share-button__panel">

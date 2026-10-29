@@ -167,13 +167,13 @@ const FILLED: Record<'play' | 'stop', ReactNode> = {
   stop: <rect x="5.5" y="5.5" width="13" height="13" rx="2.5" />,
 }
 
-export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
+// size は、CSS の既定（.icon、buttons.css）と違う大きさにしたい時だけ渡す
+export function Icon({ name, size }: { name: IconName; size?: number }) {
   const filled = name === 'play' || name === 'stop'
   return (
     <svg
       className="icon"
-      width={size}
-      height={size}
+      style={size ? { width: size, height: size } : undefined}
       viewBox="0 0 24 24"
       aria-hidden="true"
       focusable="false"

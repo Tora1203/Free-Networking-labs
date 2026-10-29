@@ -77,12 +77,10 @@
 
 .node-palette__item--label {
   border-style: dashed;
-  border-top-style: dashed;
 }
 
 .node-palette__item--area {
   border-style: dashed;
-  border-top-style: dashed;
   background: transparent;
 }
 

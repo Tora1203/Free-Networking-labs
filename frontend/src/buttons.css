@@ -94,8 +94,14 @@ button:disabled {
 
 .btn-icon {
   width: 40px;
+  aspect-ratio: 1; /* 基本の min-height（38px）より大きい 40px の正方形にする */
   padding: 0;
   font-size: 16px;
+}
+
+/* 文字を併記するアイコンボタン（タッチ画面・狭い画面でだけ文字を出す。下の @media 参照） */
+.btn-icon__label {
+  display: none;
 }
 
 /* アイコンボタンの中のアイコンは大きめに（押す場所だと分かりやすいように） */
@@ -114,12 +120,40 @@ button:disabled {
   .btn-icon {
     width: 44px;
   }
+
+  /* タッチでは、マウスを載せても説明（title）が出ないので、アイコンの横に文字を出す */
+  .btn-icon--labeled {
+    width: auto;
+    aspect-ratio: auto;
+    padding: 0 12px;
+  }
+
+  .btn-icon--labeled .btn-icon__label {
+    display: inline;
+    font-size: 13px;
+  }
+}
+
+/* 狭い画面でも同じ（マウスのタブレット等でも、押す場所が分かるように） */
+@media (max-width: 900px) {
+  .btn-icon--labeled {
+    width: auto;
+    aspect-ratio: auto;
+    padding: 0 12px;
+  }
+
+  .btn-icon--labeled .btn-icon__label {
+    display: inline;
+    font-size: 13px;
+  }
 }
 
 /* アイコン（components/Icon.tsx）。ボタンの文字色に従う */
 .icon {
   flex: none;
   display: block;
+  width: 18px; /* 既定の大きさ。場所ごとの大きさは、このファイルや各CSSの規則で決める（Icon の size は、それを上書きしたい時だけ） */
+  height: 18px;
 }
 
 /* 開いている／入っている状態のボタン（コンソールパネルの表示など）：水色の枠と薄い水色の面 */
@@ -129,4 +163,13 @@ button:disabled {
   --btn-bg-active: color-mix(in srgb, var(--accent) 32%, var(--surface-2));
   --btn-fg: var(--accent);
   --btn-border: var(--accent);
+}
+
+/* 押されている状態のボタンも、hover・押下中で色が変わるようにする（上の規則が --btn-bg を固定しているため） */
+.btn-icon[aria-pressed='true']:hover:not(:disabled) {
+  --btn-bg: var(--btn-bg-hover);
+}
+
+.btn-icon[aria-pressed='true']:active:not(:disabled) {
+  --btn-bg: var(--btn-bg-active);
 }

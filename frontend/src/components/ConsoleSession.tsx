@@ -192,8 +192,9 @@ export default function ConsoleSession({ labName, nodeName, visible, autoCommand
         </span>
         {statusMessage && <span className="console-pane__status">{statusMessage}</span>}
         {canReconnect && (
-          <button className="console-pane__reconnect" onClick={connect} title="再接続" aria-label="再接続">
+          <button className="console-pane__reconnect" onClick={connect} title="接続し直します">
             <Icon name="rebuild" size={14} />
+            再接続
           </button>
         )}
       </div>
